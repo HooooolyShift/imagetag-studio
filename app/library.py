@@ -1640,6 +1640,56 @@ class Library:
         self.store.refresh_counts()
         return {"categorized": n_cat, "zh": n_zh, "total": len(rows)}
 
+    def cleanup_missing(self, progress=None) -> dict:
+        """清理失效路径（修：删掉的文件夹/库不再留在界面里）。
+
+        - 根目录已不复存在 → 删除该库根（连同它的文件与系列记录）；
+        - 库还在、但文件/子目录已被删 → 把文件标记 missing（界面与检索立即不再显示）。
+        """
+        from pathlib import Path as _P
+        roots_removed, files_missing = [], 0
+        for r in self.store.list_roots():
+            if not _P(r["path"]).exists():
+                self.store.remove_root(int(r["id"]))
+                roots_removed.append(r["path"])
+                if progress:
+                    progress(f"移除失效库目录 {r['path']}", -1.0)
+                continue
+            rows = self.store.query("SELECT id,path FROM files WHERE root_id=? AND missing=0",
+                                    (int(r["id"]),))
+            for row in rows:
+                if not _P(row["path"]).exists():
+                    self.store.execute("UPDATE files SET missing=1 WHERE id=?", (int(row["id"]),))
+                    files_missing += 1
+        self.store.refresh_counts()
+        return {"roots_removed": roots_removed, "files_missing": files_missing}
+
+    def tags_under_node(self, node_id: int) -> list[str]:
+        """分类节点下的所有标签（含子分类，支持多级继承）——用于"按大类筛选"。"""
+        seen_nodes, out = set(), []
+        stack = [int(node_id)]
+        while stack:
+            nid = stack.pop()
+            if nid in seen_nodes:
+                continue
+            seen_nodes.add(nid)
+            for e in self.store.query(
+                    "SELECT child_kind,child_id FROM taxonomy_edges WHERE parent_kind='node' AND parent_id=?",
+                    (nid,)):
+                if e["child_kind"] == "node":
+                    stack.append(int(e["child_id"]))
+                else:
+                    row = self.store.one("SELECT name FROM tags WHERE id=?", (int(e["child_id"]),))
+                    if row and row["name"] not in out:
+                        out.append(row["name"])
+        if not out:      # 没连线时退回"按类型"：该节点名等于某个类型标签时，取该类型全部标签
+            node = self.store.node(node_id)
+            if node:
+                for c in self.store.categories():
+                    if c["label"] == node["name"] or c["key"] == node["name"]:
+                        out += [t["name"] for t in self.store.list_tags() if t["category"] == c["key"]]
+        return out
+
     # -------------------------------------------------- 任务持久化（断电续跑）
     def start_job(self, kind: str, ids: Sequence[int], params: dict | None = None, note: str = "") -> int:
         return self.store.create_job(kind, ids, params, note)
@@ -1970,8 +2020,9 @@ class Library:
                 break
             p = r["path"]
             h1, h2 = imaging.dhash(p), imaging.ahash(p)
+            h3 = imaging.phash(p)
             w, h = imaging.image_size(p)
-            self.store.set_hash(int(r["id"]), h1 or "", h2 or "", w, h)
+            self.store.set_hash(int(r["id"]), h1 or "", h2 or "", w, h, h3 or "")
             if progress and i % 10 == 0:
                 progress(f"计算图像指纹 {i + 1}/{len(rows)}", (i + 1) / total)
         return len(rows)
@@ -1997,6 +2048,7 @@ class Library:
         parent: dict[int, int] = {}
         info = {int(r["id"]): r for r in rows}
         vals = {int(r["id"]): (r["phash"] or "") for r in rows}
+        vals_p = {int(r["id"]): (r["phash2"] or "") for r in rows}
         # 同一系列内部的相似是正常的（漫画页本来就长得像），这类不报警
         series_of: dict[int, int | None] = {}
         for fid in info:
@@ -2040,7 +2092,10 @@ class Library:
             if series_of.get(a) and series_of.get(a) == series_of.get(b):
                 continue                       # 同系列的两页，不当重复
             if self._hamming(vals[a], vals[b]) > threshold:
-                continue
+                # dHash 没命中时再用 pHash（更稳，能抓住调色/加边的情况）
+                if not vals_p.get(a) or not vals_p.get(b) or \
+                        self._hamming(vals_p[a], vals_p[b]) > threshold:
+                    continue
             ra, rb = info[a], info[b]
             if ra["width"] and rb["width"] and ra["height"] and rb["height"]:
                 r1 = ra["width"] / max(1, ra["height"])

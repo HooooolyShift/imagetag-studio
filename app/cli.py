@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,17 @@ def build() -> tuple[Settings, Store, Library, EngineHub]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 并发写库守卫：程序正在运行时不要用命令行写同一个库（2026-10-04 数据库损坏的根因）
+    from .config import data_dir
+    from . import singleton
+    if singleton.is_running(data_dir()) and os.environ.get("IMGTAG_ALLOW_CONCURRENT") != "1":
+        writing = {"add", "scan", "tag", "writeback", "rescore", "cluster"}
+        cmd = (argv or sys.argv[1:] or ["stats"])[0]
+        if cmd in writing:
+            print("检测到「图片标签工坊」正在运行。\n"
+                  "为避免两个进程同时写数据库（可能损坏索引），请先关闭程序再执行本命令；\n"
+                  "确实要并发执行请设置环境变量 IMGTAG_ALLOW_CONCURRENT=1。")
+            return 2
     ap = argparse.ArgumentParser(prog="imtag", description="图片标签工坊 命令行")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

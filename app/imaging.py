@@ -136,3 +136,28 @@ def ahash(path: str | Path, size: int = 8) -> str | None:
         return _bits_to_hex(bits, size)
     except Exception:
         return None
+
+
+def phash(path: str | Path, size: int = 32, keep: int = 8) -> str | None:
+    """感知哈希（DCT）：比 dHash/aHash 稳，缩放、轻微调色、加边都不易误判。
+
+    做法：灰度缩到 size×size → 二维 DCT → 取左上 keep×keep 低频系数 → 与中位数比较成 64 位。
+    """
+    try:
+        import numpy as np
+        img = open_image(path).convert("L").resize((size, size), Image.LANCZOS)
+        a = np.asarray(img, dtype=np.float32)
+        # 二维 DCT（用矩阵乘实现，避免额外依赖）
+        n = np.arange(size, dtype=np.float32)
+        k = n.reshape(-1, 1)
+        basis = np.cos(np.pi * (2 * n + 1) * k / (2 * size)) * np.sqrt(2.0 / size)
+        basis[0] /= np.sqrt(2.0)
+        dct = basis @ a @ basis.T
+        low = dct[:keep, :keep].flatten()[1:]        # 去掉直流项
+        median = np.median(low)
+        bits = 0
+        for v in low:
+            bits = (bits << 1) | (1 if v > median else 0)
+        return _bits_to_hex(bits, 8)
+    except Exception:
+        return None

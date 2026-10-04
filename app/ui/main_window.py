@@ -434,7 +434,10 @@ class MainWindow(QMainWindow):
                 ("查找相似图片", self.find_similar, "以选中图片（或它的某个框）在库里找相似图"),
                 ("导出框选标注（YOLO）", self.export_regions, "导出成数据集，可用于训练检测器"),
                 ("导出 SD 字幕（.txt，给 kohya/WebUI 训练用）", self.export_captions_ui,
-                 "给选中的图导出同名 .txt 字幕（逗号分隔，只含已生效标签 + 可选分级）")):
+                 "给选中的图导出同名 .txt 字幕（逗号分隔，只含已生效标签 + 可选分级）"),
+                (None, None, None),
+                ("清理失效目录/文件", self.cleanup_missing_ui,
+                 "删掉的文件夹/库不再留在界面里：失效的库记录删除，已不存在的文件标记为缺失")):
             if text is None:
                 menu.addSeparator()
                 continue
@@ -539,6 +542,9 @@ class MainWindow(QMainWindow):
         self.dir_tree = QTreeWidget()
         self.dir_tree.setHeaderHidden(True)
         self.dir_tree.itemClicked.connect(self.on_dir_clicked)
+        self.dir_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.dir_tree.customContextMenuRequested.connect(self.dir_menu)
+        self.dir_tree.itemDoubleClicked.connect(lambda _i, _c: None)
         dl.addWidget(self.dir_tree, 1)
         self.left_tabs.addTab(w_dirs, "文件夹")
         dock.setWidget(self.left_tabs)
@@ -601,12 +607,19 @@ class MainWindow(QMainWindow):
         for r in self.store.list_roots():
             is_lib = bool(r["is_library"])
             prefix = "【图库】" if is_lib else "【来源】"
+            exists = Path(r["path"]).exists()
+            if not exists:
+                prefix = "【已失效】" + prefix       # 目录被删了要显眼标出来，且不再列出子目录
             top = QTreeWidgetItem([f"{prefix}{r['label'] or Path(r['path']).name}"])
             top.setData(0, Qt.UserRole, ("root", int(r["id"]), r["path"]))
             top.setToolTip(0, r["path"] + ("\n（图库：正式存放，检索只查这里）" if is_lib else "\n（来源：扫描用，收录后可清空）"))
             if is_lib:
                 top.setForeground(0, QColor("#7ddc7d"))
+            if not exists:
+                top.setForeground(0, QColor("#ff8a8a"))
             self.dir_tree.addTopLevelItem(top)
+            if not exists:
+                continue
             dirs = self._dirs_of_root(int(r["id"]))
             for d in dirs:
                 depth = d.count("/")
@@ -1247,6 +1260,66 @@ class MainWindow(QMainWindow):
         dlg.changed.connect(lambda: (self.refresh_files(), self.update_pending_button()))
         dlg.exec()
         self.refresh_files()
+
+    def cleanup_missing_ui(self) -> None:
+        """清理失效路径：删掉的文件夹/库立刻从界面消失（修复"路径不消失"的 bug）。"""
+        def job(progress, cancel, item):
+            return self.library.cleanup_missing(progress)
+
+        def done(res):
+            msg = f"已移除失效库目录 {len(res['roots_removed'])} 个，标记缺失文件 {res['files_missing']} 个"
+            if res["roots_removed"]:
+                msg += "\n\n移除的目录：\n" + "\n".join(res["roots_removed"][:6])
+            QMessageBox.information(self, "清理失效路径", msg)
+            self.refresh_roots()
+            self.refresh_files()
+            self.refresh_tags()
+
+        self.run_task("清理失效路径", job, on_done=done)
+
+    def dir_menu(self, pos) -> None:
+        """库/文件夹树右键：移除索引（只删索引，绝不删文件）、清理失效路径。"""
+        item = self.dir_tree.itemAt(pos)
+        menu = QMenu(self)
+        data = item.data(0, Qt.UserRole) if item else None
+        a_remove = None
+        if data and data[0] == "root":
+            a_remove = menu.addAction(f"移除这个库（只删索引，不删文件）")
+        elif data and data[0] == "dir":
+            a_remove = menu.addAction("把这个目录从索引中移除（只删索引，不删文件）")
+        a_clean = menu.addAction("清理失效目录/文件")
+        act = menu.exec(self.dir_tree.mapToGlobal(pos))
+        if act is None:
+            return
+        if act == a_clean:
+            self.cleanup_missing_ui()
+            return
+        if act != a_remove or not data:
+            return
+        if data[0] == "root":
+            row = self.store.one("SELECT path,is_library FROM roots WHERE id=?", (data[1],))
+            n = self.store.one("SELECT COUNT(*) c FROM files WHERE root_id=?", (data[1],))["c"]
+            tip = "图库目录" if row and row["is_library"] else "扫描来源"
+            if QMessageBox.question(
+                    self, "移除库",
+                    f"要把这个{tip}从库里移除吗？\n\n{data[2]}\n\n"
+                    f"· 只删除索引（{n} 条记录），**磁盘上的图片文件一个都不会动**\n"
+                    f"· 该库的标签、系列、人脸、框选记录也会一并从库里清掉\n"
+                    f"· 之后想恢复，重新「添加文件夹」再扫描即可（文件名里的标签会读回来）") != QMessageBox.Yes:
+                return
+            self.store.remove_root(int(data[1]))
+        else:
+            root_id, rel = int(data[1]), data[2]
+            if QMessageBox.question(
+                    self, "移除目录索引",
+                    f"把「{rel}」下的所有图片从索引里移除？\n\n"
+                    f"· 只删数据库记录，**磁盘文件不动**\n· 之后可重新扫描恢复") != QMessageBox.Yes:
+                return
+            self.store.remove_dir_index(root_id, rel)
+        self.refresh_roots()
+        self.refresh_tags()
+        self.refresh_files()
+        self.status_label.setText("已从索引中移除（文件未改动）")
 
     def maybe_rescore_for_tags(self, name: str) -> None:
         """新建了「带提示词、且参与自动识别」的标签后，自动全库扫一遍，命中的进待审核队列。"""

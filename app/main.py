@@ -58,6 +58,12 @@ def main() -> int:
     settings = Settings.load()
     model_lib.setup_env(settings.models_path())
     perf.configure(settings)
+    from . import singleton
+    if not singleton.acquire(data_dir()):
+        QMessageBox.warning(None, f"{APP_NAME} 已在运行",
+                            "检测到已经有一个「图片标签工坊」在运行。\n\n"
+                            "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
+        return 1
     store = Store()
     try:
         other = store.one("SELECT COUNT(*) c FROM tags WHERE category IN ('','other')")["c"]

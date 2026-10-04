@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS files(
     quick_hw TEXT,
     phash TEXT,
     ahash TEXT,
+    phash2 TEXT,
     dup_checked INTEGER DEFAULT 0,
     series_id INTEGER,
     page_no INTEGER,
@@ -220,7 +221,7 @@ class Store:
         """老库升级：补齐后加的列。"""
         wanted = {
             "regions": [("clip_vec", "BLOB"), ("clip_vec_ctx", "BLOB"), ("clip_model", "TEXT")],
-            "files": [("rating", "TEXT"), ("auto_json", "TEXT"),
+            "files": [("rating", "TEXT"), ("auto_json", "TEXT"), ("phash2", "TEXT"),
                       ("rating_scores", "TEXT"),
                       ("region_done", "INTEGER DEFAULT 0"), ("reviewed", "INTEGER DEFAULT 0"),
                       ("phash", "TEXT"), ("ahash", "TEXT"), ("dup_checked", "INTEGER DEFAULT 0")],
@@ -310,6 +311,25 @@ class Store:
         self.execute("DELETE FROM files WHERE root_id=?", (root_id,))
         self.execute("DELETE FROM series WHERE root_id=?", (root_id,))
         self.execute("DELETE FROM roots WHERE id=?", (root_id,))
+
+    def remove_dir_index(self, root_id: int, rel_prefix: str) -> int:
+        """把一个子目录从索引里移除（只删数据库记录，磁盘文件不动）。"""
+        rel = rel_prefix.replace("\\", "/").rstrip("/")
+        like = rel + "/%"
+        ids = [int(r["id"]) for r in self.query(
+            "SELECT id FROM files WHERE root_id=? AND (rel LIKE ? OR rel=?)", (root_id, like, rel))]
+        if not ids:
+            return 0
+        ph = ",".join("?" * len(ids))
+        self.execute(f"DELETE FROM file_tags WHERE file_id IN ({ph})", ids)
+        self.execute(f"DELETE FROM faces WHERE file_id IN ({ph})", ids)
+        self.execute(f"DELETE FROM regions WHERE file_id IN ({ph})", ids)
+        self.execute(f"DELETE FROM files WHERE id IN ({ph})", ids)
+        for s in self.query("SELECT id FROM series WHERE root_id=? AND (dir LIKE ? OR dir=?)",
+                            (root_id, like, rel)):
+            self.update_series_stats(int(s["id"]))
+        self.refresh_counts()
+        return len(ids)
 
     # ---------------- 文件 ----------------
     def upsert_file(self, **kw) -> int:
@@ -522,7 +542,8 @@ class Store:
             if not name:
                 continue
             tid = self.ensure_tag(name, category)
-            st = status or ("confirmed" if source in ("manual", "series", "face") else "pending")
+            # 手动/系列/人脸/从文件名读回 的标签直接生效；AI 产生的才进待审核
+            st = status or ("confirmed" if source in ("manual", "series", "face", "filename") else "pending")
             verb = "INSERT OR REPLACE" if override else "INSERT OR IGNORE"
             cur = c.execute(f"{verb} INTO file_tags(file_id,tag_id,source,score,status,updated_at) "
                             f"VALUES(?,?,?,?,?,?)", (file_id, tid, source, float(score), st, now))
@@ -665,7 +686,7 @@ class Store:
                      only_unlabeled: bool = False, root_ids: Sequence[int] = (),
                      rel_prefix: str = "", limit: int = 20000, order: str = "name",
                      include_pending: bool = False, only_pending: bool = False,
-                     rating: str = "") -> list[sqlite3.Row]:
+                     rating: str = "", category: str = "") -> list[sqlite3.Row]:
         base = ("SELECT f.*, s.dir AS series_dir, s.name AS series_name, s.page_count AS series_pages "
                 "FROM files f LEFT JOIN series s ON s.id=f.series_id WHERE f.missing=0")
         conds: list[str] = []
@@ -707,6 +728,10 @@ class Store:
         if rating:
             conds.append("f.rating=?")
             args.append(rating)
+        if category:      # 按"类型/大类"筛选：命中该类型下任一标签即算（标签继承）
+            conds.append("f.id IN (SELECT ft.file_id FROM file_tags ft JOIN tags t ON t.id=ft.tag_id "
+                         "WHERE t.category=? AND " + ft_status + ")")
+            args.append(category)
         order_sql = "f.rel" if order == "name" else "f.id DESC"
         sql = base
         if conds:
@@ -762,9 +787,11 @@ class Store:
             return []
 
     # ---------------- 感知哈希（查重） ----------------
-    def set_hash(self, file_id: int, phash: str, ahash: str, width: int | None, height: int | None) -> None:
+    def set_hash(self, file_id: int, phash: str, ahash: str, width: int | None, height: int | None,
+                 phash2: str = "") -> None:
         self.execute("UPDATE files SET phash=?, ahash=?, width=COALESCE(?,width), height=COALESCE(?,height), "
-                     "dup_checked=1 WHERE id=?", (phash, ahash, width, height, file_id))
+                     "phash2=COALESCE(NULLIF(?,''),phash2), dup_checked=1 WHERE id=?",
+                     (phash, ahash, width, height, phash2, file_id))
 
     def files_without_hash(self, ids: Sequence[int] | None = None) -> list[sqlite3.Row]:
         sql = "SELECT id,path,mtime FROM files WHERE missing=0 AND (phash IS NULL OR dup_checked=0)"
@@ -775,7 +802,7 @@ class Store:
         return self.query(sql, args)
 
     def hashed_files(self, only_roots: Sequence[int] = ()) -> list[sqlite3.Row]:
-        sql = ("SELECT id,path,name,phash,ahash,width,height,mtime,size,root_id FROM files "
+        sql = ("SELECT id,path,name,phash,ahash,phash2,width,height,mtime,size,root_id FROM files "
                "WHERE missing=0 AND phash IS NOT NULL")
         args: list[Any] = []
         if only_roots:

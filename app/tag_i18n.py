@@ -7,6 +7,8 @@ WD14 的标签是可组合的（颜色 + 部位、动作 + 对象…），所以
 from __future__ import annotations
 
 import re
+import json
+from pathlib import Path
 
 # 常用整词（WD14 词表里高频标签）
 WHOLE: dict[str, str] = {
@@ -180,6 +182,17 @@ WHOLE.update({
 
 _UNDER = re.compile(r"[_\-]+")
 
+# 本地模型批量翻译出来的字典（tools/translate_tags.py 生成，随程序发布）
+MODEL_DICT: dict[str, str] = {}
+_DICT_PATH = Path(__file__).with_name("tag_zh_dict.json")
+try:
+    if _DICT_PATH.exists():
+        MODEL_DICT = {str(k).strip().lower(): str(v).strip()
+                      for k, v in json.loads(_DICT_PATH.read_text(encoding="utf-8")).items()
+                      if str(v).strip()}
+except Exception:
+    MODEL_DICT = {}
+
 
 def translate(name: str, zh_hint: str = "") -> str:
     """返回中文显示名；查不到就返回原名。zh_hint 是用户在标签上手工填的中文名。"""
@@ -190,6 +203,8 @@ def translate(name: str, zh_hint: str = "") -> str:
     low = name.strip().lower()
     if re.search(r"[\u4e00-\u9fff]", low):      # 本来就是中文
         return name
+    if low in MODEL_DICT:                       # 模型翻译优先（覆盖长尾）
+        return MODEL_DICT[low]
     if low in WHOLE:
         return WHOLE[low]
     parts = [p for p in _UNDER.split(low) if p]
