@@ -485,6 +485,14 @@ class MainWindow(QMainWindow):
         self.filter_tree.setHeaderHidden(True)
         self.filter_tree.itemChanged.connect(self.on_filter_changed)
         fl.addWidget(self.filter_tree, 1)
+        row_fold = QHBoxLayout()
+        for text, slot in (("全部展开", lambda: self.filter_tree.expandAll()),
+                           ("全部折叠", lambda: self.filter_tree.collapseAll()),
+                           ("只看有内容的", self.fold_empty_groups)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            row_fold.addWidget(b)
+        fl.addLayout(row_fold)
         row = QHBoxLayout()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["同时满足 (AND)", "满足任一 (OR)"])
@@ -656,8 +664,11 @@ class MainWindow(QMainWindow):
             top.setData(0, Qt.UserRole, ("cat", cat))
             self.filter_tree.addTopLevelItem(top)
             for t in items:
-                it = QTreeWidgetItem([f"{t['name']} ({t['count']})"])
+                from .. import tag_i18n
+                label = tag_i18n.display(t["name"], t["zh"] or "")
+                it = QTreeWidgetItem([f"{label} ({t['count']})"])
                 it.setData(0, Qt.UserRole, ("tag", t["name"]))
+                it.setToolTip(0, t["name"])
                 it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                 it.setCheckState(0, Qt.Checked if t["name"] in checked else Qt.Unchecked)
                 if t["category"] == "rating":
@@ -709,6 +720,12 @@ class MainWindow(QMainWindow):
         self.only_unlabeled.setChecked(False)
         self.only_series.setChecked(False)
         self.refresh_files()
+
+    def fold_empty_groups(self) -> None:
+        """折叠没有内容的分类组（只展开有标签的那些）。"""
+        for i in range(self.filter_tree.topLevelItemCount()):
+            top = self.filter_tree.topLevelItem(i)
+            top.setExpanded(top.childCount() > 0)
 
     def on_dir_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         data = item.data(0, Qt.UserRole)

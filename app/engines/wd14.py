@@ -44,6 +44,32 @@ _STYLE = ("masterpiece", "best_quality", "highres", "absurdres", "detailed", "sk
           "greyscale", "lineart", "watercolor", "realistic", "3d", "chibi", "anime_style", "photo_background",
           "traditional_media", "resolution", "lowres", "bad_quality", "jpeg_artifacts", "signature", "watermark",
           "text", "artist_name", "logo", "censored", "uncensored", "bar_censor", "mosaic_censoring")
+_ACTION = ("holding", "hug", "hugging", "kiss", "carrying", "lifting", "walking", "running", "jumping",
+           "dancing", "singing", "eating", "drinking", "reading", "writing", "playing", "sleeping",
+           "crying", "laughing", "sitting", "standing", "lying", "kneeling", "squatting", "leaning",
+           "bending", "reaching", "pointing", "waving", "clapping", "holding_sword", "holding_gun")
+_BODY_PARTS = ("hair", "eyes", "eye", "face", "head", "neck", "shoulder", "arm", "hand", "finger",
+               "waist", "hip", "leg", "thigh", "knee", "foot", "feet", "navel", "stomach", "chest",
+               "breast", "butt", "skin", "lips", "mouth", "tongue", "teeth", "ear", "tail", "wings",
+               "horns", "halo", "mole", "freckles", "blush")
+_CLOTHING2 = ("uniform", "dress", "skirt", "shirt", "blouse", "sweater", "jacket", "coat", "suit",
+              "tie", "ribbon", "bow", "socks", "stocking", "boot", "shoe", "hat", "cap", "glove",
+              "scarf", "apron", "kimono", "yukata", "swimsuit", "bikini", "lingerie", "underwear",
+              "bra", "panties", "leotard", "bodysuit", "poncho", "cape", "cloak", "armor", "veil",
+              "jewelry", "necklace", "earring", "choker", "collar", "glasses", "mask", "belt", "pants",
+              "shorts", "jeans", "leggings", "hoodie", "vest", "cardigan", "sundress", "furoshiki")
+_SCENE2 = ("background", "sky", "cloud", "sun", "moon", "star", "tree", "flower", "grass", "leaf",
+           "blossom", "petal", "sakura",
+           "water", "sea", "ocean", "river", "lake", "beach", "sand", "mountain", "forest", "field",
+           "city", "street", "building", "house", "room", "window", "door", "wall", "floor", "ceiling",
+           "bed", "chair", "table", "desk", "sofa", "couch", "curtain", "lamp", "bookcase", "classroom",
+           "kitchen", "bathroom", "shower", "pool", "onsen", "night", "day", "rain", "snow", "fog")
+_STYLE2 = ("style", "art", "painting", "sketch", "lineart", "monochrome", "greyscale", "watercolor",
+           "cel", "shading", "lighting", "depth", "blur", "bloom", "flare", "vignette", "texture",
+           "realistic", "realism", "cartoon", "chibi", "anime", "manga", "comic", "pixel", "vector",
+           "3d", "cg", "render", "photo", "resolution", "quality", "masterpiece", "detailed")
+_VIEW = ("from_above", "from_below", "from_behind", "from_side", "looking_at_viewer", "looking_back",
+         "looking_away", "looking_down", "looking_up", "eye_contact", "facing_viewer", "profile")
 
 
 def guess_category(name: str, wd_category: int) -> str:
@@ -59,6 +85,13 @@ def guess_category(name: str, wd_category: int) -> str:
             return cat
     for seq, cat in ((_CLOTHING, "clothing"), (_POSE, "pose"), (_COUNT, "count")):
         if any(tok in low for tok in seq if len(tok) > 3):
+            return cat
+    # 更宽的构词匹配（这两组顺序有讲究：服装/身体优先于场景，避免"bath"被当场景等误判）
+    if any(tok in low for tok in _VIEW):
+        return "pose"
+    for seq, cat in ((_CLOTHING2, "clothing"), (_BODY_PARTS, "body"), (_ACTION, "action"),
+                     (_POSE, "pose"), (_STYLE2, "style"), (_SCENE2, "scene")):
+        if any(tok in low for tok in seq if len(tok) >= 3):
             return cat
     return "other"
 
