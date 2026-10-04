@@ -1,0 +1,22 @@
+# 本地模型（很大，不要进版本库）
+models/
+# torch 离线安装包（装完可删）
+.wheels/
+# 测试/构建产物
+build/
+testdata_work/
+.selftest_home/
+.facetest_home/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+图片标签工坊.exe
+launcher.ini
+perf_profile.json
+manual_shots/
+*.log
+split.log
+release_parts/
+

@@ -1,0 +1,1308 @@
+"""各类对话框：标签管理、人物、系列、设置、预览（含手动框选标注）、模型下载。"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImageReader, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QButtonGroup, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QRadioButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+    QVBoxLayout, QWidget,
+)
+
+from .. import categories, models as model_lib
+from ..config import CATEGORY_ORDER, SOURCE_LABELS, TAG_CATEGORIES
+from ..engines.wd14 import guess_category
+from ..workers import Task
+from .common import label
+
+
+class CategoryNewDialog(QDialog):
+    """就地新建标签类型：名字 + CLIP 提示词模板。"""
+
+    def __init__(self, store, parent=None, name: str = ""):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle("新建标签类型")
+        self.resize(520, 340)
+        form = QFormLayout(self)
+        self.name = QLineEdit(name)
+        self.name.setPlaceholderText("例如：道具 / 兽人 / 场景道具（中文英文都行）")
+        form.addRow("类型名称", self.name)
+        self.tmpl = QPlainTextEdit()
+        self.tmpl.setPlainText("a {} object\n{}\nholding {}")
+        form.addRow("CLIP 提示词模板（每行一条）", self.tmpl)
+        tip = QLabel("用 <code>{}</code> 代表标签名。模板只影响「CLIP 零样本识别」，"
+                     "不影响你已经打好的标签；留空则用通用模板。")
+        tip.setWordWrap(True)
+        form.addRow("", tip)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+
+    def values(self) -> tuple[str, list[str]]:
+        return (self.name.text().strip(),
+                [t.strip() for t in self.tmpl.toPlainText().splitlines() if t.strip()])
+
+
+class CategoryCombo(QComboBox):
+    """标签类型选择框：可编辑，列出库里所有类型，也能就地新建。
+
+    - 直接选已有类型；
+    - 输入一个不存在的名字 → 弹「新建类型」小窗（可配提示词模板）；
+    - 或点列表里的「＋ 新建类型…」。
+    取用请调用 ensure_current()，它会保证返回的类型在库里真实存在。
+    """
+
+    NEW_SENTINEL = "__new_category__"
+
+    def __init__(self, store=None, current: str | None = None, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.lineEdit().setPlaceholderText("选一个类型，或输入新类型名")
+        self.reload(select=current)
+        self.activated.connect(self._on_activated)
+
+    def reload(self, select: str | None = None) -> None:
+        target = select or (self.currentData() if self.count() else None) or "other"
+        self.blockSignals(True)
+        self.clear()
+        if self.store is not None:
+            for c in categories.ordered(self.store):
+                self.addItem(f"{c['label']} ({c['key']})" + (f"  〔{c['count']}〕" if c["count"] else ""),
+                             c["key"])
+        else:
+            for key in CATEGORY_ORDER:
+                self.addItem(f"{TAG_CATEGORIES[key]} ({key})", key)
+        self.addItem("＋ 新建类型…", self.NEW_SENTINEL)
+        self.blockSignals(False)
+        idx = self.findData(target)
+        self.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _on_activated(self, index: int) -> None:
+        if self.itemData(index) == self.NEW_SENTINEL:
+            self.ensure_current()
+
+    def _ask_new(self, name: str) -> tuple[str, list[str]] | None:
+        dlg = CategoryNewDialog(self.store, self, name)
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return dlg.values()
+
+    def ensure_current(self, ask=None) -> str:
+        """返回当前类型 key；若是新名字则先建出来（ask 可注入用于测试）。"""
+        if self.store is None:
+            return self.currentData() or "other"
+        data = self.currentData()
+        text = self.currentText().strip()
+        if data and data != self.NEW_SENTINEL:
+            # 文本被改过就按新名字处理，否则用选中的 key
+            label = categories.label_of(self.store, data)
+            if text.startswith(label) or not text:
+                return data
+        name = text or ""
+        if not name:
+            return "other"
+        exist = {c["label"]: c["key"] for c in categories.ordered(self.store)}
+        if name in exist:
+            self.reload(select=exist[name])
+            return exist[name]
+        ask = ask or self._ask_new
+        res = ask(name)
+        if not res:
+            self.reload(select="other")
+            return "other"
+        new_label, templates = res
+        key = categories.add(self.store, new_label or name, templates or None)
+        self.reload(select=key)
+        return key
+
+
+def category_combo(store=None, current: str | None = None):
+    """兼容旧调用：返回可用 ensure_current() 取值的类型选择框。"""
+    return CategoryCombo(store, current)
+
+
+class CategoryManagerDialog(QDialog):
+    """类型管理：新增/改名/删除类型，并给每个类型自定义 CLIP 提示词模板。"""
+
+    changed = Signal()
+
+    def __init__(self, store, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle("标签类型管理（类型决定 CLIP 提示词模板）")
+        self.resize(900, 620)
+        v = QVBoxLayout(self)
+        tip = QLabel("模板里用 <b>{}</b> 代表标签名，可以写多条（用 <b>|</b> 分隔），会一起平均。\n"
+                     "例：服装类 → <code>wearing {} | {} clothing</code>；道具类 → <code>a {} object | {} | holding {}</code>\n"
+                     "删掉某个类型时，它下面的标签会自动转到「其它」，标签本身不会丢。")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["类型名称", "key", "标签数", "CLIP 提示词模板（用 | 分隔）"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 170)
+        self.table.setColumnWidth(1, 130)
+        self.table.setColumnWidth(2, 60)
+        v.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        for text, slot in (("新增类型", self.add_type), ("删除选中类型", self.del_type),
+                           ("上移", lambda: self.move(-1)), ("下移", lambda: self.move(1)),
+                           ("保存修改", self.save_all)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch(1)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(self.accept)
+        row.addWidget(b_close)
+        v.addLayout(row)
+        self.reload()
+
+    def reload(self) -> None:
+        self._loading = True
+        items = categories.ordered(self.store)
+        self.table.setRowCount(len(items))
+        for i, c in enumerate(items):
+            it = QTableWidgetItem(c["label"])
+            it.setData(Qt.UserRole, c["key"])
+            self.table.setItem(i, 0, it)
+            k = QTableWidgetItem(c["key"])
+            k.setFlags(k.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(i, 1, k)
+            n = QTableWidgetItem(str(c["count"]))
+            n.setFlags(n.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(i, 2, n)
+            self.table.setItem(i, 3, QTableWidgetItem(" | ".join(c["templates"])))
+        self._loading = False
+
+    def add_type(self) -> None:
+        name, ok = QInputDialog.getText(self, "新增类型", "类型名称（中文或英文都行）：")
+        if not ok or not name.strip():
+            return
+        key = categories.add(self.store, name.strip())
+        self.reload()
+        self.changed.emit()
+        QMessageBox.information(self, "已新增", f"类型「{name.strip()}」已创建（key={key}）。\n"
+                                              "可以给它改提示词模板，然后在审核/标签编辑里选用。")
+
+    def del_type(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        key = self.table.item(row, 1).text()
+        label = self.table.item(row, 0).text()
+        n = int(self.table.item(row, 2).text() or 0)
+        if QMessageBox.question(self, "删除类型",
+                                f"删除类型「{label}」？它下面的 {n} 个标签会转到「其它」。") != QMessageBox.Yes:
+            return
+        categories.remove(self.store, key)
+        self.reload()
+        self.changed.emit()
+
+    def move(self, delta: int) -> None:
+        row = self.table.currentRow()
+        items = categories.ordered(self.store)
+        if row < 0 or not items:
+            return
+        new_row = max(0, min(len(items) - 1, row + delta))
+        if new_row == row:
+            return
+        order = [c["key"] for c in items]
+        order.insert(new_row, order.pop(row))
+        for i, k in enumerate(order):
+            self.store.update_category(k, sort=i * 10)
+        self.reload()
+        self.table.setCurrentCell(new_row, 0)
+        self.changed.emit()
+
+    def save_all(self) -> None:
+        for i in range(self.table.rowCount()):
+            key = self.table.item(i, 1).text()
+            label = self.table.item(i, 0).text().strip()
+            raw = self.table.item(i, 3).text()
+            templates = [t.strip() for t in raw.split("|") if t.strip()]
+            self.store.update_category(key, label=label or key, templates=templates or ["{}"])
+        self.reload()
+        self.changed.emit()
+        QMessageBox.information(self, "已保存", "类型名称与提示词模板已保存（新打的标签立刻按新模板识别）。")
+
+
+# --------------------------------------------------------------------------- 标签
+class TagEditDialog(QDialog):
+    """新建/编辑单个标签：名称 + 类型 + CLIP 提示词。"""
+
+    def __init__(self, parent=None, name: str = "", category: str = "other", prompt: str = "",
+                 auto: bool = True, title: str = "新建标签", requires: str = "", store=None):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle(title)
+        self.setMinimumWidth(460)
+        form = QFormLayout(self)
+        self.name_edit = QLineEdit(name)
+        form.addRow("标签名", self.name_edit)
+        self.cat = category_combo(store, category)
+        form.addRow("标签类型", self.cat)
+        self.prompt_edit = QLineEdit(prompt)
+        self.prompt_edit.setPlaceholderText("可留空；也可填英文提示词或用逗号写整句，例如 hatsune_miku")
+        form.addRow("识别提示词", self.prompt_edit)
+        self.requires_edit = QLineEdit(requires)
+        self.requires_edit.setPlaceholderText("前置条件标签，空格分隔，例如：人物 上半身（不满足就不打这个标签）")
+        form.addRow("前置条件", self.requires_edit)
+        self.auto_cb = QCheckBox("参与自动识别（CLIP 零样本打标）")
+        self.auto_cb.setChecked(auto)
+        form.addRow("", self.auto_cb)
+        tip = QLabel("提示：填 <b>hatsune_miku</b> 这类 WD14 英文标签名，可以把 WD14 的结果直接映射到这个中文标签上。")
+        tip.setWordWrap(True)
+        form.addRow("", tip)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+        self.name_edit.textChanged.connect(self._guess)
+
+    def _guess(self, text: str) -> None:
+        if self.cat.currentData() == "other" and not self.prompt_edit.text():
+            cat = guess_category(text.strip().replace(" ", "_"), 0)
+            idx = self.cat.findData(cat)
+            if cat != "other" and idx >= 0:
+                self.cat.setCurrentIndex(idx)
+
+    def values(self) -> dict:
+        return {"name": self.name_edit.text().strip(), "category": self.cat.ensure_current(self),
+                "prompt": self.prompt_edit.text().strip(), "auto": 1 if self.auto_cb.isChecked() else 0,
+                "requires": self.requires_edit.text().strip()}
+
+
+class TagManagerDialog(QDialog):
+    """标签总表：增删改、合并、设类型/提示词，改完可让 CLIP 重新打分。"""
+
+    rescoreRequested = Signal()
+    tagCreated = Signal(str)
+
+    def __init__(self, store, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle("标签管理")
+        self.resize(940, 620)
+        self._loading = False
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索标签…")
+        self.search.textChanged.connect(self.reload)
+        top.addWidget(self.search, 1)
+        for text, slot in (("新增标签", self.add_tag), ("删除选中", self.delete_selected),
+                           ("合并到上一个", self.merge_selected), ("编辑选中", self.edit_selected),
+                           ("类型管理…", self.manage_categories)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            top.addWidget(b)
+        v.addLayout(top)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["标签", "类型", "图片数", "自动识别", "CLIP 提示词", "前置条件", "备注"])
+        self.table.setColumnCount(7)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 190)
+        self.table.setColumnWidth(1, 130)
+        self.table.setColumnWidth(2, 60)
+        self.table.setColumnWidth(3, 70)
+        self.table.setColumnWidth(4, 320)
+        self.table.setColumnWidth(5, 170)
+        self.table.itemChanged.connect(self._item_changed)
+        v.addWidget(self.table, 1)
+        bottom = QHBoxLayout()
+        self.info = QLabel("")
+        bottom.addWidget(self.info, 1)
+        b_rescore = QPushButton("用 CLIP 对新标签重新打分（秒级）")
+        b_rescore.clicked.connect(self.rescoreRequested.emit)
+        bottom.addWidget(b_rescore)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(self.accept)
+        bottom.addWidget(b_close)
+        v.addLayout(bottom)
+        self.reload()
+
+    def reload(self) -> None:
+        self._loading = True
+        rows = self.store.list_tags(self.search.text().strip())
+        self.table.setRowCount(len(rows))
+        for i, t in enumerate(rows):
+            it_name = QTableWidgetItem(t["name"])
+            it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
+            it_name.setData(Qt.UserRole, int(t["id"]))
+            self.table.setItem(i, 0, it_name)
+            cb = category_combo(self.store, t["category"])
+            cb.currentIndexChanged.connect(
+                lambda _i, tid=int(t["id"]), c=cb: (self._set(tid, category=c.currentData())
+                                                    if c.currentData() != CategoryCombo.NEW_SENTINEL else None))
+            self.table.setCellWidget(i, 1, cb)
+            it_cnt = QTableWidgetItem(str(t["count"]))
+            it_cnt.setFlags(it_cnt.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(i, 2, it_cnt)
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            chk.setCheckState(Qt.Checked if t["auto"] else Qt.Unchecked)
+            self.table.setItem(i, 3, chk)
+            self.table.setItem(i, 4, QTableWidgetItem(t["prompt"] or ""))
+            self.table.setItem(i, 5, QTableWidgetItem(t["requires"] or ""))
+            self.table.setItem(i, 6, QTableWidgetItem(t["note"] or ""))
+        self._loading = False
+        self.info.setText(f"共 {len(rows)} 个标签")
+
+    def _row_tag_id(self, row: int) -> int | None:
+        item = self.table.item(row, 0)
+        return int(item.data(Qt.UserRole)) if item else None
+
+    def _item_changed(self, item: QTableWidgetItem) -> None:
+        if self._loading:
+            return
+        tid = self._row_tag_id(item.row())
+        if not tid:
+            return
+        if item.column() == 3:
+            self._set(tid, auto=1 if item.checkState() == Qt.Checked else 0)
+        elif item.column() in (4, 5, 6):
+            field = {4: "prompt", 5: "requires", 6: "note"}[item.column()]
+            self._set(tid, **{field: item.text()})
+
+    def _set(self, tag_id: int, **kw) -> None:
+        self.store.update_tag(tag_id, **kw)
+
+    def add_tag(self) -> None:
+        dlg = TagEditDialog(self, store=self.store)
+        if dlg.exec() == QDialog.Accepted:
+            v = dlg.values()
+            if not v["name"]:
+                return
+            tid = self.store.ensure_tag(v["name"], v["category"], v["prompt"] or None, v["auto"])
+            self.store.update_tag(tid, category=v["category"], prompt=v["prompt"], auto=v["auto"],
+                                  requires=v.get("requires", ""))
+            self.tagCreated.emit(v["name"])
+            self.reload()
+
+    def edit_selected(self) -> None:
+        row = self.table.currentRow()
+        tid = self._row_tag_id(row) if row >= 0 else None
+        if not tid:
+            return
+        row_data = self.store.one("SELECT * FROM tags WHERE id=?", (tid,))
+        dlg = TagEditDialog(self, row_data["name"], row_data["category"], row_data["prompt"] or "",
+                            bool(row_data["auto"]), "编辑标签", row_data["requires"] or "",
+                            store=self.store)
+        if dlg.exec() == QDialog.Accepted:
+            v = dlg.values()
+            if v["name"] and v["name"] != row_data["name"]:
+                self.store.rename_tag(tid, v["name"])
+            self.store.update_tag(tid, category=v["category"], prompt=v["prompt"], auto=v["auto"],
+                                  requires=v["requires"])
+            self.reload()
+
+    def delete_selected(self) -> None:
+        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
+        ids = [self._row_tag_id(r) for r in rows if self._row_tag_id(r)]
+        if not ids:
+            return
+        if QMessageBox.question(self, "删除标签", f"确认删除 {len(ids)} 个标签？（图片本身不受影响）") != QMessageBox.Yes:
+            return
+        for tid in ids:
+            self.store.delete_tag(tid)
+        self.reload()
+
+    def merge_selected(self) -> None:
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        if len(rows) < 2:
+            QMessageBox.information(self, "合并", "请选中 2 行以上，第一个作为保留的标签。")
+            return
+        ids = [self._row_tag_id(r) for r in rows]
+        keep = ids[0]
+        for tid in ids[1:]:
+            if tid and keep:
+                self.store.merge_tags(tid, keep)
+        self.reload()
+
+    def manage_categories(self) -> None:
+        dlg = CategoryManagerDialog(self.store, self)
+        dlg.changed.connect(self.reload)
+        dlg.exec()
+        self.reload()
+
+
+# --------------------------------------------------------------------------- 人物
+class PersonDialog(QDialog):
+    """真人照片：人脸聚类 → 命名 → 自动给照片打上人物标签。"""
+
+    changed = Signal()
+
+    def __init__(self, library, parent=None):
+        super().__init__(parent)
+        self.library = library
+        self.store = library.store
+        self.setWindowTitle("人物管理（真人）")
+        self.resize(1000, 660)
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.status = QLabel("")
+        top.addWidget(self.status, 1)
+        top.addWidget(QLabel("聚类阈值(小=更严格)"))
+        self.eps = QDoubleSpinBox()
+        self.eps.setRange(0.2, 0.9)
+        self.eps.setSingleStep(0.05)
+        self.eps.setDecimals(2)
+        self.eps.setValue(library.settings.face_cluster_eps)
+        top.addWidget(self.eps)
+        self.b_cluster = QPushButton("重新聚类")
+        self.b_cluster.clicked.connect(self.do_cluster)
+        top.addWidget(self.b_cluster)
+        v.addLayout(top)
+
+        split = QSplitter(Qt.Horizontal)
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        self.people = QListWidget()
+        self.people.currentItemChanged.connect(lambda *_: self.load_faces())
+        lv.addWidget(self.people, 1)
+        btns = QHBoxLayout()
+        b_rename = QPushButton("命名…")
+        b_rename.clicked.connect(self.rename_person)
+        b_merge = QPushButton("合并到上一个")
+        b_merge.clicked.connect(self.merge_person)
+        b_del = QPushButton("删除")
+        b_del.clicked.connect(self.delete_person)
+        for b in (b_rename, b_merge, b_del):
+            btns.addWidget(b)
+        lv.addLayout(btns)
+        split.addWidget(left)
+
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        self.face_list = QListWidget()
+        self.face_list.setViewMode(QListWidget.IconMode)
+        self.face_list.setIconSize(QSize(112, 112))
+        self.face_list.setGridSize(QSize(124, 146))
+        self.face_list.setResizeMode(QListWidget.Adjust)
+        self.face_list.itemDoubleClicked.connect(self.open_face_source)
+        rv.addWidget(self.face_list, 1)
+        rv.addWidget(label("双击人脸可打开所在图片", "#8f96a3"))
+        split.addWidget(right)
+        split.setSizes([360, 640])
+        v.addWidget(split, 1)
+
+        bottom = QHBoxLayout()
+        self.counts = QLabel("")
+        bottom.addWidget(self.counts, 1)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(self.accept)
+        bottom.addWidget(b_close)
+        v.addLayout(bottom)
+        self.reload()
+
+    # ---- 数据 ----
+    def reload(self) -> None:
+        self.people.clear()
+        rows = self.store.persons()
+        named = sum(1 for r in rows if r["name"])
+        self.counts.setText(f"人脸 {self.store.stats()['faces']} 个 / 人物簇 {len(rows)} 个（已命名 {named}）")
+        for r in rows:
+            name = r["name"] or "(未命名)"
+            it = QListWidgetItem(f"{name}   [{r['n']}张]")
+            it.setData(Qt.UserRole, int(r["id"]))
+            if not r["name"]:
+                it.setForeground(QColor("#9aa0ac"))
+            self.people.addItem(it)
+        self.load_faces()
+
+    def current_person(self) -> int | None:
+        it = self.people.currentItem()
+        return int(it.data(Qt.UserRole)) if it else None
+
+    def load_faces(self) -> None:
+        self.face_list.clear()
+        pid = self.current_person()
+        if pid is None:
+            return
+        rows = self.store.query("SELECT * FROM faces WHERE person_id=? LIMIT 200", (pid,))
+        for r in rows:
+            pm = self._face_pixmap(int(r["file_id"]), json.loads(r["bbox"] or "[]"))
+            if pm is None:
+                continue
+            it = QListWidgetItem()
+            from PySide6.QtGui import QIcon
+            it.setIcon(QIcon(pm))
+            it.setData(Qt.UserRole, int(r["file_id"]))
+            self.face_list.addItem(it)
+
+    def _face_pixmap(self, file_id: int, bbox) -> QPixmap | None:
+        row = self.store.one("SELECT path FROM files WHERE id=?", (file_id,))
+        if not row:
+            return None
+        reader = QImageReader(row["path"])
+        reader.setAutoTransform(True)
+        img = reader.read()
+        if img.isNull():
+            return None
+        w, h = img.width(), img.height()
+        if len(bbox) >= 4:
+            x1, y1, x2, y2 = bbox[:4]
+            pad_w = (x2 - x1) * 0.25
+            pad_h = (y2 - y1) * 0.25
+            rect = QRect(int(max(0, x1 - pad_w)), int(max(0, y1 - pad_h)),
+                         int((x2 - x1) + 2 * pad_w), int((y2 - y1) + 2 * pad_h))
+        else:
+            rect = QRect(0, 0, w, h)
+        rect = rect.intersected(QRect(0, 0, w, h))
+        if rect.isEmpty():
+            return None
+        return QPixmap.fromImage(img.copy(rect)).scaled(112, 112, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    def open_face_source(self) -> None:
+        it = self.face_list.currentItem()
+        if not it:
+            return
+        fid = int(it.data(Qt.UserRole))
+        row = self.store.one("SELECT path FROM files WHERE id=?", (fid,))
+        if row:
+            PreviewDialog(self.store, row["path"], self).exec()
+
+    # ---- 操作 ----
+    def do_cluster(self) -> None:
+        self.library.settings.face_cluster_eps = float(self.eps.value())
+        self.b_cluster.setEnabled(False)
+
+        def job(progress, cancel, item):
+            progress("人脸聚类…", -1.0)
+            return self.library.cluster_faces(float(self.eps.value()), progress)
+
+        t = Task(job, self, "人脸聚类")
+        t.done.connect(lambda r: (self.status.setText(f"完成：{r}"), self.b_cluster.setEnabled(True), self.reload()))
+        t.failed.connect(lambda msg: (self.status.setText(msg.splitlines()[0]), self.b_cluster.setEnabled(True)))
+        t.start()
+        self._task = t
+
+    def rename_person(self) -> None:
+        pid = self.current_person()
+        if pid is None:
+            return
+        row = self.store.one("SELECT name FROM persons WHERE id=?", (pid,))
+        name, ok = QInputDialog.getText(self, "命名人物", "人物标签名（会成为图片标签）：",
+                                        text=row["name"] or "")
+        if ok and name.strip():
+            self.library.name_person(pid, name.strip())
+            self.changed.emit()
+            self.reload()
+
+    def merge_person(self) -> None:
+        rows = self.people.selectedItems()
+        if len(rows) < 2:
+            QMessageBox.information(self, "合并", "请选择 2 个以上人物，第一个保留。")
+            return
+        ids = [int(r.data(Qt.UserRole)) for r in rows]
+        for src in ids[1:]:
+            self.library.merge_persons(src, ids[0])
+        self.reload()
+
+    def delete_person(self) -> None:
+        pid = self.current_person()
+        if pid is None:
+            return
+        self.store.set_face_person([int(r["id"]) for r in self.store.query("SELECT id FROM faces WHERE person_id=?", (pid,))], None)
+        self.store.execute("DELETE FROM persons WHERE id=?", (pid,))
+        self.reload()
+
+
+# --------------------------------------------------------------------------- 系列
+class SeriesDialog(QDialog):
+    """把选中的图片合并成一个系列文件夹：文件夹名带标签，内部文件为页码。"""
+
+    def __init__(self, files: list[dict], parent=None, default_name: str = "", default_tags: str = "",
+                 digits: int = 3, mode: str = "copy"):
+        super().__init__(parent)
+        self.setWindowTitle("合并为系列")
+        self.resize(760, 640)
+        self.files = files
+        v = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name_edit = QLineEdit(default_name)
+        form.addRow("系列名", self.name_edit)
+        self.tags_edit = QLineEdit(default_tags)
+        self.tags_edit.setPlaceholderText("空格分隔，会写进文件夹名，例如：[作者 作品名 泳装]")
+        form.addRow("标签", self.tags_edit)
+        row = QHBoxLayout()
+        self.start = QSpinBox()
+        self.start.setRange(0, 9999)
+        self.start.setValue(1)
+        self.digits = QSpinBox()
+        self.digits.setRange(1, 6)
+        self.digits.setValue(digits)
+        self.mode = QComboBox()
+        self.mode.addItems(["复制（保留原图）", "移动（原位置删除）"])
+        self.mode.setCurrentIndex(0 if mode == "copy" else 1)
+        row.addWidget(QLabel("起始页码")); row.addWidget(self.start)
+        row.addWidget(QLabel("页码位数")); row.addWidget(self.digits)
+        row.addWidget(QLabel("方式")); row.addWidget(self.mode, 1)
+        w = QWidget(); w.setLayout(row)
+        form.addRow("页码", w)
+        v.addLayout(form)
+
+        v.addWidget(label("顺序（可拖动 / 双击修改单页文件名）", "#8f96a3"))
+        self.list = QListWidget()
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.list.itemDoubleClicked.connect(self.edit_page_label)
+        for f in files:
+            it = QListWidgetItem(f["name"] if isinstance(f, dict) else str(f))
+            it.setData(Qt.UserRole, f.get("id") if isinstance(f, dict) else None)
+            it.setData(Qt.UserRole + 1, "")
+            self.list.addItem(it)
+        v.addWidget(self.list, 1)
+        self.preview = QLabel("")
+        self.preview.setWordWrap(True)
+        v.addWidget(self.preview)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self._update_preview()
+        self.list.model().rowsMoved.connect(self._update_preview)
+        self.name_edit.textChanged.connect(self._update_preview)
+        self.start.valueChanged.connect(self._update_preview)
+        self.digits.valueChanged.connect(self._update_preview)
+
+    def edit_page_label(self, item: QListWidgetItem) -> None:
+        cur = item.data(Qt.UserRole + 1) or ""
+        text, ok = QInputDialog.getText(self, "手动页码", "该页文件名（不含后缀）：", text=cur)
+        if ok:
+            item.setData(Qt.UserRole + 1, text.strip())
+            self._update_preview()
+
+    def _page_labels(self) -> list[str]:
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            custom = it.data(Qt.UserRole + 1)
+            out.append(custom or f"{self.start.value() + i:0{self.digits.value()}d}")
+        return out
+
+    def _update_preview(self, *_) -> None:
+        name = self.name_edit.text().strip() or "(未命名)"
+        tags = [t for t in self.tags_edit.text().replace(",", " ").split() if t]
+        folder = f"{name} [{' '.join(tags)}]" if tags else name
+        labels = self._page_labels()
+        sample = "、".join(labels[:6]) + (" …" if len(labels) > 6 else "")
+        self.preview.setText(f"目标：<b>{folder}/</b><br>共 {len(labels)} 页，文件名：{sample}")
+
+    def values(self) -> dict:
+        order, page_names = [], {}
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            fid = it.data(Qt.UserRole)
+            if fid is not None:
+                order.append(int(fid))
+            custom = it.data(Qt.UserRole + 1)
+            if custom and fid is not None:
+                page_names[int(fid)] = custom
+        return {"name": self.name_edit.text().strip() or "series",
+                "tags": [t for t in self.tags_edit.text().replace(",", " ").split() if t],
+                "order": order, "page_names": page_names,
+                "digits": int(self.digits.value()), "start": int(self.start.value()),
+                "mode": "copy" if self.mode.currentIndex() == 0 else "move"}
+
+
+# --------------------------------------------------------------------------- 设置
+class SettingsDialog(QDialog):
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.s = settings
+        self.setWindowTitle("设置")
+        self.resize(680, 720)
+        v = QVBoxLayout(self)
+        tabs = QTabWidget()
+        v.addWidget(tabs, 1)
+
+        # 常规
+        w1 = QWidget(); f1 = QFormLayout(w1)
+        self.models_dir = QLineEdit(settings.models_dir or str(settings.models_path()))
+        btn = QPushButton("选择…")
+        btn.clicked.connect(self.pick_models_dir)
+        row = QHBoxLayout(); row.addWidget(self.models_dir, 1); row.addWidget(btn)
+        w = QWidget(); w.setLayout(row)
+        f1.addRow("模型目录", w)
+        self.device = QComboBox()
+        self.device.addItems(["auto（有显卡就用显卡）", "cuda", "cpu"])
+        self.device.setCurrentIndex({"auto": 0, "cuda": 1, "cpu": 2}.get(settings.device, 0))
+        f1.addRow("推理设备", self.device)
+        self.storage = QComboBox()
+        self.storage.addItems(["文件名（[tag] 写进文件名/文件夹名，手机可直接搜到）", "仅数据库（不动磁盘）"])
+        self.storage.setCurrentIndex(0 if settings.tag_storage == "filename" else 1)
+        f1.addRow("标签存储", self.storage)
+        self.thumbs = QSpinBox(); self.thumbs.setRange(90, 420); self.thumbs.setSingleStep(10)
+        self.thumbs.setValue(settings.thumb_size)
+        f1.addRow("缩略图大小", self.thumbs)
+        self.ignore = QLineEdit(" ".join(settings.ignore_dirs))
+        f1.addRow("忽略目录", self.ignore)
+        self.lib_name = QLineEdit(settings.library_dir_name)
+        self.lib_name.setToolTip("每个盘下的专用图库目录名，默认 E:\\ImageTags、D:\\ImageTags …")
+        f1.addRow("图库目录名", self.lib_name)
+        self.lib_only = QCheckBox("检索只查图库目录（不含扫描来源）")
+        self.lib_only.setChecked(settings.library_only_search)
+        f1.addRow("", self.lib_only)
+        self.auto_import = QCheckBox("审核完成后自动把图片收录进图库")
+        self.auto_import.setChecked(settings.auto_import_after_review)
+        f1.addRow("", self.auto_import)
+        self.keep_orig = QCheckBox("写回文件名时保留原文件名（取消勾选 = 只用标签命名）")
+        self.keep_orig.setChecked(settings.rename_keep_original)
+        self.keep_orig.setToolTip("勾选：IMG_1234 [初音未来 泳装].jpg\n"
+                                  "取消： [初音未来 泳装].jpg（同名自动加 _2、_3 后缀）")
+        f1.addRow("", self.keep_orig)
+        tabs.addTab(w1, "常规")
+
+        # WD14
+        w2 = QWidget(); f2 = QFormLayout(w2)
+        self.wd_enabled = QCheckBox("启用 WD14 二次元自动打标")
+        self.wd_enabled.setChecked(settings.wd14_enabled)
+        f2.addRow("", self.wd_enabled)
+        self.wd_th = QDoubleSpinBox(); self.wd_th.setRange(0.05, 0.95); self.wd_th.setSingleStep(0.05)
+        self.wd_th.setDecimals(2); self.wd_th.setValue(settings.wd14_threshold)
+        f2.addRow("通用标签阈值", self.wd_th)
+        self.wd_char = QDoubleSpinBox(); self.wd_char.setRange(0.3, 0.99); self.wd_char.setSingleStep(0.05)
+        self.wd_char.setDecimals(2); self.wd_char.setValue(settings.wd14_char_threshold)
+        f2.addRow("角色标签阈值", self.wd_char)
+        self.wd_max = QSpinBox(); self.wd_max.setRange(5, 200); self.wd_max.setValue(settings.wd14_max_tags)
+        f2.addRow("每张图最多标签数", self.wd_max)
+        self.wd_rating = QCheckBox("保留分级标签（general/sensitive/questionable/explicit）")
+        self.wd_rating.setChecked(settings.wd14_keep_rating)
+        f2.addRow("", self.wd_rating)
+        self.wd_model = QComboBox()
+        for repo in model_lib.TAGGER_CHOICES:
+            self.wd_model.addItem(f"{model_lib.MODELS[model_lib.TAGGER_CHOICES[repo][0]].label}",
+                                  repo)
+        idx = self.wd_model.findData(settings.wd14_model)
+        self.wd_model.setCurrentIndex(idx if idx >= 0 else 0)
+        self.wd_model.setToolTip("换更准的模型识别更好但更慢；首次使用需要在「模型管理」里下载（之后离线可用）")
+        f2.addRow("WD14 模型", self.wd_model)
+        tabs.addTab(w2, "WD14")
+
+        # CLIP
+        w3 = QWidget(); f3 = QFormLayout(w3)
+        self.clip_enabled = QCheckBox("启用 CLIP 零样本（自定义标签靠它）")
+        self.clip_enabled.setChecked(settings.clip_enabled)
+        f3.addRow("", self.clip_enabled)
+        self.clip_model = QComboBox()
+        self.clip_model.addItems(["ViT-B-32", "ViT-L-14", "ViT-H-14"])
+        self.clip_model.setCurrentText(settings.clip_model)
+        f3.addRow("CLIP 模型", self.clip_model)
+        self.clip_pretrained = QComboBox()
+        self.clip_pretrained.addItems(["laion2b_s34b_b79k", "laion2b_s29b_b131k_ft", "laion2B-s32B-b82K"])
+        self.clip_pretrained.setEditable(True)
+        self.clip_pretrained.setCurrentText(settings.clip_pretrained)
+        f3.addRow("权重名", self.clip_pretrained)
+        self.clip_th = QDoubleSpinBox(); self.clip_th.setRange(0.1, 0.95); self.clip_th.setSingleStep(0.05)
+        self.clip_th.setDecimals(2); self.clip_th.setValue(settings.clip_threshold)
+        f3.addRow("命中阈值", self.clip_th)
+        tabs.addTab(w3, "CLIP")
+
+        # 人脸
+        w4 = QWidget(); f4 = QFormLayout(w4)
+        self.face_enabled = QCheckBox("启用人脸检测（真人照片→人物标签）")
+        self.face_enabled.setChecked(settings.face_enabled)
+        f4.addRow("", self.face_enabled)
+        self.face_th = QDoubleSpinBox(); self.face_th.setRange(0.1, 0.95); self.face_th.setSingleStep(0.05)
+        self.face_th.setDecimals(2); self.face_th.setValue(settings.face_det_threshold)
+        f4.addRow("检测阈值", self.face_th)
+        self.face_min = QSpinBox(); self.face_min.setRange(8, 300); self.face_min.setValue(settings.face_min_size)
+        f4.addRow("最小人脸像素", self.face_min)
+        self.face_eps = QDoubleSpinBox(); self.face_eps.setRange(0.2, 0.9); self.face_eps.setSingleStep(0.05)
+        self.face_eps.setDecimals(2); self.face_eps.setValue(settings.face_cluster_eps)
+        f4.addRow("聚类阈值", self.face_eps)
+        tabs.addTab(w4, "人脸")
+
+        # 查重
+        w5 = QWidget(); f5 = QFormLayout(w5)
+        self.dup_th = QSpinBox(); self.dup_th.setRange(0, 20)
+        self.dup_th.setValue(int(settings.dup_threshold))
+        f5.addRow("感知哈希差异阈值（0 最严）", self.dup_th)
+        self.dup_clip = QCheckBox("再用 CLIP 特征兜一层（抓轻微裁剪/改色）")
+        self.dup_clip.setChecked(settings.dup_use_clip)
+        f5.addRow("", self.dup_clip)
+        tabs.addTab(w5, "查重")
+
+        # 分级
+        w6 = QWidget(); f6 = QFormLayout(w6)
+        self.rating_on = QCheckBox("启用分级识别（全年龄 / R15 / R18 / R18G）")
+        self.rating_on.setChecked(settings.rating_enabled)
+        f6.addRow("", self.rating_on)
+        self.rating_confirm = QCheckBox("分级标签直接生效（不进审核队列，方便当筛选墙）")
+        self.rating_confirm.setChecked(settings.rating_auto_confirm)
+        f6.addRow("", self.rating_confirm)
+        self.rating_blur_cb = QCheckBox("浏览时对 R18 / R18G 缩略图打码（防止公开场合尴尬）")
+        self.rating_blur_cb.setChecked(settings.rating_blur)
+        f6.addRow("", self.rating_blur_cb)
+        note = QLabel("原理：动漫图用 WD14 自带的 4 类分级概率（general/sensitive/questionable/explicit），"
+                      "真人照片用 CLIP 的“成人内容/猎奇”提示词兜底，两边融合后取等级。\n"
+                      "分级标签（全年龄/R15/R18/R18G）会自动打上，也能在左侧按等级筛选。")
+        note.setWordWrap(True)
+        f6.addRow("", note)
+        tabs.addTab(w6, "分级")
+
+        # 性能挡位
+        w7 = QWidget()
+        f7 = QVBoxLayout(w7)
+        f7.addWidget(QLabel("选一个挡位，保存后立即生效（会重新加载模型）："))
+        from .. import perf as perf_mod
+        self.perf_group = QButtonGroup(self)
+        self.perf_radios: dict[str, QRadioButton] = {}
+        for key in perf_mod.ORDER:
+            p = perf_mod.PRESETS[key]
+            rb = QRadioButton(f"{p['label']}")
+            rb.setChecked(settings.perf_mode == key or (settings.perf_mode not in perf_mod.PRESETS
+                                                        and key == "balanced"))
+            f7.addWidget(rb)
+            desc = QLabel("　　" + p["desc"])
+            desc.setWordWrap(True)
+            desc.setStyleSheet("color:#8f96a3;")
+            f7.addWidget(desc)
+            self.perf_group.addButton(rb)
+            self.perf_radios[key] = rb
+        note = QLabel("当前生效：" + perf_mod.current()["label"] +
+                      "（改挡位后正在跑的任务会在下一个批次按新挡位执行）")
+        note.setWordWrap(True)
+        f7.addWidget(note)
+        f7.addStretch(1)
+        tabs.addTab(w7, "性能")
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def pick_models_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "选择模型目录", self.models_dir.text())
+        if d:
+            self.models_dir.setText(d)
+
+    def apply_to(self, settings) -> None:
+        settings.models_dir = self.models_dir.text().strip()
+        settings.device = ["auto", "cuda", "cpu"][self.device.currentIndex()]
+        settings.tag_storage = "filename" if self.storage.currentIndex() == 0 else "db"
+        settings.thumb_size = int(self.thumbs.value())
+        settings.ignore_dirs = [x for x in self.ignore.text().split() if x]
+        settings.wd14_enabled = self.wd_enabled.isChecked()
+        settings.wd14_threshold = float(self.wd_th.value())
+        settings.wd14_char_threshold = float(self.wd_char.value())
+        settings.wd14_max_tags = int(self.wd_max.value())
+        settings.wd14_keep_rating = self.wd_rating.isChecked()
+        settings.wd14_model = self.wd_model.currentData() or settings.wd14_model
+        settings.clip_enabled = self.clip_enabled.isChecked()
+        settings.clip_model = self.clip_model.currentText()
+        settings.clip_pretrained = self.clip_pretrained.currentText()
+        settings.clip_threshold = float(self.clip_th.value())
+        settings.face_enabled = self.face_enabled.isChecked()
+        settings.face_det_threshold = float(self.face_th.value())
+        settings.face_min_size = int(self.face_min.value())
+        settings.face_cluster_eps = float(self.face_eps.value())
+        settings.library_dir_name = self.lib_name.text().strip() or "ImageTags"
+        settings.library_only_search = self.lib_only.isChecked()
+        settings.auto_import_after_review = self.auto_import.isChecked()
+        settings.rename_keep_original = self.keep_orig.isChecked()
+        settings.dup_threshold = int(self.dup_th.value())
+        settings.dup_use_clip = self.dup_clip.isChecked()
+        settings.rating_enabled = self.rating_on.isChecked()
+        settings.rating_auto_confirm = self.rating_confirm.isChecked()
+        settings.rating_blur = self.rating_blur_cb.isChecked()
+        from .. import perf as perf_mod
+        for key, rb in self.perf_radios.items():
+            if rb.isChecked():
+                settings.perf_mode = key
+                break
+
+
+# --------------------------------------------------------------------------- 预览/框选
+class ImageCanvas(QWidget):
+    """大图显示 + 可选拖框标注（坐标按比例存储，任何分辨率都能对齐）。"""
+
+    regionDrawn = Signal(float, float, float, float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pm: QPixmap | None = None
+        self.zoom = 1.0
+        self.annotate = False
+        self.highlight: str | None = None      # 高亮某个标签对应的框（审核/预览用）
+        self.regions: list[tuple[str, float, float, float, float]] = []
+        self._start: QPoint | None = None
+        self._cur: QPoint | None = None
+        self.setMouseTracking(True)
+        self.setMinimumSize(320, 240)
+
+    def set_pixmap(self, pm: QPixmap) -> None:
+        self.pm = pm
+        self.zoom = 1.0
+        self.updateGeometry()
+        self.update()
+
+    def _target_rect(self) -> QRectF:
+        if self.pm is None:
+            return QRectF()
+        avail = self.size()
+        pw, ph = self.pm.width(), self.pm.height()
+        scale = min(avail.width() / pw, avail.height() / ph) * self.zoom
+        scale = max(scale, 0.02)
+        w, h = pw * scale, ph * scale
+        return QRectF((avail.width() - w) / 2, (avail.height() - h) / 2, w, h)
+
+    def mousePressEvent(self, e) -> None:
+        if not self.annotate or self.pm is None:
+            return
+        r = self._target_rect()
+        if r.contains(e.position()):
+            self._start = e.position().toPoint()
+            self._cur = self._start
+            self.update()
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._start is not None:
+            self._cur = e.position().toPoint()
+            self.update()
+
+    def mouseReleaseEvent(self, e) -> None:
+        if self._start is None or self.pm is None:
+            return
+        end = e.position().toPoint()
+        r = self._target_rect()
+        rect = QRect(self._start, end).normalized()
+        self._start = self._cur = None
+        if rect.width() < 6 or rect.height() < 6 or not r.contains(rect.center()):
+            self.update()
+            return
+        x = (rect.left() - r.left()) / r.width()
+        y = (rect.top() - r.top()) / r.height()
+        w = rect.width() / r.width()
+        h = rect.height() / r.height()
+        self.regionDrawn.emit(max(0.0, x), max(0.0, y), min(1.0, w), min(1.0, h))
+        self.update()
+
+    def wheelEvent(self, e) -> None:
+        self.zoom = max(0.2, min(8.0, self.zoom * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1)))
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#141519"))
+        if self.pm is None:
+            p.setPen(QColor("#8f96a3"))
+            p.drawText(self.rect(), Qt.AlignCenter, "（无图片）")
+            return
+        r = self._target_rect()
+        p.drawPixmap(r, self.pm, QRectF(self.pm.rect()))
+        f = QFont(); f.setPointSizeF(9); p.setFont(f)
+        for name, x, y, w, h in self.regions:
+            hot = self.highlight is not None and name == self.highlight
+            if self.highlight is not None and not hot:
+                pen = QPen(QColor(255, 92, 138, 90), 1)
+            elif hot:
+                pen = QPen(QColor("#ffd54a"), 3)
+            else:
+                pen = QPen(QColor("#ff5c8a"), 2)
+            p.setPen(pen)
+            box = QRectF(r.left() + x * r.width(), r.top() + y * r.height(), w * r.width(), h * r.height())
+            p.drawRect(box)
+            if self.highlight is not None and not hot:
+                continue
+            tw = p.fontMetrics().horizontalAdvance(name) + 8
+            bg = QColor(255, 213, 74, 220) if hot else QColor(255, 92, 138, 200)
+            p.fillRect(QRectF(box.left(), max(r.top(), box.top() - 16), tw, 16), bg)
+            p.setPen(QColor("#101014"))
+            p.drawText(QRectF(box.left() + 4, max(r.top(), box.top() - 16), tw, 16), Qt.AlignVCenter, name)
+        if self._start and self._cur:
+            p.setPen(QPen(QColor("#7fd0ff"), 2, Qt.DashLine))
+            p.drawRect(QRect(self._start, self._cur).normalized())
+
+
+class PreviewDialog(QDialog):
+    """大图预览 + 标签编辑 + 手动框选标注（可用但不必用）。"""
+
+    tagsChanged = Signal(int)
+
+    def __init__(self, store, path: str, parent=None, models_dir=None):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle(Path(path).name)
+        self.resize(1180, 780)
+        self.path = path
+        row = self.store.one("SELECT * FROM files WHERE path=?", (str(Path(path).resolve()),))
+        if row is None:
+            row = self.store.file_by_path(path)
+        self.file_id = int(row["id"]) if row else None
+        v = QVBoxLayout(self)
+        bar = QHBoxLayout()
+        self.b_annotate = QPushButton("框选标注：关")
+        self.b_annotate.setCheckable(True)
+        self.b_annotate.toggled.connect(self.toggle_annotate)
+        bar.addWidget(self.b_annotate)
+        self.tag_combo = QComboBox()
+        self.tag_combo.setEditable(True)
+        self.tag_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.tag_combo.setMinimumWidth(200)
+        bar.addWidget(QLabel("框选对应的标签"))
+        bar.addWidget(self.tag_combo, 1)
+        self.b_existing = QPushButton("新增/管理标签…")
+        self.b_existing.clicked.connect(self.quick_add_tag)
+        bar.addWidget(self.b_existing)
+        self.also_file = QCheckBox("同时给整图打上该标签")
+        self.also_file.setChecked(True)
+        bar.addWidget(self.also_file)
+        v.addLayout(bar)
+        tip = QLabel("框选的作用是告诉模型「这个标签对应画面哪一块」：框内区域会单独算特征，"
+                     "训练出该标签的“区域中心”，以后眼镜、领带这类只占一小块的标签会更准。"
+                     "框选完全可选，不框也能用。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#8f96a3;")
+        v.addWidget(tip)
+
+        split = QSplitter(Qt.Horizontal)
+        self.canvas = ImageCanvas()
+        self.canvas.regionDrawn.connect(self.on_region_drawn)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.canvas)
+        split.addWidget(scroll)
+        panel = QWidget()
+        pv = QVBoxLayout(panel)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.addWidget(label("整图标签", "#7fd0ff", True))
+        self.tag_list = QListWidget()
+        self.tag_list.itemSelectionChanged.connect(self.highlight_tag_regions)
+        pv.addWidget(self.tag_list, 1)
+        add_row = QHBoxLayout()
+        self.new_tag = QLineEdit()
+        self.new_tag.setPlaceholderText("输入标签后回车添加")
+        self.new_tag.returnPressed.connect(self.add_whole_image_tag)
+        add_row.addWidget(self.new_tag, 1)
+        b_add = QPushButton("添加")
+        b_add.clicked.connect(self.add_whole_image_tag)
+        add_row.addWidget(b_add)
+        pv.addLayout(add_row)
+        b_rm = QPushButton("删除选中标签")
+        b_rm.clicked.connect(self.remove_selected_tag)
+        pv.addWidget(b_rm)
+        pv.addWidget(label("框选区域", "#ff5c8a", True))
+        self.region_list = QListWidget()
+        self.region_list.itemDoubleClicked.connect(self.edit_region)
+        pv.addWidget(self.region_list, 1)
+        b_rm_r = QPushButton("删除选中框")
+        b_rm_r.clicked.connect(self.remove_region)
+        pv.addWidget(b_rm_r)
+        split.addWidget(panel)
+        split.setSizes([860, 320])
+        v.addWidget(split, 1)
+        self.load()
+
+    # ---- 载入 ----
+    def load(self) -> None:
+        pm = QPixmap(self.path)
+        if pm.isNull():
+            r = QImageReader(self.path)
+            r.setAutoTransform(True)
+            from PySide6.QtGui import QImage
+            img: QImage = r.read()
+            pm = QPixmap.fromImage(img)
+        self.canvas.set_pixmap(pm)
+        self.reload_tags()
+        self.reload_regions()
+        self.reload_tag_combo()
+
+    def reload_tag_combo(self) -> None:
+        self.tag_combo.clear()
+        for t in self.store.list_tags():
+            self.tag_combo.addItem(f"{t['name']}  ({TAG_CATEGORIES.get(t['category'], t['category'])})", t["name"])
+
+    def reload_tags(self) -> None:
+        self.tag_list.clear()
+        if self.file_id is None:
+            return
+        for t in self.store.tags_for_file(self.file_id):
+            src = SOURCE_LABELS.get(t["source"], t["source"])
+            score = f"{t['score']:.2f}" if t["source"] != "manual" else ""
+            it = QListWidgetItem(f"{t['name']}   [{src}{(' ' + score) if score else ''}]")
+            it.setData(Qt.UserRole, t["name"])
+            self.tag_list.addItem(it)
+
+    def reload_regions(self) -> None:
+        self.region_list.clear()
+        self.canvas.regions = []
+        if self.file_id is None:
+            return
+        for r in self.store.regions_for_file(self.file_id):
+            rect = (r["x"], r["y"], r["w"], r["h"])
+            self.canvas.regions.append((r["tag_name"] or "", *rect))
+            it = QListWidgetItem(f"{r['tag_name']}")
+            it.setData(Qt.UserRole, int(r["id"]))
+            self.region_list.addItem(it)
+        self.canvas.update()
+
+    def highlight_tag_regions(self) -> None:
+        """在左侧标签表里选中某个标签 → 大图高亮它对应的框（方便核对偏差）。"""
+        it = self.tag_list.currentItem()
+        self.canvas.highlight = it.data(Qt.UserRole) if it else None
+        self.canvas.update()
+
+    # ---- 标签 ----
+    def add_whole_image_tag(self) -> None:
+        name = self.new_tag.text().strip()
+        if not name or self.file_id is None:
+            return
+        self.store.add_file_tags(self.file_id, [(name, "manual", 1.0)])
+        self.new_tag.clear()
+        self.reload_tags()
+        self.tagsChanged.emit(self.file_id)
+
+    def remove_selected_tag(self) -> None:
+        it = self.tag_list.currentItem()
+        if not it or self.file_id is None:
+            return
+        self.store.remove_file_tags(self.file_id, [it.data(Qt.UserRole)])
+        self.reload_tags()
+        self.tagsChanged.emit(self.file_id)
+
+    def quick_add_tag(self) -> None:
+        dlg = TagEditDialog(self, self.tag_combo.currentText().split("  (")[0])
+        if dlg.exec() == QDialog.Accepted:
+            v = dlg.values()
+            if v["name"]:
+                self.store.ensure_tag(v["name"], v["category"], v["prompt"] or None, v["auto"])
+                self.reload_tag_combo()
+                self.tag_combo.setCurrentText(v["name"])
+
+    # ---- 框选 ----
+    def toggle_annotate(self, on: bool) -> None:
+        self.canvas.annotate = on
+        self.b_annotate.setText("框选标注：开" if on else "框选标注：关")
+        self.canvas.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+
+    def on_region_drawn(self, x: float, y: float, w: float, h: float) -> None:
+        if self.file_id is None:
+            return
+        name = self.tag_combo.currentText().split("  (")[0].strip()
+        if not name:
+            QMessageBox.information(self, "框选", "先在右上角选择或输入一个标签。")
+            return
+        cat = "other"
+        row = self.store.one("SELECT category FROM tags WHERE name=?", (name,))
+        if row:
+            cat = row["category"]
+        self.store.add_region(self.file_id, name, (x, y, w, h), category=cat)
+        if self.also_file.isChecked():
+            self.store.add_file_tags(self.file_id, [(name, "manual", 1.0)])
+            self.reload_tags()
+        self.reload_regions()
+        self.tagsChanged.emit(self.file_id)
+
+    def edit_region(self) -> None:
+        it = self.region_list.currentItem()
+        if not it:
+            return
+        rid = int(it.data(Qt.UserRole))
+        row = self.store.one("SELECT * FROM regions WHERE id=?", (rid,))
+        if not row:
+            return
+        text, ok = QInputDialog.getText(self, "修改框选标签", "标签名：", text=row["tag_name"] or "")
+        if ok and text.strip():
+            self.store.update_region(rid, tag_name=text.strip())
+            self.reload_regions()
+
+    def remove_region(self) -> None:
+        it = self.region_list.currentItem()
+        if not it:
+            return
+        self.store.delete_region(int(it.data(Qt.UserRole)))
+        self.reload_regions()
+
+
+# --------------------------------------------------------------------------- 模型
+class ModelsDialog(QDialog):
+    """模型下载/状态。首次使用前点一下"下载缺失模型"即可。"""
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("模型管理")
+        self.resize(720, 420)
+        v = QVBoxLayout(self)
+        v.addWidget(label("所有模型都从国内镜像 hf-mirror.com 下载，下载后完全离线运行。", "#8f96a3"))
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["模型", "用途", "大小", "状态"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 240)
+        self.table.setColumnWidth(1, 200)
+        v.addWidget(self.table, 1)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        v.addWidget(self.bar)
+        self.status = QLabel("")
+        v.addWidget(self.status)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        b_missing = QPushButton("下载缺失模型")
+        b_missing.clicked.connect(self.download_missing)
+        row.addWidget(b_missing)
+        b_all = QPushButton("下载/校验全部")
+        b_all.clicked.connect(self.download_all)
+        row.addWidget(b_all)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(self.accept)
+        row.addWidget(b_close)
+        v.addLayout(row)
+        self.reload()
+
+    def reload(self) -> None:
+        md = self.settings.models_path()
+        keys = ["wd14_onnx", "wd14_tags", "face_det", "face_rec", "clip"]
+        self.table.setRowCount(len(keys))
+        for i, k in enumerate(keys):
+            spec = model_lib.MODELS[k]
+            self.table.setItem(i, 0, QTableWidgetItem(spec.label))
+            self.table.setItem(i, 1, QTableWidgetItem(spec.dest))
+            self.table.setItem(i, 2, QTableWidgetItem(f"{spec.approx_mb} MB"))
+            ok = model_lib.is_present(k, md)
+            it = QTableWidgetItem("已就绪" if ok else "缺失")
+            it.setForeground(QColor("#7ddc7d") if ok else QColor("#ff8a8a"))
+            self.table.setItem(i, 3, it)
+
+    def _run(self, keys) -> None:
+        self.status.setText("开始下载…")
+        md = self.settings.models_path()
+
+        def job(progress, cancel, item):
+            for k in keys:
+                model_lib.ensure(k, md, progress)
+            return True
+
+        t = Task(job, self, "模型下载")
+        t.progress.connect(lambda msg, frac: (self.status.setText(msg), self.bar.setValue(int(frac * 100) if frac >= 0 else 0)))
+        t.done.connect(lambda _r: (self.status.setText("完成"), self.bar.setValue(100), self.reload()))
+        t.failed.connect(lambda msg: self.status.setText(msg.splitlines()[0]))
+        t.start()
+        self._task = t
+
+    def download_missing(self) -> None:
+        md = self.settings.models_path()
+        keys = [k for k in ("wd14_onnx", "wd14_tags", "face_det", "face_rec") if not model_lib.is_present(k, md)]
+        if not keys:
+            QMessageBox.information(self, "模型", "基础模型都已就绪。")
+            return
+        self._run(keys)
+
+    def download_all(self) -> None:
+        self._run(["wd14_onnx", "wd14_tags", "face_det", "face_rec"])
