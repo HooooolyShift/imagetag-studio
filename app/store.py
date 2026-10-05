@@ -199,6 +199,9 @@ CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_regions_file ON regions(file_id);
 CREATE INDEX IF NOT EXISTS idx_edge_parent ON taxonomy_edges(parent_kind, parent_id);
 CREATE INDEX IF NOT EXISTS idx_edge_child ON taxonomy_edges(child_kind, child_id);
+/* 统计"某标签有多少张图"要 join files 判断 missing，而 files 行里带 CLIP 特征 BLOB，
+   没有覆盖索引就得回表读十几万次（实测 1.1 秒）→ 这个索引让统计只走索引 */
+CREATE INDEX IF NOT EXISTS idx_files_id_missing ON files(id, missing);
 """
 
 
@@ -629,8 +632,9 @@ class Store:
     def list_tags(self, search: str = "", only_used: bool = False,
                   category: str | None = None) -> list[sqlite3.Row]:
         """标签表。category 传类型 key 时只返回该类型下的标签（所有界面的分类过滤都走这里）。"""
-        sql = ("SELECT t.*, (SELECT COUNT(*) FROM file_tags ft JOIN files f ON f.id=ft.file_id "
-               " WHERE ft.tag_id=t.id AND f.missing=0) AS count FROM tags t")
+        # 直接读维护好的 tags.count（refresh_counts 负责更新）：
+        # 统计"某标签有多少张已生效的图"，不在这里做 join —— 那要回表读十几万行 CLIP BLOB，慢到 1 秒
+        sql = "SELECT t.*, COALESCE(t.count, 0) AS count FROM tags t"
         args: list[Any] = []
         where = []
         if search:
@@ -687,6 +691,7 @@ class Store:
         self.execute("UPDATE tags SET name=?,updated_at=? WHERE id=?", (new_name, time.time(), tag_id))
 
     def merge_tags(self, src_id: int, dst_id: int) -> None:
+        """把 src 合并进 dst：图片、图谱连线、区域框、自训练探针、人物关联都一起搬过去。"""
         if src_id == dst_id:
             return
         now = time.time()
@@ -696,6 +701,31 @@ class Store:
             c.execute("INSERT OR REPLACE INTO file_tags(file_id,tag_id,source,score,updated_at) VALUES(?,?,?,?,?)",
                       (r["file_id"], dst_id, r["source"], r["score"], now))
         c.execute("DELETE FROM file_tags WHERE tag_id=?", (src_id,))
+        # 图谱连线（标签作为子节点 / 作为父节点）改指到目标标签，避免合并后连线凭空消失
+        c.execute("UPDATE OR IGNORE taxonomy_edges SET child_id=? "
+                  "WHERE child_kind='tag' AND child_id=?", (dst_id, src_id))
+        c.execute("DELETE FROM taxonomy_edges WHERE child_kind='tag' AND child_id=?", (src_id,))
+        c.execute("UPDATE OR IGNORE taxonomy_edges SET parent_id=? "
+                  "WHERE parent_kind='tag' AND parent_id=?", (dst_id, src_id))
+        c.execute("DELETE FROM taxonomy_edges WHERE parent_kind='tag' AND parent_id=?", (src_id,))
+        # 区域框 / 自训练探针 / 人物关联
+        c.execute("UPDATE regions SET tag_id=? WHERE tag_id=?", (dst_id, src_id))
+        c.execute("UPDATE OR IGNORE tag_probe SET tag_id=? WHERE tag_id=?", (dst_id, src_id))
+        c.execute("DELETE FROM tag_probe WHERE tag_id=?", (src_id,))
+        c.execute("UPDATE persons SET tag_id=? WHERE tag_id=?", (dst_id, src_id))
+        # 源标签的中文名/备注如果目标没有，就继承过来（合并后显示仍是中文）
+        src = c.execute("SELECT name, zh, note FROM tags WHERE id=?", (src_id,)).fetchone()
+        dst = c.execute("SELECT name, zh, note FROM tags WHERE id=?", (dst_id,)).fetchone()
+        if src and dst:
+            # 目标标签没有中文名时，继承源标签的（那是你自己填的）。
+            # 注意不要在这里写词典的译名 —— 存进库里会"冻结"，以后修词典就不生效了；
+            # 库里没有中文名时显示会自动走内置词典。
+            zh = ((dst["zh"] or "").strip()
+                  or (src["zh"] or "").strip()
+                  or (src["name"] if re.search(r"[\u4e00-\u9fff]", str(src["name"])) else "")
+                  or (src["note"] or "").strip())
+            note = (dst["note"] or "").strip() or (src["note"] or "").strip()
+            c.execute("UPDATE tags SET zh=?, note=?, updated_at=? WHERE id=?", (zh, note, now, dst_id))
         c.execute("DELETE FROM tags WHERE id=?", (src_id,))
         c.commit()
 
@@ -781,9 +811,24 @@ class Store:
         return list(out.keys())
 
     def refresh_counts(self) -> None:
-        self.execute(
-            "UPDATE tags SET count=(SELECT COUNT(*) FROM file_tags ft JOIN files f ON f.id=ft.file_id "
-            "WHERE ft.tag_id=tags.id AND f.missing=0 AND ft.status='confirmed')")
+        """重算每个标签的图片数（只写变化了的行）。
+
+        拆成"全部已生效"减去"文件已丢失"两步：都不需要回表读 files 的 CLIP BLOB，
+        1800+ 标签的库从 ~400ms 降到几十毫秒。
+        """
+        cur_counts = {int(r["id"]): int(r["count"] or 0)
+                      for r in self.query("SELECT id, count FROM tags")}
+        # 注意：这里数的是"所有状态的标签"（含待审），和界面上「(N)」的口径一致；
+        # 只数 confirmed 会让"只挂待审标签"的标签在筛选树里凭空消失
+        allc = {int(r["tid"]): int(r["n"]) for r in self.query(
+            "SELECT tag_id AS tid, COUNT(*) AS n FROM file_tags GROUP BY tag_id")}
+        miss = {int(r["tid"]): int(r["n"]) for r in self.query(
+            "SELECT ft.tag_id AS tid, COUNT(*) AS n FROM file_tags ft "
+            "WHERE ft.file_id IN (SELECT id FROM files WHERE missing=1) GROUP BY ft.tag_id")}
+        fresh = {tid: max(0, n - miss.get(tid, 0)) for tid, n in allc.items()}
+        updates = [(fresh.get(tid, 0), tid) for tid, old in cur_counts.items() if old != fresh.get(tid, 0)]
+        if updates:
+            self.executemany("UPDATE tags SET count=? WHERE id=?", updates)
 
     # ---------------- 检索 ----------------
     def search_files(self, required: Sequence[str] = (), any_of: Sequence[str] = (),

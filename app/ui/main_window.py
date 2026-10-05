@@ -389,7 +389,8 @@ class MainWindow(QMainWindow):
         self.similar_mode: dict | None = None
         self.root_filter: int | None = None
         self.dir_filter: str = ""
-        self.setWindowTitle(f"图片标签工坊  v0.1  —  {store.db_path.parent}")
+        from ..config import VERSION
+        self.setWindowTitle(f"图片标签工坊  v{VERSION}  —  {store.db_path.parent}")
         self.setStyleSheet(STYLE)
         self.resize(1500, 920)
         self._build_ui()

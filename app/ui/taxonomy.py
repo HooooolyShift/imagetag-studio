@@ -324,12 +324,14 @@ class TaxonomyDialog(QDialog):
         super().__init__(parent)
         self.library = library
         self.store = library.store
+        self._reset_auto_collapse_once()
         self.setWindowTitle("标签体系（分类图谱）—— 与图片分离，随便改层级都不影响图片")
         self.resize(1460, 900)
         self.current: tuple[str, int] | None = None
         self._collapsed_now: set[int] = set()
         self._expanded_now: set[int] = set()
         self._focus_tag: int | None = None      # 搜索命中的标签：即使超出可见上限也要画出来
+        self._auto_collapse_done = False        # 自动折叠只做一次，之后听用户的
         self.connect_source: NodeItem | None = None
         v = QVBoxLayout(self)
 
@@ -614,13 +616,33 @@ class TaxonomyDialog(QDialog):
         self.detail.setText("已删除标签及其连线")
 
     # ================= 构建视图 =================
+    def _reset_auto_collapse_once(self) -> None:
+        """升级后一次性清掉"上一版自动折叠"留下的标记（用户之后手动折叠的仍会被记住）。
+
+        老版本为了性能会把标签多的分类自动折叠；现在统计查询快了上百倍，
+        默认全展开才能满足"每个 tag 都能在图里看到"，所以这里清一次。
+        """
+        try:
+            if getattr(self.library.settings, "graph_expand_reset_done", False):
+                return
+            self.store.execute("UPDATE nodes SET collapsed=0")
+            # 旧版把标签排成了一根几万像素高的长条，这些坐标也一并清掉，改用新的网格排布
+            self.store.execute("DELETE FROM layout")
+            self.library.settings.graph_expand_reset_done = True
+            self.library.settings.save()
+        except Exception:
+            pass
+
     def rebuild(self) -> None:
         self.store.prune_dangling_edges()          # 先清悬空连线，否则渲染会崩
         if self.store.one("SELECT COUNT(*) c FROM nodes")["c"] == 0:
             self.library.sync_taxonomy()
         # 图谱里还有没连线的标签时，自动补一次「按分类连线」，避免打开是散的
-        if self.store.one("SELECT COUNT(*) c FROM tags")["c"] and \
-                self.store.one("SELECT COUNT(*) c FROM taxonomy_edges")["c"] == 0:
+        unlinked = self.store.one(
+            "SELECT COUNT(*) c FROM tags t WHERE NOT EXISTS("
+            "  SELECT 1 FROM taxonomy_edges e WHERE e.child_kind='tag' AND e.child_id=t.id)")["c"]
+        if self.store.one("SELECT COUNT(*) c FROM tags")["c"] and (unlinked or
+                self.store.one("SELECT COUNT(*) c FROM taxonomy_edges")["c"] == 0):
             self.library.sync_taxonomy()
         self.store.refresh_counts()
         self.canvas.clear()
@@ -635,7 +657,11 @@ class TaxonomyDialog(QDialog):
         # 性能：标签很多时，默认折叠"子节点很多"的分类（打开就是轻量的 13 个分类节点），
         # 想看点开那个分类即可；同时给可见标签数设上限，避免一次画上千个节点。
         tag_total = self.store.one("SELECT COUNT(*) c FROM tags")["c"]
-        if tag_total > 200:
+        # 自动折叠（只在标签极多且用户没表过态时兜底）：现在统计 SQL 已优化，
+        # 4000+ 标签全画也就几百毫秒，所以默认**全展开**，让"每个 tag 都能在图里看到"；
+        # 想清爽一点用工具栏「折叠全部」，之后不会再被自动折叠盖回去。
+        if tag_total > 20000 and not self._auto_collapse_done:
+            self._auto_collapse_done = True
             # 先把"根节点"的折叠状态清掉（根节点被折叠会把所有分类藏起来）
             for nid in list(nodes.keys()):
                 if not self.store.one("SELECT 1 FROM taxonomy_edges WHERE child_kind='node' AND child_id=?",
@@ -643,8 +669,8 @@ class TaxonomyDialog(QDialog):
                     self.store.update_node(int(nid), collapsed=0)
                     self._expanded_now.add(int(nid))
             for nid, n in nodes.items():
-                if n["collapsed"] or n["x"] is not None:
-                    continue                     # 用户手动设过折叠/位置的不动
+                if n["collapsed"] or n["x"] is not None or int(nid) in self._expanded_now:
+                    continue                     # 用户手动设过折叠/位置/展开过的不动
                 kids = self.store.children_of_node(int(nid))
                 if not kids:
                     continue
@@ -655,7 +681,29 @@ class TaxonomyDialog(QDialog):
                 if (not is_root) and tag_ratio >= 0.8 and len(kids) >= 15:
                     self.store.update_node(int(nid), collapsed=1)
                     self._collapsed_now.add(int(nid))     # sqlite3.Row 只读，用集合记本次折叠
-        VISIBLE_TAG_CAP = 600
+        VISIBLE_TAG_CAP = 10 ** 9        # 全部标签都画出来（统计 SQL 优化后几千个节点也就百来毫秒）
+        # 画哪些标签：**先按图片数从多到少**（常用的、你手工加的都在前面），
+        # 再保证每个分类至少露出若干个；超出的用搜索定位（搜索会把视口滑过去并强制画出）。
+        by_count = sorted(tag_rows.values(), key=lambda t: (-int(t["count"] or 0), str(t["name"]).lower()))
+        draw_order: list[int] = []
+        seen_draw: set[int] = set()
+        per_cat: dict[str, int] = {}
+        for t in by_count:                                  # 每个分类先保底 12 个
+            key = str(t["category"] or "other")
+            if per_cat.get(key, 0) >= 12:
+                continue
+            per_cat[key] = per_cat.get(key, 0) + 1
+            tid = int(t["id"])
+            if tid not in seen_draw:
+                seen_draw.add(tid)
+                draw_order.append(tid)
+        for t in by_count:                                  # 其余按图片数补齐到上限
+            tid = int(t["id"])
+            if tid in seen_draw:
+                continue
+            seen_draw.add(tid)
+            draw_order.append(tid)
+        hidden_tag_count = 0
         # 折叠：把「已折叠」节点的所有子孙藏起来；用 visited 防环（有人乱连成圈也不会死循环）
         hidden: set[tuple[str, int]] = set()
         stack, visited = [], set()
@@ -681,25 +729,38 @@ class TaxonomyDialog(QDialog):
             y += NODE_H + 18
             self.canvas.add_node("node", nid, n["name"], 0, x, yy)
         y = 40
-        y2 = 40
+        # 标签排布：纵向每列放 per_col 个，放满换下一列 —— 4000 个标签排成网格，
+        # 而不是拉成一列两万像素高（否则滚动条滑一下就是几百屏）
+        drawable = [tid for tid in draw_order
+                    if (tid in linked_tags or self.show_all.isChecked())
+                    and ("tag", tid) not in hidden]
+        import math
+        per_col = max(30, int(math.ceil(math.sqrt(max(1, len(drawable)) * 1.5))))
+        col_w, row_h = 190.0, NODE_H + 14
         shown_tags = 0
-        for tid, t in tag_rows.items():
+        col = row = 0
+        for tid in draw_order:
+            t = tag_rows.get(tid)
+            if t is None:
+                continue
             force = (self._focus_tag is not None and tid == self._focus_tag)
             if not force and tid not in linked_tags and not self.show_all.isChecked():
                 continue
             if ("tag", tid) in hidden and not force:
+                hidden_tag_count += 1
                 continue
             if shown_tags >= VISIBLE_TAG_CAP and not force:
+                hidden_tag_count += 1
                 continue
-            default = (270.0, y) if tid in linked_tags else (560.0, y2)
+            default = (270.0 + col * col_w, 40.0 + row * row_h)
             x, yy = saved.get(("tag", tid), default)
-            if tid in linked_tags:
-                y += NODE_H + 14
-            else:
-                y2 += NODE_H + 14
+            row += 1
+            if row >= per_col:
+                row = 0
+                col += 1
             shown_tags += 1
             from .. import tag_i18n
-            self.canvas.add_node("tag", tid, tag_i18n.translate(t["name"], t["zh"] or ""),
+            self.canvas.add_node("tag", tid, tag_i18n.label(t["name"], t["zh"] or ""),
                                  int(t["count"]), x, yy)
         for e in self.store.edges():
             if (e["child_kind"], int(e["child_id"])) not in self.canvas.items:
@@ -709,6 +770,11 @@ class TaxonomyDialog(QDialog):
         self.canvas.scene_.setSceneRect(self.canvas.scene_.itemsBoundingRect().adjusted(-80, -80, 120, 120))
         self.rebuild_tree()
         self.refresh_detail()
+        if hidden_tag_count and not self.show_all.isChecked():
+            self.detail.setText(
+                f"<span style='color:#8f96a3'>图谱按图片数只画了前 {shown_tags} 个标签，"
+                f"还有 {hidden_tag_count} 个长尾标签没画（用左上搜索框搜名字会自动跳过去；"
+                f"或勾选「显示未分类标签」）。</span>")
 
     def rebuild_tree(self) -> None:
         self.tree.clear()
@@ -978,6 +1044,13 @@ class TaxonomyDialog(QDialog):
         for n in self.store.list_nodes():
             if self.store.children_of_node(int(n["id"])):      # 只折叠"有子节点"的
                 self.store.update_node(int(n["id"]), collapsed=1 if flag else 0)
+                nid = int(n["id"])
+                if flag:
+                    self._collapsed_now.add(nid)
+                    self._expanded_now.discard(nid)
+                else:
+                    self._expanded_now.add(nid)      # 明确"用户要展开"，别再被自动折叠盖回去
+                    self._collapsed_now.discard(nid)
         self.rebuild()
         self.detail.setText("已折叠全部子节点（右键节点可单独展开/折叠）" if flag else "已展开全部")
 
@@ -985,7 +1058,14 @@ class TaxonomyDialog(QDialog):
         n = self.store.node(node_id)
         if not n:
             return
-        self.store.update_node(node_id, collapsed=0 if n["collapsed"] else 1)
+        collapsing = bool(n["collapsed"])
+        self.store.update_node(node_id, collapsed=0 if collapsing else 1)
+        if collapsing:
+            self._expanded_now.add(int(node_id))
+            self._collapsed_now.discard(int(node_id))
+        else:
+            self._collapsed_now.add(int(node_id))
+            self._expanded_now.discard(int(node_id))
         self.rebuild()
         self.detail.setText(("已折叠该节点下方的所有子节点" if not n["collapsed"] else "已展开该节点"))
 

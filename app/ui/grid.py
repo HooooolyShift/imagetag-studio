@@ -290,27 +290,41 @@ class GridView(QListView):
                 self.grid_model.ensure_thumb(it)
 
     def visible_indexes(self) -> list[QModelIndex]:
-        rect = self.viewport().rect()
-        out = []
-        for pt in (rect.topLeft(), QRect(rect.left(), rect.top(), rect.width(), 1).topRight(),
-                   rect.bottomLeft(), rect.bottomRight(), rect.center()):
-            idx = self.indexAt(pt)
-            if idx.isValid() and idx not in out:
-                out.append(idx)
-        first, last = self._range_for_rect(rect)
-        return list(range(first, last + 1)) and [self.model().index(r, 0) for r in range(first, last + 1)]
+        """当前可见区域对应的行索引（含上下各几行余量）。"""
+        first, last = self.visible_rows()
+        if last < first:
+            return []
+        return [self.model().index(r, 0) for r in range(first, last + 1)]
 
     def _range_for_rect(self, rect: QRect) -> tuple[int, int]:
         n = self.model().rowCount()
         if n == 0:
             return 0, -1
-        top = self.indexAt(rect.topLeft())
-        bottom = self.indexAt(rect.bottomRight())
-        first = max(0, (top.row() if top.isValid() else 0) - 8)
-        last = min(n - 1, (bottom.row() if bottom.isValid() else 0) + 8)
-        if last < first:
-            last = min(n - 1, first + 40)
-        return first, last
+        return self.visible_rows(rect)
+
+    def visible_rows(self, rect: QRect | None = None) -> tuple[int, int]:
+        """按滚动位置 + 网格尺寸算可见行区间（唯一实现）。
+
+        老实现用 indexAt(视口右下角)，图标网格下这个角经常落在空隙里 → 判定失败后
+        回退成"前 8~48 行"，于是图库图片一多，往下翻就再也不请求缩略图（一片空白）。
+        """
+        n = self.model().rowCount()
+        if n == 0:
+            return 0, -1
+        rect = rect or self.viewport().rect()
+        grid = self.gridSize()
+        gw = max(1, grid.width())
+        gh = max(1, grid.height())
+        cols = max(1, rect.width() // gw)
+        bar = self.verticalScrollBar()
+        first = max(0, (bar.value() // gh - 1) * cols)
+        last = min(n - 1, ((bar.value() + max(1, rect.height())) // gh + 2) * cols)
+        mid = self.indexAt(rect.center())          # 交叉校验（布局异常时兜底）
+        if mid.isValid():
+            row = int(mid.row())
+            first = min(first, max(0, row - cols * 2))
+            last = max(last, min(n - 1, row + cols * 2))
+        return first, max(first, last)
 
     def mouseDoubleClickEvent(self, event) -> None:
         idx = self.indexAt(event.pos())

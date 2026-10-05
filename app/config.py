@@ -9,7 +9,7 @@ from pathlib import Path
 
 APP_NAME = "图片标签工坊"
 APP_ID = "ImageTagStudio"
-VERSION = "0.1.0"
+VERSION = "1.4.0"
 
 # 支持的图片后缀
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".avif"}
@@ -170,6 +170,8 @@ class Settings:
     confirm_before_write: bool = False
     show_startup_tip: bool = True          # 启动时是否提示"开始使用"（可勾选不再显示）
     show_model_tip: bool = True            # 启动时是否提示"模型未下载"（可勾选不再提示）
+    graph_show_all_tags: bool = False      # 图谱是否画出全部标签（默认只画常用的前 600 个）
+    graph_expand_reset_done: bool = False  # 是否已清掉老版本"自动折叠"留下的标记（一次性）
     # 扫描
     ignore_dirs: list[str] = field(default_factory=lambda: [".imtag", "@eaDir", ".git", "$RECYCLE.BIN", "System Volume Information"])
 

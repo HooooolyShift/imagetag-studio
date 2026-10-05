@@ -352,10 +352,36 @@ class ReviewDialog(QDialog):
         self.new_tag.setEditText("")
 
     def reload_table(self) -> None:
-        """每个标签一行：左边是单独的「通过 / 否决」按钮，中间显示中文名（附英文原名）。"""
+        """每个标签一行：左边是单独的「通过 / 否决」按钮，中间显示中文名（附英文原名）。
+
+        父子联动（和图片界面「只显示最具体」一致，但这里还要管判定）：
+        - 有子标签也在待审 → 父标签先不显示（省得同一件事判两遍）；
+        - 通过子标签 = 同时通过它的祖先（白裙子成立就说明裙子/服装也成立）；
+        - 否决子标签 → 父标签重新出现在列表里，单独judge（子不成立不代表父不成立）。
+        """
         from .. import tag_i18n
         fid = int(self.queue[self.index]["id"]) if self.queue else None
         rows = self.store.tags_for_file(fid, statuses=("pending",)) if fid else []
+        child_map = self.store.tag_child_map() if rows else {}
+        parent_map = self.store.tag_parent_map() if rows else {}
+        self._child_map, self._parent_map = child_map, parent_map
+        pending = [t for t in rows if t["name"] not in self.decisions]
+        names = {t["name"] for t in pending}
+        hidden_by: dict[str, str] = {}
+        for t in pending:                                   # 父标签：有后代也在待审就先藏起来
+            stack, seen = list(child_map.get(t["name"], ())), set()
+            while stack:
+                child = stack.pop()
+                if child in seen:
+                    continue
+                seen.add(child)
+                if child in names:
+                    hidden_by[t["name"]] = child
+                    break
+                stack.extend(child_map.get(child, ()))
+        rows = [t for t in pending if t["name"] not in hidden_by]
+        self.pending_all = [t["name"] for t in pending]      # 含被藏起来的父标签，供"全部通过/否决"
+        self._hidden_by = hidden_by
         self.table.setRowCount(0)
         self.cards.clear()
         self.pending_names = [t["name"] for t in rows]
@@ -379,6 +405,10 @@ class ReviewDialog(QDialog):
             lab.setStyleSheet("font-size:12px;")
             lab.setToolTip(f"{name}\n来源：{SOURCE_LABELS.get(t['source'], t['source'])}"
                            f"　分数：{t['score']:.2f}\n双击可设置中文名")
+            ancestors = self._ancestors_of(name)
+            if ancestors:
+                lab.setToolTip(lab.toolTip() +
+                               f"\n通过它 = 同时通过父标签：{'、'.join(ancestors)}")
             h.addWidget(lab, 1)
             src = QLabel(f"{SOURCE_LABELS.get(t['source'], t['source'])} {t['score']:.2f}")
             src.setStyleSheet("color:#8f96a3;font-size:10px;")
@@ -387,7 +417,12 @@ class ReviewDialog(QDialog):
             self.table.insertRow(i)
             self.table.setCellWidget(i, 0, row)
             self.table.setRowHeight(i, 30)
+        extra = ""
+        if hidden_by:
+            pairs = list(hidden_by.items())[:3]
+            extra = "　（" + "、".join(f"{p} 随 {c} 一起判" for p, c in pairs) + "）"
         self.status.setText(f"第 {self.index + 1}/{len(self.queue)} 张 · 待审 {len(rows)} 个标签"
+                            + extra
                             + ("　（双击标签可设中文名）" if rows else ""))
         if not rows:
             # 队列里也会列出"没有待审标签但还没定级"的图（兜底，避免漏审）——这里必须说清楚
@@ -425,21 +460,46 @@ class ReviewDialog(QDialog):
 
     # ------------------------------------------------------------ 决定
     def decide(self, name: str, action: str, row: int | None = None) -> None:
+        """判定一个标签。通过子标签会同时通过它的祖先；否决则把父标签放回列表。"""
         self.decisions[name] = action
-        card = self.cards.get(name)
-        if card:
-            w, lab = card
-            w.setStyleSheet("background:#1f3a2a;" if action == "confirmed" else "background:#3a2020;")
-            lab.setText(("✓ " if action == "confirmed" else "✗ ") + lab.text().lstrip("✓✗ "))
-            lab.setStyleSheet("font-size:12px;color:%s;" %
-                              ("#b6f5cd" if action == "confirmed" else "#ffc9c9"))
+        ancestors = self._ancestors_of(name)
+        if action == "confirmed":
+            # 通过子标签 = 承认它的父标签（白裙子成立 → 裙子、服装也成立）
+            for parent in ancestors:
+                self.decisions.setdefault(parent, "confirmed")
+        self.reload_table()          # 重新算可见列表：否决子标签会给父标签"腾位置"
+        note = ""
+        if action == "confirmed" and ancestors:
+            note = f"　（同时通过父标签：{'、'.join(ancestors)}）"
+        elif action == "rejected":
+            back = [p for p in ancestors if p in self.pending_names]
+            note = f"　（父标签已放回列表：{'、'.join(back)}）" if back else ""
+        if note:
+            self.status.setText(self.status.text() + note)
+
+    def _ancestors_of(self, name: str) -> list[str]:
+        """这个标签的所有祖先标签（沿 子→父 一路往上，带 visited 防环）。"""
+        parent_map = getattr(self, "_parent_map", None)
+        if not parent_map:
+            return []
+        out: list[str] = []
+        stack, seen = list(parent_map.get(name, ())), set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            if cur not in out:
+                out.append(cur)
+            stack.extend(parent_map.get(cur, ()))
+        return out
 
     def accept_all(self) -> None:
-        for name in list(self.pending_names):
+        for name in list(getattr(self, "pending_all", self.pending_names)):
             self.decide(name, "confirmed")
 
     def reject_all(self) -> None:
-        for name in list(self.pending_names):
+        for name in list(getattr(self, "pending_all", self.pending_names)):
             self.decide(name, "rejected")
 
     def edit_tag_zh(self, row: int, _col: int) -> None:

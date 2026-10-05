@@ -1,7 +1,8 @@
 """图谱页面自检（用真实库副本，只读；会临时改一个标签的中文名再改回来）。
 
 检查：
-  1) 搜索标签能定位到节点：即使该标签超出"可见上限"、藏在被折叠的分类里，也要画出来并选中；
+  0) 库里每个标签都在图谱里（连线一条不缺，节点一个不少）；
+  1) 搜索标签能定位到节点：即使它藏在被折叠的分类里，也要画出来并选中；
   2) 定位时会把它的所有祖先分类展开；
   3) 在图谱里改「中文名 / 备注」会写进 tags.zh，并且磁盘命名跟着变（备注=中文名）。
 
@@ -32,6 +33,15 @@ def main() -> int:
     lib = Library(store, settings)
     tax = TaxonomyDialog(lib)
     bad = 0
+
+    # 0) 全部标签都在图谱里（上一版默认折叠 + 统计慢，导致 4000+ 标签只画出十几个）
+    total = store.one("SELECT COUNT(*) c FROM tags")["c"]
+    shown = len([k for k in tax.canvas.items if k[0] == "tag"])
+    unlinked = store.one("SELECT COUNT(*) c FROM tags t WHERE NOT EXISTS("
+                         "SELECT 1 FROM taxonomy_edges e WHERE e.child_kind='tag' AND e.child_id=t.id)")["c"]
+    ok0 = shown >= total and unlinked == 0
+    print(f"[0] 库里标签 {total} ｜ 图上画出 {shown} ｜ 未连线 {unlinked} {'OK' if ok0 else '不一致'}")
+    bad += 0 if ok0 else 1
 
     tags = store.list_tags()
     print(f"库里标签 {len(tags)} 个，图谱节点 {len(tax.canvas.items)} 个")

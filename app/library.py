@@ -985,7 +985,7 @@ class Library:
         idx = tag_i18n.zh_index(self.store)
         out: list[str] = []
         for tok in tokens or []:
-            name = tag_i18n.resolve(tok, idx)
+            name = tag_i18n.resolve(tok, idx, fuzzy=False)   # 扫描回读只认精确匹配，保证速度
             if name and name not in out:
                 out.append(name)
         return out

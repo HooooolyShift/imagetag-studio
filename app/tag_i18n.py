@@ -314,21 +314,70 @@ def zh_to_name() -> dict[str, str]:
 
 
 def zh_index(store=None) -> dict[str, str]:
-    """中文名 → 规范标签名：库里手填的优先，其次内置词典（同义词取更基础的那个）。"""
+    """中文名 → 规范标签名：库里手填的优先，其次内置词典。
+
+    同一个中文名可能对上多个标签（例如库里既有 skirt 又有 skirt_hold，中文名都填了「裙子」），
+    这时按"有图 > 无图、下划线少 > 多、名字短 > 长"挑更基础的那个，避免被垃圾标签劫持。
+    """
     idx = dict(zh_to_name())
     if store is not None:
-        for r in store.query("SELECT name, zh FROM tags WHERE IFNULL(zh,'')<>''"):
-            if is_usable_zh(r["zh"]):
-                idx[str(r["zh"])] = str(r["name"])
+        best: dict[str, tuple] = {}
+        for r in store.query(
+                "SELECT t.name, t.zh, (SELECT COUNT(*) FROM file_tags f WHERE f.tag_id=t.id) AS n "
+                "FROM tags t WHERE IFNULL(t.zh,'')<>''"):
+            zh = str(r["zh"])
+            if not is_usable_zh(zh):
+                continue
+            name = str(r["name"])
+            quality = (0 if int(r["n"] or 0) > 0 else 1, name.count("_"), len(name), name)
+            if zh not in best or quality < best[zh][0]:
+                best[zh] = (quality, name)
+        for zh, (_q, name) in best.items():
+            idx[zh] = name
     return idx
 
 
-def resolve(text: str, index: dict[str, str] | None = None, store=None) -> str:
+_NORM_RE = re.compile(r"[\s_\-·・（）()\[\]【】{}<>《》,，。.;；:：!！?？\"'`]+")
+
+
+def _norm(text: str) -> str:
+    """去掉空格/下划线/标点，只留内容 —— 用来容忍「芙 莉 莲」「芙莉莲」这类写法差异。"""
+    return _NORM_RE.sub("", text or "").lower()
+
+
+def _edit_distance_at_most_1(a: str, b: str) -> bool:
+    """两个短串是否只差一个字符（改一个字 / 多一个字 / 少一个字）。中文字按字算。"""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(1 for x, y in zip(a, b) if x != y) == 1
+    if len(a) > len(b):
+        a, b = b, a
+    i = j = 0
+    skipped = False
+    while i < len(a) and j < len(b):
+        if a[i] != b[j]:
+            if skipped:
+                return False
+            skipped = True
+            j += 1
+            continue
+        i += 1
+        j += 1
+    return True
+
+
+def resolve(text: str, index: dict[str, str] | None = None, store=None,
+            fuzzy: bool = True) -> str:
     """把输入框/文件名里的标签还原成规范标签名（唯一实现）。
 
     - "服装 · 明日方舟（arknights）" → arknights（联想菜单插进来的格式）
     - "明日方舟" → 库里有这个中文名的标签就还原成它的英文名，否则原样返回
+    - 手打错一个字（芙丽莲 vs 芙莉莲）→ 只要库里/词典里只有唯一一个相近的名字，就用它
     - index 可传入预先建好的 zh_index()，扫描大目录时避免每个标签都重建一次
+    - fuzzy=False 时只做精确匹配（扫描回读走这条路，避免每个没认出的标签都全表扫一遍）
     """
     t = (text or "").strip()
     if not t:
@@ -345,6 +394,15 @@ def resolve(text: str, index: dict[str, str] | None = None, store=None) -> str:
         hit = index.get(t) if index else None
         if hit:
             return hit
+        if index:
+            norm = _norm(t)
+            norm_hit = next((v for k, v in index.items() if _norm(k) == norm), None)
+            if norm_hit:
+                return norm_hit
+            if fuzzy and 2 <= len(norm) <= 8:
+                cands = {v for k, v in index.items() if _edit_distance_at_most_1(_norm(k), norm)}
+                if len(cands) == 1:              # 只有一个相近的才敢自动采用，避免裙子/裤子这种误配
+                    return cands.pop()
     return t
 
 
