@@ -210,7 +210,8 @@ class Library:
                                            name=p.name, rel=rel)
                 updated += 1
             if name_tags:
-                self.store.add_file_tags(fid, [(t, "filename", 1.0) for t in name_tags])
+                self.store.add_file_tags(fid, [(t, "filename", 1.0) for t in name_tags]
+                                         + [(t, "filename_parent", 1.0) for t in self.infer_parent_tags(name_tags)])
             if i % 25 == 0:
                 self.store.conn().commit()
                 if progress:
@@ -924,6 +925,13 @@ class Library:
         return [k for k, _ in sorted(counter.items(), key=lambda kv: -kv[1])[:20]]
 
     # ---------------------------------------------------------- 标签写回磁盘
+    def dir_tags(self, tags: Sequence[str]) -> list[str]:
+        """系列文件夹名里真正要写的标签：按设置只留最具体的（父子不叠加）。"""
+        names = [t for t in (tags or []) if t]
+        if getattr(self.settings, "tag_most_specific_on_disk", True):
+            return self.most_specific_tags(names, self.store.tag_child_map())
+        return names
+
     def _series_tag_union(self, series_id: int) -> list[str]:
         best: dict[str, tuple[int, int]] = {}
         for r in self.store.series_files(series_id):
@@ -939,8 +947,44 @@ class Library:
         ordered = sorted(best.items(), key=lambda kv: (kv[1][0], kv[1][1], kv[0].lower()))
         return [name for name, _ in ordered]
 
+    def infer_parent_tags(self, tags: Sequence[str]) -> list[str]:
+        """按从属关系补回父标签（扫描时文件名里只写了子标签，靠它把父标签补回库里）。
+
+        - 只要 infer_parent_tags 设置为开（默认开）；关掉就返回空列表；
+        - 沿 子→父 一路往上走（白裙子 → 裙子 → 服装），带 visited 防环；
+        - 返回的是**需要额外补的**标签名，已经在图上的不重复返回。
+        """
+        if not getattr(self.settings, "infer_parent_tags", True):
+            return []
+        names = [t for t in (tags or []) if t]
+        if not names:
+            return []
+        parent_map = self.store.tag_parent_map()
+        if not parent_map:
+            return []
+        have = set(names)
+        out: list[str] = []
+        stack = list(names)
+        visited: set[str] = set()
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for parent in parent_map.get(cur, ()):
+                if parent in have or parent in out:
+                    continue
+                out.append(parent)
+                stack.append(parent)
+        return out
+
     def disk_tags_for_file(self, file_id: int, max_tags: int | None = None) -> list[str]:
-        """挑出真正要写进文件名的标签：手动的优先，过滤噪声与分级标签，限制数量。"""
+        """挑出真正要写进文件名的标签：手动的优先，过滤噪声与分级标签，限制数量。
+
+        若设置了 tag_most_specific_on_disk（默认开），父子标签只保留最具体的那个
+        （例如同时有「裙子」和「白裙子」时文件名里只写「白裙子」）。
+        数据库里的标签一个都不少，搜索与模型反馈都按数据库走，不受这里影响。
+        """
         max_tags = max_tags or self.settings.disk_max_tags
         rows = self.store.tags_for_file(file_id)
         scored: list[tuple[int, int, str]] = []
@@ -952,7 +996,10 @@ class Library:
             pri = SOURCE_PRIORITY.get(t["source"], 9)
             scored.append((pri, CATEGORY_PRIORITY.get(t["category"], 9), t["name"]))
         scored.sort(key=lambda x: (x[0], x[1], x[2].lower()))
-        return [name for _, _, name in scored[:max_tags]]
+        names = [name for _, _, name in scored]
+        if getattr(self.settings, "tag_most_specific_on_disk", True):
+            names = self.most_specific_tags(names, self.store.tag_child_map())
+        return names[:max_tags]
 
     def apply_disk_names(self, file_ids: Sequence[int],
                          progress: Callable[[str, float], None] | None = None) -> dict:
@@ -973,7 +1020,12 @@ class Library:
             p = Path(r["path"])
             tags = self.disk_tags_for_file(int(r["id"]))
             base, _ = naming.split_name(p.stem)
-            stem = naming.build_name(base, tags, keep_base=self.settings.rename_keep_original)
+            if not tags and not self.settings.rename_keep_original:
+                # 只用标签命名、但这张图没有任何可写标签 → 不要把它改成 "untitled"，
+                # 只把旧的 [标签] 块去掉，去掉后为空就保持原名。
+                stem = base or p.stem
+            else:
+                stem = naming.build_name(base, tags, keep_base=self.settings.rename_keep_original)
             new_path = p.with_name(stem + p.suffix.lower())
             k = 2
             while new_path.exists() and new_path.resolve() != p.resolve():
@@ -1049,7 +1101,13 @@ class Library:
         if not old_dir.exists():
             return False
         tags = self._series_tag_union(series_id)
-        new_name = naming.build_series_dirname(s["name"] or old_dir.name, tags,
+        # 用户在「新建/合并系列」里手填的系列标签也要保留（之前会被这次重命名吃掉）
+        for t in (s["tags"] or "").split():
+            if t and t not in tags:
+                tags.append(t)
+        # 文件夹名同样"只写最具体的标签"，但 series.tags 里仍保留完整标签集（搜索/反馈不受影响）
+        dir_tags = self.dir_tags(tags)
+        new_name = naming.build_series_dirname(s["name"] or old_dir.name, dir_tags,
                                                max_tags=self.settings.series_folder_max_tags)
         if old_dir.name == new_name:
             self.store.execute("UPDATE series SET tags=? WHERE id=?", (" ".join(tags), series_id))
@@ -1098,7 +1156,7 @@ class Library:
         digits = digits or self.settings.page_digits
         mode = mode or self.settings.series_move_mode
 
-        dirname = naming.build_series_dirname(name, tags)
+        dirname = naming.build_series_dirname(name, self.dir_tags(tags))
         target = parent / dirname
         i = 2
         while target.exists() and not target.is_dir():
@@ -1197,7 +1255,8 @@ class Library:
             first = Path(rows[0]["path"])
             root = self.store.one("SELECT path FROM roots WHERE id=?", (int(rows[0]["root_id"]),))
             base = Path(root["path"]) if root else first.parent
-            target = base / naming.build_series_dirname(name or first.parent.name or "系列", tags,
+            target = base / naming.build_series_dirname(name or first.parent.name or "系列",
+                                                       self.dir_tags(tags),
                                                        max_tags=self.settings.series_folder_max_tags)
         if target.exists() and not target.is_dir():
             return {"ok": False, "msg": f"目标已存在同名文件：{target}"}
@@ -1882,15 +1941,27 @@ class Library:
 
     @staticmethod
     def most_specific_tags(tags: Sequence[str], child_map: dict) -> list[str]:
-        """同时存在父标签和子标签时，只保留子标签（显示用）。"""
+        """同时存在父标签和子标签时，只保留最具体的那个（显示/写文件名共用）。
+
+        沿从属关系往下走（A→B→C），只要图上还有更具体的后代就丢掉当前标签；
+        带 visited 防环（几个节点互连成圈时只丢掉确实还有后代的那些，且不会全丢光）。
+        """
         tagset = set(tags)
         drop: set[str] = set()
         for t in tags:
-            for child in child_map.get(t, ()):     # t 有子标签且子标签也在这张图上 → 丢掉父标签
-                if child in tagset:
+            stack = list(child_map.get(t, ()))
+            visited: set[str] = set()
+            while stack:
+                child = stack.pop()
+                if child in visited:
+                    continue
+                visited.add(child)
+                if child in tagset and child != t:
                     drop.add(t)
                     break
-        return [t for t in tags if t not in drop]
+                stack.extend(child_map.get(child, ()))
+        kept = [t for t in tags if t not in drop]
+        return kept or list(tags)        # 圈里全被判掉时保底：至少别把标签丢空
 
     # -------------------------------------------------- 任务持久化（断电续跑）
     def start_job(self, kind: str, ids: Sequence[int], params: dict | None = None, note: str = "") -> int:

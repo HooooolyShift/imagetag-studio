@@ -547,8 +547,9 @@ class Store:
             if not name:
                 continue
             tid = self.ensure_tag(name, category)
-            # 手动/系列/人脸/从文件名读回 的标签直接生效；AI 产生的才进待审核
-            st = status or ("confirmed" if source in ("manual", "series", "face", "filename") else "pending")
+            # 手动/系列/人脸/从文件名读回(含推断出的父标签) 直接生效；AI 产生的才进待审核
+            st = status or ("confirmed" if source in ("manual", "series", "face", "filename",
+                                                      "filename_parent") else "pending")
             verb = "INSERT OR REPLACE" if override else "INSERT OR IGNORE"
             cur = c.execute(f"{verb} INTO file_tags(file_id,tag_id,source,score,status,updated_at) "
                             f"VALUES(?,?,?,?,?,?)", (file_id, tid, source, float(score), st, now))
@@ -746,6 +747,16 @@ class Store:
                 "JOIN tags p ON p.id=e.parent_id JOIN tags c ON c.id=e.child_id "
                 "WHERE e.parent_kind='tag' AND e.child_kind='tag'"):
             out.setdefault(r["pname"], set()).add(r["cname"])
+        return out
+
+    def tag_parent_map(self) -> dict[str, set[str]]:
+        """子标签名 -> 其直接父标签名集合（文件名只写子标签时，用它补回父标签）。"""
+        out: dict[str, set[str]] = {}
+        for r in self.query(
+                "SELECT p.name AS pname, c.name AS cname FROM taxonomy_edges e "
+                "JOIN tags p ON p.id=e.parent_id JOIN tags c ON c.id=e.child_id "
+                "WHERE e.parent_kind='tag' AND e.child_kind='tag'"):
+            out.setdefault(r["cname"], set()).add(r["pname"])
         return out
 
     def expand_tag_names(self, names: Sequence[str]) -> list[str]:

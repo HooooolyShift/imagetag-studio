@@ -854,6 +854,16 @@ class SettingsDialog(QDialog):
         self.keep_orig.setToolTip("勾选：IMG_1234 [初音未来 泳装].jpg\n"
                                   "取消： [初音未来 泳装].jpg（同名自动加 _2、_3 后缀）")
         f1.addRow("", self.keep_orig)
+        self.specific_only = QCheckBox("文件名里父子标签只留最具体的（有「白裙子」就不写「裙子」）")
+        self.specific_only.setChecked(getattr(settings, "tag_most_specific_on_disk", True))
+        self.specific_only.setToolTip("只影响写进文件名/系列文件夹名的标签；\n"
+                                      "库里始终保留全部标签，检索（筛父标签会带出子标签）与模型反馈都不受影响。")
+        f1.addRow("", self.specific_only)
+        self.infer_parent = QCheckBox("扫描回读文件名时，按从属关系自动补回父标签")
+        self.infer_parent.setChecked(getattr(settings, "infer_parent_tags", True))
+        self.infer_parent.setToolTip("文件名只写了「白裙子」时，重新扫描/换机器建索引会自动把\n"
+                                     "它的父标签（裙子、服装…）一起补进库里，避免丢层级。")
+        f1.addRow("", self.infer_parent)
         tabs.addTab(w1, "常规")
 
         # WD14
@@ -1001,6 +1011,8 @@ class SettingsDialog(QDialog):
         settings.library_only_search = self.lib_only.isChecked()
         settings.auto_import_after_review = self.auto_import.isChecked()
         settings.rename_keep_original = self.keep_orig.isChecked()
+        settings.tag_most_specific_on_disk = self.specific_only.isChecked()
+        settings.infer_parent_tags = self.infer_parent.isChecked()
         settings.dup_threshold = int(self.dup_th.value())
         settings.dup_use_clip = self.dup_clip.isChecked()
         settings.rating_enabled = self.rating_on.isChecked()

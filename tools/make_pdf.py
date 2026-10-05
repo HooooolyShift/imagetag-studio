@@ -313,6 +313,18 @@ def build_pdf(out: Path, shots: dict[str, Path], hw: dict, rec: dict) -> None:
                "两阶段改名所以互换不会互相覆盖）。可多选一起拖。", st["body"]))
     S += img_flow(shots.get("series"), st, caption="图 9-2　系列视图：按页码排列，拖动即可改顺序并自动重命名")
 
+    S.append(P("写回文件名的命名规则", st["h2"]))
+    S.append(bullets([
+        "默认<b>只用标签命名</b>：<code>[初音未来 泳装].png</code>；需要保留原文件名时，"
+        "到「设置 → 常规」勾选「写回文件名时保留原文件名」，就变成 <code>IMG_1234 [初音未来 泳装].png</code>",
+        "父子标签只写最具体的那个：同时有「裙子」和「白裙子」时，文件名里只写「白裙子」"
+        "（设置里可关掉；系列文件夹名同理）",
+        "库里仍然保留全部标签：检索时选父标签会自动带出所有子标签，审核结论与模型学习也照常使用全部标签，"
+        "所以文件名简化<b>不会</b>影响搜索和识别效果",
+        "扫描回读会补回父标签：文件名里只有子标签时，重新扫描（或换机器重建索引）会按标签体系的从属关系"
+        "自动把「裙子、服装」这类父标签补回库里；依赖库里的从属关系，所以换机器时记得一并导入学习包",
+    ], st["bullet"]))
+
     S.append(PageBreak())
     # ---------------- 10 分级 ----------------
     S.append(P("十、分级识别（对齐 pixiv）", st["h1"]))
@@ -364,6 +376,10 @@ def build_pdf(out: Path, shots: dict[str, Path], hw: dict, rec: dict) -> None:
         ("导入时报 WinError 32（文件被占用）？", "已内置处理：导入前释放文件句柄 + 移动失败自动重试。"
                                           "如果仍出现，通常是杀毒软件正在扫描，稍等或把图库目录加入白名单。"),
         ("文件名太长导致写入失败？", "写回文件名时会自动过滤噪声标签、限制 12 个标签、总长 ≤150 字符。"),
+        ("文件名里怎么没有「裙子」这类父标签？",
+         "默认只写最具体的标签（有「白裙子」就不写「裙子」）。库里的标签是完整的："
+         "检索时选「裙子」照样能带出「白裙子」的图，模型学习也照常。重新扫描时还会按从属关系把父标签补回库里；"
+         "想连父标签一起写进文件名，到「设置 → 常规」关掉「文件名里父子标签只留最具体的」即可。"),
         ("图片被删了但记录还在？", "重新扫描会把丢失的文件标记为 missing，不再显示；检索与查重都会跳过。"),
         ("换电脑怎么迁移？", "拷贝安装目录（含 models 与 python）与数据目录 %LOCALAPPDATA%\\ImageTagStudio 即可，"
                         "或在新机器上重跑安装包后覆盖数据目录。"),
@@ -381,7 +397,9 @@ def build_pdf(out: Path, shots: dict[str, Path], hw: dict, rec: dict) -> None:
         "安装目录：程序、内置 Python、模型（models/）、性能档案（perf_profile.json）、卸载.cmd",
         "数据目录：<code>%LOCALAPPDATA%\\ImageTagStudio</code> —— library.db（索引）、thumbs/（缩略图）、settings.json",
         "图库目录：<code>&lt;盘符&gt;:\\ImageTags</code> —— 正式存放图片；查重/删除的文件进 <code>.removed</code>",
-        "标签写回文件名约定：<code>&lt;原名&gt; [tag1 tag2].jpg</code>；系列为 <code>&lt;系列名&gt; [标签]\\001.jpg</code>",
+        "标签写回文件名约定：默认 <code>[tag1 tag2].jpg</code>（只用标签命名；可在设置里改成保留原名的 "
+        "<code>&lt;原名&gt; [tag1 tag2].jpg</code>）；系列为 <code>&lt;系列名&gt; [标签]\\001.jpg</code>；"
+        "父子标签只写最具体的那个（库里仍有全部标签）",
     ], st["bullet"]))
     S.append(P("附录 B　快捷键与技巧", st["h1"]))
     S.append(bullets([

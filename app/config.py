@@ -58,6 +58,7 @@ SOURCE_LABELS = {
     "face": "人脸",
     "series": "系列",
     "filename": "文件名",
+    "filename_parent": "文件名(推断)",
     "probe": "自训练",
 }
 
@@ -144,7 +145,9 @@ class Settings:
     page_digits: int = 3
     series_move_mode: str = "copy"         # copy / move
     disk_max_tags: int = 12                # 写回文件名时最多写几个标签（避免路径超长）
-    rename_keep_original: bool = True      # 写回文件名时是否保留原文件名（False=只用标签命名）
+    rename_keep_original: bool = False     # 写回文件名时是否保留原文件名（默认只用标签命名）
+    tag_most_specific_on_disk: bool = True  # 写回文件名时父子标签只留最具体的（有白裙子就不再写裙子）
+    infer_parent_tags: bool = True          # 扫描时从文件名读回标签后，按从属关系自动补回父标签
     series_folder_max_tags: int = 8        # 系列文件夹名最多带几个标签
     # 专用图库（Steam 式多库）
     library_dir_name: str = "ImageTags"    # 每个盘下的图库目录名，例如 E:\ImageTags
