@@ -1722,6 +1722,37 @@ class Library:
             out.setdefault(int(r["tid"]), []).append(r["name"])
         return out
 
+    def relink_all_categories(self, progress=None) -> dict:
+        """按 tags.category 重建"分类边"：删掉与该标签当前分类不一致的旧连线，补上正确的连线。
+
+        批量改分类之后必须调用它，否则图谱里的旧连线会把分类改回去（sync_tag_categories_from_graph 是
+        给"手动连线"用的反向同步，方向相反，别混用）。
+        """
+        node_key: dict[int, str] = {}
+        key_node: dict[str, int] = {}
+        for n in self.store.list_nodes():
+            k = self.store.category_key_by_label(n["name"])
+            if k:
+                node_key[int(n["id"])] = k
+                key_node.setdefault(k, int(n["id"]))
+        fixed = dropped = 0
+        for t in self.store.list_tags():
+            tid, cat = int(t["id"]), t["category"]
+            for e in self.store.query(
+                    "SELECT id,parent_id FROM taxonomy_edges WHERE child_kind='tag' AND child_id=?", (tid,)):
+                k = node_key.get(int(e["parent_id"]))
+                if k and k != cat:
+                    self.store.unlink_edge(int(e["id"]))
+                    dropped += 1
+            nid = key_node.get(cat)
+            if nid and not self.store.one(
+                    "SELECT 1 FROM taxonomy_edges WHERE parent_kind='node' AND parent_id=? "
+                    "AND child_kind='tag' AND child_id=?", (nid, tid)):
+                self.store.link(nid, "tag", tid)
+                fixed += 1
+        self.store.refresh_counts()
+        return {"linked": fixed, "unlinked": dropped}
+
     # -------------------------------------------------- 任务持久化（断电续跑）
     def start_job(self, kind: str, ids: Sequence[int], params: dict | None = None, note: str = "") -> int:
         return self.store.create_job(kind, ids, params, note)

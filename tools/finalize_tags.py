@@ -40,8 +40,8 @@ def main() -> int:
     print(f"其余杂项归类 {len(left)} 个 → 来源/杂项")
 
     s.refresh_counts()
-    print("重建分类节点与连线:", lib.sync_taxonomy())
-    lib.sync_tag_categories_from_graph()      # 保证 tags.category 与图谱连线一致
+    print("重建分类节点:", lib.sync_taxonomy())
+    print("按新分类重建连线:", lib.relink_all_categories())   # 关键：不能用反向同步，会把分类改回去
     s.prune_dangling_edges()
     s.refresh_counts()
     dist = {r["category"]: r["c"] for r in
