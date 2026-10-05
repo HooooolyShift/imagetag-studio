@@ -51,9 +51,13 @@ class _ThumbJob(QRunnable):
     def run(self) -> None:  # pragma: no cover - 线程内运行
         try:
             p = imaging.make_thumb(self.src, self.file_id, self.mtime, self.size)
-            self.signals.ready.emit(self.file_id, str(p) if p else "")
+            path = str(p) if p else ""
         except Exception:
-            self.signals.ready.emit(self.file_id, "")
+            path = ""
+        try:                      # 对话框可能已关闭 → 信号源被销毁，忽略即可
+            self.signals.ready.emit(self.file_id, path)
+        except RuntimeError:
+            pass
 
 
 class ThumbPool:
