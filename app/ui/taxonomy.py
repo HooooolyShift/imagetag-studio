@@ -455,9 +455,17 @@ class TaxonomyDialog(QDialog):
                 if n["collapsed"] or n["x"] is not None:
                     continue                     # 用户手动设过折叠/位置的不动
                 kids = self.store.children_of_node(int(nid))
-                if len(kids) >= 15:
+                if not kids:
+                    continue
+                is_root = not self.store.one(
+                    "SELECT 1 FROM taxonomy_edges WHERE child_kind='node' AND child_id=?", (int(nid),))
+                tag_ratio = sum(1 for c in kids if c["kind"] == "tag") / len(kids)
+                # 只折叠"分类节点"（有父级）且子项以标签为主、数量多的；根节点永不折叠
+                if (not is_root) and tag_ratio >= 0.8 and len(kids) >= 15:
                     self.store.update_node(int(nid), collapsed=1)
                     self._collapsed_now.add(int(nid))     # sqlite3.Row 只读，用集合记本次折叠
+                elif is_root and n["collapsed"]:
+                    self.store.update_node(int(nid), collapsed=0)   # 根节点曾被折叠 → 恢复
         VISIBLE_TAG_CAP = 600
         # 折叠：把「已折叠」节点的所有子孙藏起来；用 visited 防环（有人乱连成圈也不会死循环）
         hidden: set[tuple[str, int]] = set()
