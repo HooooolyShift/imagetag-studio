@@ -157,6 +157,8 @@ class ReviewDialog(QDialog):
         self.new_tag = QLineEdit()
         self.new_tag.setPlaceholderText("输入标签名后回车（直接生效）")
         self.new_tag.returnPressed.connect(self.add_manual_tag)
+        from .common import attach_tag_completer
+        attach_tag_completer(self.new_tag, self.store)
         add_row.addWidget(self.new_tag, 1)
         self.new_cat = category_combo(self.store)
         add_row.addWidget(self.new_cat)
@@ -489,7 +491,8 @@ class ReviewDialog(QDialog):
     # ------------------------------------------------------------ 新增标签
     def add_manual_tag(self) -> None:
         """审核时补一个 AI 漏掉的标签（直接生效，并立刻回馈模型）。"""
-        name = self.new_tag.text().strip()
+        from .. import tag_i18n
+        name = tag_i18n.parse_input(self.new_tag.text(), self.store)
         if not name:
             self.status.setText("先输入标签名再按回车")
             return

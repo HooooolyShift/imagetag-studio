@@ -121,6 +121,8 @@ class ImportDialog(QDialog):
         row = QHBoxLayout()
         self.tag_edit = QLineEdit()
         self.tag_edit.setPlaceholderText("例如：2026春 外拍 泳装（空格分隔多个）")
+        from .common import attach_tag_completer
+        attach_tag_completer(self.tag_edit, self.store)
         row.addWidget(self.tag_edit, 1)
         self.tag_cat = category_combo(self.store)
         row.addWidget(self.tag_cat)

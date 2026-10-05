@@ -239,3 +239,31 @@ def display(name: str, zh_hint: str = "") -> str:
     """审核界面用：中文（英文原名）。"""
     zh = translate(name, zh_hint)
     return zh if zh == name else f"{zh}（{name}）"
+
+
+_PAREN = re.compile(r"^(.*?)（([^（）]+)）$")
+
+
+def parse_input(text: str, store=None) -> str:
+    """把输入框里的文字规范成标签名。
+
+    - "明日方舟（arknights）" → arknights（联想菜单插入的格式）
+    - "明日方舟" → 若库里有对应中文名的标签就返回它的英文名，否则原样返回
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    # 去掉联想菜单里的「分类 · 」前缀
+    if " · " in t:
+        t = t.split(" · ", 1)[1].strip()
+    m = _PAREN.match(t)
+    if m:
+        return m.group(2).strip() or m.group(1).strip()
+    if store is not None and re.search(r"[\u4e00-\u9fff]", t):
+        row = store.one("SELECT name FROM tags WHERE zh=?", (t,))
+        if row:
+            return row["name"]
+        for name, zh in MODEL_DICT.items():
+            if zh == t:
+                return name
+    return t

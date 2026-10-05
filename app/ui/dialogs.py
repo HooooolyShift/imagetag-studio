@@ -249,6 +249,9 @@ class TagEditDialog(QDialog):
         form = QFormLayout(self)
         self.name_edit = QLineEdit(name)
         form.addRow("标签名", self.name_edit)
+        if store is not None:
+            from .common import attach_tag_completer
+            attach_tag_completer(self.name_edit, store)
         self.cat = category_combo(store, category)
         form.addRow("标签类型", self.cat)
         self.prompt_edit = QLineEdit(prompt)
@@ -320,6 +323,10 @@ class TagManagerDialog(QDialog):
         self.table.setColumnWidth(4, 320)
         self.table.setColumnWidth(5, 170)
         self.table.itemChanged.connect(self._item_changed)
+        self.table.setSortingEnabled(False)
+        self._limit_note = QLabel("")
+        self._limit_note.setStyleSheet("color:#ffcc66;")
+        v.addWidget(self._limit_note)
         v.addWidget(self.table, 1)
         bottom = QHBoxLayout()
         self.info = QLabel("")
@@ -334,19 +341,29 @@ class TagManagerDialog(QDialog):
         self.reload()
 
     def reload(self) -> None:
+        """只渲染前 N 行（其余靠搜索框定位）。
+
+        以前每行都建一个下拉框控件，标签上千时创建上万个 QWidget → 打开就卡住。
+        """
+        LIMIT = 400
         self._loading = True
-        rows = self.store.list_tags(self.search.text().strip())
+        all_rows = self.store.list_tags(self.search.text().strip())
+        rows = all_rows[:LIMIT]
+        self._limit_note.setText(
+            (f"标签共 {len(all_rows)} 个，为流畅只列出前 {LIMIT} 个 —— 用上方搜索框找具体标签"
+             if len(all_rows) > LIMIT else ""))
         self.table.setRowCount(len(rows))
         for i, t in enumerate(rows):
-            it_name = QTableWidgetItem(t["name"])
+            from .. import tag_i18n, categories as _cats
+            it_name = QTableWidgetItem(tag_i18n.display(t["name"], t["zh"] or ""))
+            it_name.setToolTip(f"{t['name']}（双击行或用「编辑选中」改类型/提示词）")
             it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
             it_name.setData(Qt.UserRole, int(t["id"]))
             self.table.setItem(i, 0, it_name)
-            cb = category_combo(self.store, t["category"])
-            cb.currentIndexChanged.connect(
-                lambda _i, tid=int(t["id"]), c=cb: (self._set(tid, category=c.currentData())
-                                                    if c.currentData() != CategoryCombo.NEW_SENTINEL else None))
-            self.table.setCellWidget(i, 1, cb)
+            cat_item = QTableWidgetItem(_cats.label_of(self.store, t["category"]))
+            cat_item.setData(Qt.UserRole, t["category"])
+            cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(i, 1, cat_item)
             it_cnt = QTableWidgetItem(str(t["count"]))
             it_cnt.setFlags(it_cnt.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(i, 2, it_cnt)

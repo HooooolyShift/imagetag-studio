@@ -62,6 +62,8 @@ class TagPanel(QWidget):
         self.new_tag = QLineEdit()
         self.new_tag.setPlaceholderText("新标签…")
         self.new_tag.returnPressed.connect(self.add_new_tag)
+        from .common import attach_tag_completer
+        attach_tag_completer(self.new_tag, self.store)
         add.addWidget(self.new_tag, 1)
         self.new_cat = category_combo(self.store)
         add.addWidget(self.new_cat)
@@ -296,7 +298,8 @@ class TagPanel(QWidget):
         QTimer.singleShot(0, self.reload)
 
     def add_new_tag(self) -> None:
-        name = self.new_tag.text().strip()
+        from .. import tag_i18n
+        name = tag_i18n.parse_input(self.new_tag.text(), self.store)
         if not name:
             return
         if not self.file_ids:

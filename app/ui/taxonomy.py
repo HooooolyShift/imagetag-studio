@@ -276,6 +276,8 @@ class NewTagForNodeDialog(QDialog):
         form = QFormLayout(self)
         self.name = QLineEdit(prefill)
         form.addRow("标签名", self.name)
+        from .common import attach_tag_completer
+        attach_tag_completer(self.name, store)
         self.cat = category_combo(store)
         form.addRow("类型", self.cat)
         self.prompt = QLineEdit()
@@ -322,6 +324,11 @@ class TaxonomyDialog(QDialog):
         b_layout = QPushButton("自动排列")
         b_layout.clicked.connect(self.do_layout)
         bar.addWidget(b_layout)
+        b_link = QPushButton("按分类自动连线")
+        b_link.setToolTip("把库里所有标签按它们的「类型」连到对应分类节点上（已连过的不会重复），"
+                          "这样图谱从一开始就是连通的")
+        b_link.clicked.connect(self.auto_link_by_category)
+        bar.addWidget(b_link)
         self.show_all = QCheckBox("显示未分类标签")
         self.show_all.toggled.connect(self.rebuild)
         bar.addWidget(self.show_all)
@@ -382,6 +389,10 @@ class TaxonomyDialog(QDialog):
     def rebuild(self) -> None:
         if self.store.one("SELECT COUNT(*) c FROM nodes")["c"] == 0:
             self.library.sync_taxonomy()
+        # 图谱里还有没连线的标签时，自动补一次「按分类连线」，避免打开是散的
+        if self.store.one("SELECT COUNT(*) c FROM tags")["c"] and \
+                self.store.one("SELECT COUNT(*) c FROM taxonomy_edges")["c"] == 0:
+            self.library.sync_taxonomy()
         self.store.refresh_counts()
         self.canvas.clear()
         nodes = {int(n["id"]): n for n in self.store.list_nodes()}
@@ -409,7 +420,9 @@ class TaxonomyDialog(QDialog):
                 y += NODE_H + 14
             else:
                 y2 += NODE_H + 14
-            self.canvas.add_node("tag", tid, t["name"], int(t["count"]), x, yy)
+            from .. import tag_i18n
+            self.canvas.add_node("tag", tid, tag_i18n.translate(t["name"], t["zh"] or ""),
+                                 int(t["count"]), x, yy)
         for e in self.store.edges():
             if (e["child_kind"], int(e["child_id"])) not in self.canvas.items:
                 continue
@@ -443,7 +456,10 @@ class TaxonomyDialog(QDialog):
             for ch in self.store.children_of_node(node_id):
                 if ch["kind"] == "node":
                     continue
-                sub = QTreeWidgetItem([f"{ch['name']}" + (f"  ({ch['count']})" if ch["count"] else "")])
+                from .. import tag_i18n as _i18n
+                row = self.store.one("SELECT name,zh FROM tags WHERE id=?", (int(ch["cid"]),))
+                label_txt = _i18n.display(row["name"], row["zh"] or "") if row else ch["name"]
+                sub = QTreeWidgetItem([label_txt + (f"  ({ch['count']})" if ch["count"] else "")])
                 sub.setData(0, Qt.UserRole, ("tag", int(ch["cid"])))
                 it.addChild(sub)
             for cid in child_nodes.get(node_id, []):
@@ -656,6 +672,14 @@ class TaxonomyDialog(QDialog):
         self.canvas.auto_layout()
         self.canvas.save_positions(self.store)
         self.canvas.scene_.setSceneRect(self.canvas.scene_.itemsBoundingRect().adjusted(-80, -80, 120, 120))
+
+    def auto_link_by_category(self) -> None:
+        """按标签的「类型」把标签连到同名分类节点上（幂等，可反复点）。"""
+        n = self.library.sync_taxonomy()
+        self.changed.emit()
+        self.rebuild()
+        self.do_layout()
+        self.detail.setText(f"已按分类自动连线：补建分类节点 {n} 个；所有标签都已挂到对应分类下")
 
     # ================= 右键菜单 =================
     def canvas_menu(self, pos) -> None:

@@ -142,3 +142,43 @@ def label(text: str, color: str | None = None, bold: bool = False) -> QLabel:
         f.setBold(True)
         lb.setFont(f)
     return lb
+
+
+def attach_tag_completer(line_edit, store) -> None:
+    """给标签输入框加联想（所有"能建标签"的地方都用它）。
+
+    数据源 = **按图谱分类组织的全量标签列表**：
+      - 库里的标签（含它的图谱分类，形如「服装 · 白裙子（white_dress）」）
+      - 内置汉化词典里的全部标签（含尚未入库的，形如「裙子（skirt）」）
+    键入时按包含关系过滤；选中已有标签会解析成它的规范标签名，直接打上已有 tag。
+    """
+    from PySide6.QtCore import QStringListModel, Qt
+    from PySide6.QtWidgets import QCompleter
+    from .. import tag_i18n
+    words: list[str] = []
+    try:
+        groups = store.tag_name_groups()          # tag -> [图谱分类名]
+        for t in store.list_tags():
+            zh = t["zh"] or tag_i18n.translate(t["name"])
+            base = f"{zh}（{t['name']}）" if zh and zh != t["name"] else t["name"]
+            for cat in (groups.get(t["name"]) or [])[:2]:
+                words.append(f"{cat} · {base}")
+            words.append(base)
+    except Exception:
+        pass
+    # 词典里的全部标签（含未入库的），保证"随时新增 tag"也能立刻联想
+    from .. import categories as _cats
+    cat_label = {}
+    try:
+        for c in _cats.ordered(store):
+            cat_label[c["key"]] = c["label"]
+    except Exception:
+        pass
+    for name, zh in tag_i18n.MODEL_DICT.items():
+        words.append(f"{zh}（{name}）" if zh and zh != name else name)
+    comp = QCompleter(sorted(set(words)), line_edit)
+    comp.setCaseSensitivity(Qt.CaseInsensitive)
+    comp.setFilterMode(Qt.MatchFlag.MatchContains)
+    comp.setMaxVisibleItems(14)
+    comp.setCompletionMode(QCompleter.PopupCompletion)
+    line_edit.setCompleter(comp)
