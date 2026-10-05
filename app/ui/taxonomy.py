@@ -328,6 +328,7 @@ class TaxonomyDialog(QDialog):
         self.resize(1460, 900)
         self.current: tuple[str, int] | None = None
         self._collapsed_now: set[int] = set()
+        self._expanded_now: set[int] = set()
         self.connect_source: NodeItem | None = None
         v = QVBoxLayout(self)
 
@@ -451,6 +452,12 @@ class TaxonomyDialog(QDialog):
         # 想看点开那个分类即可；同时给可见标签数设上限，避免一次画上千个节点。
         tag_total = self.store.one("SELECT COUNT(*) c FROM tags")["c"]
         if tag_total > 200:
+            # 先把"根节点"的折叠状态清掉（根节点被折叠会把所有分类藏起来）
+            for nid in list(nodes.keys()):
+                if not self.store.one("SELECT 1 FROM taxonomy_edges WHERE child_kind='node' AND child_id=?",
+                                      (int(nid),)) and nodes[nid]["collapsed"]:
+                    self.store.update_node(int(nid), collapsed=0)
+                    self._expanded_now.add(int(nid))
             for nid, n in nodes.items():
                 if n["collapsed"] or n["x"] is not None:
                     continue                     # 用户手动设过折叠/位置的不动
@@ -464,14 +471,12 @@ class TaxonomyDialog(QDialog):
                 if (not is_root) and tag_ratio >= 0.8 and len(kids) >= 15:
                     self.store.update_node(int(nid), collapsed=1)
                     self._collapsed_now.add(int(nid))     # sqlite3.Row 只读，用集合记本次折叠
-                elif is_root and n["collapsed"]:
-                    self.store.update_node(int(nid), collapsed=0)   # 根节点曾被折叠 → 恢复
         VISIBLE_TAG_CAP = 600
         # 折叠：把「已折叠」节点的所有子孙藏起来；用 visited 防环（有人乱连成圈也不会死循环）
         hidden: set[tuple[str, int]] = set()
         stack, visited = [], set()
         for nid, n in nodes.items():
-            if n["collapsed"] or int(nid) in self._collapsed_now:
+            if (n["collapsed"] or int(nid) in self._collapsed_now) and int(nid) not in self._expanded_now:
                 stack.append(int(nid))
         while stack:
             nid = stack.pop()
