@@ -132,6 +132,19 @@ class NodeItem(QGraphicsRectItem):
         d = min(self.w, self.h)
         r = QRectF(0, 0, d, d)
         fill, border = family_color(self.family, self.level)
+        # 拉得很远时圆圈只有几个像素：去掉描边、直接点一个实心点。
+        # 4000 多个节点每帧都画描边的话，缩放手感会明显发涩。
+        tiny = painter.worldTransform().m11() < 0.22 and not self.isSelected()
+        if tiny:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(fill.lighter(125)))
+            if painter.worldTransform().m11() < 0.08:
+                # 只有几个像素：关掉抗锯齿、直接填方块，省掉圆形的逐像素计算
+                painter.setRenderHint(QPainter.Antialiasing, False)
+                painter.drawRect(r)
+            else:
+                painter.drawEllipse(r)
+            return
         if self.kind == "node":
             # 分类：大圆，同样按层级上色（第 1 层），描边更粗更亮
             painter.setBrush(QBrush(fill.darker(115)))
@@ -359,13 +372,28 @@ class GraphCanvas(QGraphicsView):
         """缩得太小时不画圈内文字：几千个节点的文字同屏是潜在的卡顿源。"""
         zoom = float(self.transform().m11())
         show = zoom >= 0.55                      # 阈值：超过 55% 才显示文字
-        changed = show != getattr(self, "_text_visible", None)
+        # 拉远时改用 NoCache：DeviceCoordinateCache 会为每个节点缓存一张位图，
+        # 缩放过程中几千张缓存都要按新比例重画一遍，这才是"拉远就卡"的主因；
+        # 关掉缓存后画的就是个圆圈，反而更快，也不会再拿着旧位图把文字显示出来。
+        cache = (QGraphicsItem.DeviceCoordinateCache if zoom >= 0.8
+                 else QGraphicsItem.NoCache)
+        changed = (show != getattr(self, "_text_visible", None)
+                   or cache != getattr(self, "_cache_mode", None))
         self._text_visible = show
+        self._cache_mode = cache
         if not changed:
             return
         for it in self.items.values():
             it.text_hidden = not show
-            it.update()
+            if it.cacheMode() != cache:
+                it.setCacheMode(cache)
+        # 拉得很远时连线只是糊成一片灰，全部隐藏能省掉每帧几千条路径的绘制
+        show_edges = zoom >= 0.25
+        if show_edges != getattr(self, "_edges_visible", None):
+            self._edges_visible = show_edges
+            for ed in self.edges:
+                ed.setVisible(show_edges)
+        self.viewport().update()                 # 一次刷新，不用几千次 item.update()
 
     def set_heat_mode(self, on: bool) -> None:
         """切换热度视图：节点颜色改成"图片数"的热度色，并在左下角画图例。"""
@@ -857,17 +885,7 @@ class GraphCanvas(QGraphicsView):
         # 松开鼠标：被拖动过的节点弹回布局位置（弹簧）
         dragged = [it for it in self.items.values() if getattr(it, "spring_home", None)]
         if dragged and event.button() == Qt.LeftButton:
-            from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QPointF as _P
-            for it in dragged:
-                hx, hy, _w = it.spring_home
-                if abs(it.pos().x() - hx) + abs(it.pos().y() - hy) < 1.0:
-                    continue
-                anim = QPropertyAnimation(it, b"pos", it)
-                anim.setDuration(int(getattr(self.settings_ref, "graph_anim_ms", 340) or 340) + 80)
-                anim.setEasingCurve(QEasingCurve.OutBack)     # 带一点回弹
-                anim.setStartValue(it.pos())
-                anim.setEndValue(_P(hx, hy))
-                anim.start(QPropertyAnimation.DeleteWhenStopped)
+            self._spring_back(dragged)
         item = self.itemAt(event.pos())
         while item is not None and not isinstance(item, (NodeItem, EdgeItem)):
             item = item.parentItem()
@@ -877,6 +895,45 @@ class GraphCanvas(QGraphicsView):
             self.edgeClicked.emit(item.edge_id)
         if self._pending_save:
             self.moved.emit()
+
+    def _spring_back(self, items) -> None:
+        """松手后把拖动过的节点弹回布局位置。
+
+        注意：QGraphicsItem **不是** QObject，拿它当 QPropertyAnimation 的目标会直接抛
+        TypeError（以前就是这个原因，回弹从来没生效）。这里改用 QVariantAnimation 自己插值。
+        """
+        from PySide6.QtCore import QEasingCurve, QVariantAnimation
+        moves = []
+        for it in items:
+            home = getattr(it, "spring_home", None)
+            if not home:
+                continue
+            hx, hy, _w = home
+            x0, y0 = it.pos().x(), it.pos().y()
+            if abs(x0 - hx) + abs(y0 - hy) < 1.0:
+                continue
+            moves.append((it, x0, y0, hx, hy))
+        if not moves:
+            return
+        old = getattr(self, "_spring_anim", None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(int(getattr(self.settings_ref, "graph_anim_ms", 340) or 340) + 90)
+        anim.setEasingCurve(QEasingCurve.OutBack)          # 稍微过冲一点再收回来，像弹簧
+
+        def step(t: float) -> None:
+            for it, x0, y0, hx, hy in moves:
+                it.setPos(x0 + (hx - x0) * t, y0 + (hy - y0) * t)
+
+        anim.valueChanged.connect(step)
+        self._spring_anim = anim
+        anim.start()
 
 
 class LinkTagsDialog(QDialog):
@@ -2125,3 +2182,4 @@ class RenameTagDialog(QDialog):
 
     def update_files(self) -> bool:
         return self.cb_files.isChecked()
+
