@@ -460,7 +460,7 @@ class MainWindow(QMainWindow):
         more.setMenu(menu)
         tb.addWidget(more)
         tb.addSeparator()
-        act("标签管理", self.open_tag_manager)
+        # 「标签管理」已并入图谱页面的左侧标签页，这里不再单独列出
         act("类型管理", self.open_categories, "新增/改名/删除标签类型，并给类型配 CLIP 提示词模板")
         act("标签体系（图谱）", self.open_taxonomy, "分类节点 + 标签的关系图：多分类、连线、自动排列")
         act("人物管理", self.open_persons)
