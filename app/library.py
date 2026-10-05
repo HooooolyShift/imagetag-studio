@@ -1753,6 +1753,43 @@ class Library:
         self.store.refresh_counts()
         return {"linked": fixed, "unlinked": dropped}
 
+    # -------------------------------------------------- 标签从属（白裙子 → 裙子）
+    BASE_SUFFIXES = ("dress", "skirt", "shirt", "sweater", "jacket", "coat", "hat", "cap", "socks",
+                     "thighhighs", "pantyhose", "gloves", "shoes", "boots", "bikini", "swimsuit",
+                     "bra", "panties", "ribbon", "bow", "collar", "choker", "glasses", "hair",
+                     "eyes", "breasts", "kimono", "yukata", "uniform", "suit", "tie", "apron",
+                     "leotard", "armor", "cape", "tail", "wings", "horns")
+
+    def build_tag_hierarchy(self, progress=None) -> dict:
+        """按规则生成 tag→tag 从属关系（只在基础标签存在于库里时才连）。
+
+        规则：`<颜色/修饰>_<基础类>` → `<基础类>`，例如 white_dress → dress、black_skirt → skirt、
+        long_hair → hair（hair 存在时）。颜色+服装是覆盖最多的一类。
+        """
+        names = {t["name"] for t in self.store.list_tags()}
+        by_name = {t["name"]: int(t["id"]) for t in self.store.list_tags()}
+        made = 0
+        for name in names:
+            for suf in self.BASE_SUFFIXES:
+                if suf in names and name != suf and name.endswith("_" + suf):
+                    self.store.link_tag_sub(by_name[suf], by_name[name])   # 基础类 ← 具体类
+                    made += 1
+                    break
+        self.store.refresh_counts()
+        return {"links": made}
+
+    @staticmethod
+    def most_specific_tags(tags: Sequence[str], child_map: dict) -> list[str]:
+        """同时存在父标签和子标签时，只保留子标签（显示用）。"""
+        tagset = set(tags)
+        drop: set[str] = set()
+        for t in tags:
+            for child in child_map.get(t, ()):     # t 有子标签且子标签也在这张图上 → 丢掉父标签
+                if child in tagset:
+                    drop.add(t)
+                    break
+        return [t for t in tags if t not in drop]
+
     # -------------------------------------------------- 任务持久化（断电续跑）
     def start_job(self, kind: str, ids: Sequence[int], params: dict | None = None, note: str = "") -> int:
         return self.store.create_job(kind, ids, params, note)

@@ -439,6 +439,8 @@ class MainWindow(QMainWindow):
                 ("导出 SD 字幕（.txt，给 kohya/WebUI 训练用）", self.export_captions_ui,
                  "给选中的图导出同名 .txt 字幕（逗号分隔，只含已生效标签 + 可选分级）"),
                 (None, None, None),
+                ("按规则生成标签从属关系", self.build_hierarchy_ui,
+                 "根据「颜色+基础类」等规则自动建立 tag→tag 从属（白裙子→裙子），之后图片界面只显示更具体的标签"),
                 ("清理失效目录/文件", self.cleanup_missing_ui,
                  "删掉的文件夹/库不再留在界面里：失效的库记录删除，已不存在的文件标记为缺失")):
             if text is None:
@@ -804,6 +806,11 @@ class MainWindow(QMainWindow):
             roots = lib_roots
         else:
             roots = []
+        # 筛选时把父标签展开成"它 + 所有子标签"（筛裙子能带出白裙子/黑裙子）
+        if required:
+            required = [x for x in self.store.expand_tag_names(required)]
+        if any_of:
+            any_of = [x for x in self.store.expand_tag_names(any_of)]
         rows = self.store.search_files(
             required=required, any_of=any_of, text=text, kind=kind,
             only_unlabeled=self.only_unlabeled.isChecked(),
@@ -819,13 +826,14 @@ class MainWindow(QMainWindow):
         all_ids = [int(r["id"]) for r in rows]
         conf_map = self.store.tags_for_files(all_ids, statuses=("confirmed",))
         pend_map_t = self.store.tags_for_files(all_ids, statuses=("pending",))
+        child_map = self.store.tag_child_map()      # 父→子，用于"只显示最具体的标签"
         tag_cache: dict[int, list[str]] = {}
         for r in rows:
             fid = int(r["id"])
             if fid in tag_cache:
                 tags = tag_cache[fid]
             else:
-                conf = [t["name"] for t in conf_map.get(fid, [])]
+                conf = self.library.most_specific_tags([t["name"] for t in conf_map.get(fid, [])], child_map)
                 pend = [t["name"] for t in pend_map_t.get(fid, [])]
                 tags = conf + [f"?{n}" for n in pend]
                 tag_cache[fid] = tags
@@ -1280,7 +1288,20 @@ class MainWindow(QMainWindow):
 
         self.run_task("清理失效路径", job, on_done=done)
 
+    def build_hierarchy_ui(self) -> None:
+        """按规则生成 tag→tag 从属关系（白裙子→裙子 这类），并重建图谱。"""
+        def job(progress, cancel, item):
+            return self.library.build_tag_hierarchy(progress)
+
+        def done(res):
+            self.status_label.setText(f"已生成 {res['links']} 条标签从属关系"
+                                      f"（图片界面现在只显示更具体的标签）")
+            self.refresh_files()
+
+        self.run_task("生成标签从属关系", job, on_done=done)
+
     def dir_menu(self, pos) -> None:
+        """库/文件夹树右键菜单。"""
         """库/文件夹树右键：移除索引（只删索引，绝不删文件）、清理失效路径。"""
         item = self.dir_tree.itemAt(pos)
         menu = QMenu(self)

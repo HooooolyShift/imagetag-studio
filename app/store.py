@@ -686,6 +686,61 @@ class Store:
             "(parent_kind='node' AND parent_id NOT IN (SELECT id FROM nodes))")
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
+    # ---------------- 标签之间的从属关系（白裙子 → 裙子） ----------------
+    def link_tag_sub(self, parent_tag_id: int, child_tag_id: int) -> None:
+        if int(parent_tag_id) == int(child_tag_id):
+            return
+        self.execute(
+            "INSERT OR IGNORE INTO taxonomy_edges(parent_kind,parent_id,child_kind,child_id,relation,created_at) "
+            "VALUES('tag',?, 'tag',?, 'sub_of', ?)", (int(parent_tag_id), int(child_tag_id), time.time()))
+
+    def unlink_tag_sub(self, parent_tag_id: int, child_tag_id: int) -> None:
+        self.execute("DELETE FROM taxonomy_edges WHERE parent_kind='tag' AND parent_id=? AND child_kind='tag' "
+                     "AND child_id=?", (int(parent_tag_id), int(child_tag_id)))
+
+    def tag_children(self, parent_tag_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT t.id, t.name FROM taxonomy_edges e JOIN tags t ON t.id=e.child_id "
+            "WHERE e.parent_kind='tag' AND e.parent_id=? AND e.child_kind='tag' ORDER BY t.name",
+            (int(parent_tag_id),))
+
+    def tag_parents(self, child_tag_id: int) -> list[sqlite3.Row]:
+        return self.query(
+            "SELECT t.id, t.name FROM taxonomy_edges e JOIN tags t ON t.id=e.parent_id "
+            "WHERE e.parent_kind='tag' AND e.child_id=? AND e.child_kind='tag' ORDER BY t.name",
+            (int(child_tag_id),))
+
+    def tag_child_map(self) -> dict[str, set[str]]:
+        """父标签名 -> 其直接子标签名集合（用于"只显示最具体的标签"）。"""
+        out: dict[str, set[str]] = {}
+        for r in self.query(
+                "SELECT p.name AS pname, c.name AS cname FROM taxonomy_edges e "
+                "JOIN tags p ON p.id=e.parent_id JOIN tags c ON c.id=e.child_id "
+                "WHERE e.parent_kind='tag' AND e.child_kind='tag'"):
+            out.setdefault(r["pname"], set()).add(r["cname"])
+        return out
+
+    def expand_tag_names(self, names: Sequence[str]) -> list[str]:
+        """把父标签展开成"自己 + 所有子孙标签"（筛裙子能带出白裙子/黑裙子），带访问集防环。"""
+        out: dict[str, None] = {}
+        for n in names:
+            row = self.one("SELECT id FROM tags WHERE name=?", (n,))
+            if not row:
+                out[n] = None
+                continue
+            stack, seen = [int(row["id"])], set()
+            while stack:
+                tid = stack.pop()
+                if tid in seen:
+                    continue
+                seen.add(tid)
+                t = self.one("SELECT name FROM tags WHERE id=?", (tid,))
+                if t:
+                    out.setdefault(t["name"], None)
+                for ch in self.tag_children(tid):
+                    stack.append(int(ch["id"]))
+        return list(out.keys())
+
     def refresh_counts(self) -> None:
         self.execute(
             "UPDATE tags SET count=(SELECT COUNT(*) FROM file_tags ft JOIN files f ON f.id=ft.file_id "
