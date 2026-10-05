@@ -154,11 +154,15 @@ class ReviewDialog(QDialog):
 
         rv.addWidget(label("补一个 AI 漏掉的标签", "#9fd0ff", True))
         add_row = QHBoxLayout()
-        self.new_tag = QLineEdit()
-        self.new_tag.setPlaceholderText("输入标签名后回车（直接生效）")
-        self.new_tag.returnPressed.connect(self.add_manual_tag)
-        from .common import attach_tag_completer
-        attach_tag_completer(self.new_tag, self.store)
+        # 可编辑下拉框：不输入也能点开看到**全部已有标签**（和标签管理页一致），也能直接输新标签
+        self.new_tag = QComboBox()
+        self.new_tag.setEditable(True)
+        self.new_tag.setInsertPolicy(QComboBox.NoInsert)
+        self.new_tag.setMinimumWidth(230)
+        self.new_tag.setMaxVisibleItems(30)
+        self.new_tag.lineEdit().setPlaceholderText("点这里看全部已有标签，或输入新标签")
+        self.new_tag.lineEdit().returnPressed.connect(self.add_manual_tag)
+        self.new_tag.activated.connect(lambda _i: self.add_manual_tag())
         add_row.addWidget(self.new_tag, 1)
         self.new_cat = category_combo(self.store)
         add_row.addWidget(self.new_cat)
@@ -308,9 +312,10 @@ class ReviewDialog(QDialog):
         self.reload_regions()
         self.reload_confirmed()
         self.load_suggestions()
+        self.reload_all_tags()
         self.reload_series()
         self.reload_rating()
-        self.new_tag.clear()
+        self.new_tag.setEditText("")
 
     def reload_table(self) -> None:
         """每个标签一行：左边是单独的「通过 / 否决」按钮，中间显示中文名（附英文原名）。"""
@@ -505,7 +510,7 @@ class ReviewDialog(QDialog):
     def add_manual_tag(self) -> None:
         """审核时补一个 AI 漏掉的标签（直接生效，并立刻回馈模型）。"""
         from .. import tag_i18n
-        name = tag_i18n.parse_input(self.new_tag.text(), self.store)
+        name = tag_i18n.parse_input(self.new_tag.currentText(), self.store)
         if not name:
             self.status.setText("先输入标签名再按回车")
             return
@@ -517,7 +522,7 @@ class ReviewDialog(QDialog):
             self.store.ensure_tag(name, cat)
         self.library.add_tags_to_files([fid], [name], "manual")
         self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
-        self.new_tag.clear()
+        self.new_tag.setEditText("")
         self.reload_confirmed()
         self.reload_table()
         self.changed.emit()
@@ -529,7 +534,7 @@ class ReviewDialog(QDialog):
         """新建带类型/提示词/前置条件的标签，适合以后要靠 CLIP 去找的标签。"""
         if not self.queue:
             return
-        dlg = TagEditDialog(self, self.new_tag.text().strip(), self.new_cat.ensure_current(self),
+        dlg = TagEditDialog(self, self.new_tag.currentText().strip(), self.new_cat.ensure_current(self),
                             store=self.store)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -543,13 +548,34 @@ class ReviewDialog(QDialog):
         self.library.add_tags_to_files([fid], [v["name"]], "manual")
         self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
         self.tagCreated.emit(v["name"])
-        self.new_tag.clear()
+        self.new_tag.setEditText("")
         self.reload_confirmed()
         self.changed.emit()
         self.status.setText(f"已新建并打上「{v['name']}」"
                             + ("（有提示词，可点工具栏「CLIP 重打分」全库找同类）" if v["prompt"] else ""))
 
     def load_suggestions(self) -> None:
+        self.load_suggestions_impl()
+
+    def reload_all_tags(self) -> None:
+        """把库里全部已有标签填进「补标签」下拉框：不输入也能点开看到。"""
+        if not hasattr(self, "new_tag"):
+            return
+        from .. import tag_i18n
+        try:
+            cur = self.new_tag.currentText()
+            self.new_tag.blockSignals(True)
+            self.new_tag.clear()
+            for t in self.store.list_tags(""):
+                zh = t["zh"] or tag_i18n.translate(t["name"])
+                self.new_tag.addItem(
+                    f"{zh}（{t['name']}）" if zh and zh != t["name"] else t["name"], t["name"])
+            self.new_tag.setEditText(cur)
+            self.new_tag.blockSignals(False)
+        except Exception:
+            pass
+
+    def load_suggestions_impl(self) -> None:
         self.suggest_list.clear()
         if not self.queue:
             return
@@ -700,18 +726,18 @@ class ReviewDialog(QDialog):
 
     def start_box(self) -> None:
         name = self.selected_tag_name()
-        if not name and self.new_tag.text().strip():
+        if not name and self.new_tag.currentText().strip():
             # 允许“先输入标签名 → 直接框选”，自动把它加到这张图上
-            name = self.new_tag.text().strip()
+            name = self.new_tag.currentText().strip()
             cat = self.new_cat.ensure_current(self)
             if self.store.tag_id(name) is None:
                 self.store.ensure_tag(name, cat)
             fid = int(self.queue[self.index]["id"])
             self.library.add_tags_to_files([fid], [name], "manual")
             self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
-            self.new_tag.clear()
             self.reload_confirmed()
             self.changed.emit()
+            self.new_tag.setEditText("")
         if not name:
             QMessageBox.information(self, "重新框选", "先选一个标签（或在上面输入新标签名）。")
             return

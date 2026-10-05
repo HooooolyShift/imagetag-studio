@@ -69,7 +69,7 @@ def main() -> int:
         rlib = Library(store, settings)
         rdlg = ReviewDialog(rlib, EngineHub(settings), win)
         if rdlg.queue:
-            rdlg.new_tag.setText("审核时补的标签")
+            rdlg.new_tag.setEditText("审核时补的标签")
             rdlg.new_cat.setCurrentIndex(CATEGORY_ORDER.index("clothing"))
             rdlg.add_manual_tag()
             fid = int(rdlg.queue[0]["id"])
