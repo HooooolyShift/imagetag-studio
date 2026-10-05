@@ -107,6 +107,24 @@ class EdgeItem(QGraphicsPathItem):
         path.cubicTo(QPointF(mid_x, a.y()), QPointF(mid_x, b.y()), b)
         self.setPath(path)
 
+    def paint(self, painter, option, widget=None) -> None:
+        """画连线 + 末端箭头（箭头指向子节点，直观表示从属关系）。"""
+        super().paint(painter, option, widget)
+        path = self.path()
+        if path.isEmpty():
+            return
+        import math
+        end = path.pointAtPercent(1.0)
+        before = path.pointAtPercent(0.9)
+        ang = math.atan2(end.y() - before.y(), end.x() - before.x())
+        size = 10.0
+        pts = [end,
+               QPointF(end.x() - size * math.cos(ang - 0.42), end.y() - size * math.sin(ang - 0.42)),
+               QPointF(end.x() - size * math.cos(ang + 0.42), end.y() - size * math.sin(ang + 0.42))]
+        painter.setBrush(QBrush(EDGE_COLOR))
+        painter.setPen(Qt.NoPen)
+        painter.drawPolygon(QPolygonF(pts))
+
 
 class GraphCanvas(QGraphicsView):
     nodeClicked = Signal(str, int)
@@ -329,6 +347,13 @@ class TaxonomyDialog(QDialog):
                           "这样图谱从一开始就是连通的")
         b_link.clicked.connect(self.auto_link_by_category)
         bar.addWidget(b_link)
+        b_collapse_all = QPushButton("折叠全部")
+        b_collapse_all.setToolTip("把所有分类节点折叠起来（只显示顶层），节点多的时候很有用")
+        b_collapse_all.clicked.connect(lambda: self.set_all_collapsed(True))
+        bar.addWidget(b_collapse_all)
+        b_expand_all = QPushButton("展开全部")
+        b_expand_all.clicked.connect(lambda: self.set_all_collapsed(False))
+        bar.addWidget(b_expand_all)
         self.show_all = QCheckBox("显示未分类标签")
         self.show_all.toggled.connect(self.rebuild)
         bar.addWidget(self.show_all)
@@ -403,9 +428,27 @@ class TaxonomyDialog(QDialog):
         tag_rows = {int(t["id"]): t for t in self.store.list_tags()}
 
         saved = self.store.positions()
+        # 折叠：把「已折叠」节点的所有子孙藏起来；用 visited 防环（有人乱连成圈也不会死循环）
+        hidden: set[tuple[str, int]] = set()
+        stack, visited = [], set()
+        for nid, n in nodes.items():
+            if n["collapsed"]:
+                stack.append(int(nid))
+        while stack:
+            nid = stack.pop()
+            if nid in visited:
+                continue
+            visited.add(nid)
+            for ch in self.store.children_of_node(nid):
+                key = (ch["kind"], int(ch["cid"]))
+                hidden.add(key)
+                if ch["kind"] == "node":
+                    stack.append(int(ch["cid"]))
         # 位置：优先用保存过的坐标，否则先按“分类一列、标签一列”排布（之后可自动排列或手拖）
         y = 40
         for nid, n in nodes.items():
+            if ("node", nid) in hidden:
+                continue
             x, yy = saved.get(("node", nid), (40.0, y))
             y += NODE_H + 18
             self.canvas.add_node("node", nid, n["name"], 0, x, yy)
@@ -413,6 +456,8 @@ class TaxonomyDialog(QDialog):
         y2 = 40
         for tid, t in tag_rows.items():
             if tid not in linked_tags and not self.show_all.isChecked():
+                continue
+            if ("tag", tid) in hidden:
                 continue
             default = (270.0, y) if tid in linked_tags else (560.0, y2)
             x, yy = saved.get(("tag", tid), default)
@@ -524,9 +569,12 @@ class TaxonomyDialog(QDialog):
             QMessageBox.information(self, "连线", "父节点必须是分类节点；请从分类连到标签/子分类。")
             return
         self.store.link(src.nid, dst.kind, dst.nid)
+        if dst.kind == "tag":      # 连线即改分类（图谱反过来可视化编辑分类）
+            self.library.sync_tag_categories_from_graph(dst.nid)
         self.changed.emit()
         self.rebuild()
-        self.detail.setText(f"已连线：{src.name} → {dst.name}")
+        self.detail.setText(f"已连线：{src.name} → {dst.name}"
+                            + ("（该标签的分类已同步更新）" if dst.kind == "tag" else ""))
 
     def apply_detail(self) -> None:
         if not self.current:
@@ -602,6 +650,7 @@ class TaxonomyDialog(QDialog):
         if kind == "tag":
             for p in self.store.parents_of_tag(nid):
                 self.store.unlink(int(p["id"]), "tag", nid)
+            self.library.sync_tag_categories_from_graph(nid)
             self.changed.emit()
             self.rebuild()
         else:
@@ -612,6 +661,7 @@ class TaxonomyDialog(QDialog):
         if not it or not self.current or self.current[0] != "tag":
             return
         self.store.unlink(int(it.data(Qt.UserRole)), "tag", self.current[1])
+        self.library.sync_tag_categories_from_graph(self.current[1])
         self.changed.emit()
         self.rebuild()
 
@@ -681,6 +731,21 @@ class TaxonomyDialog(QDialog):
         self.do_layout()
         self.detail.setText(f"已按分类自动连线：补建分类节点 {n} 个；所有标签都已挂到对应分类下")
 
+    def set_all_collapsed(self, flag: bool) -> None:
+        for n in self.store.list_nodes():
+            if self.store.children_of_node(int(n["id"])):      # 只折叠"有子节点"的
+                self.store.update_node(int(n["id"]), collapsed=1 if flag else 0)
+        self.rebuild()
+        self.detail.setText("已折叠全部子节点（右键节点可单独展开/折叠）" if flag else "已展开全部")
+
+    def toggle_collapse(self, node_id: int) -> None:
+        n = self.store.node(node_id)
+        if not n:
+            return
+        self.store.update_node(node_id, collapsed=0 if n["collapsed"] else 1)
+        self.rebuild()
+        self.detail.setText(("已折叠该节点下方的所有子节点" if not n["collapsed"] else "已展开该节点"))
+
     # ================= 右键菜单 =================
     def canvas_menu(self, pos) -> None:
         item = self.canvas.itemAt(pos)
@@ -688,7 +753,11 @@ class TaxonomyDialog(QDialog):
             item = item.parentItem()
         menu = QMenu(self)
         a_new = menu.addAction("在此新建分类")
+        a_fold = None
         if isinstance(item, NodeItem):
+            if item.kind == "node":
+                has_child = bool(self.store.children_of_node(item.nid))
+                a_fold = menu.addAction("折叠/展开其下方所有子节点") if has_child else None
             a_tag = menu.addAction("在此新建标签")
             a_link = menu.addAction("关联已有标签…")
             a_ren = menu.addAction("重命名…")
@@ -706,6 +775,8 @@ class TaxonomyDialog(QDialog):
             if isinstance(item, NodeItem):
                 self.store.link(item.nid, "node", nid)
             self.rebuild()
+        elif a_fold is not None and act == a_fold:
+            self.toggle_collapse(item.nid)
         elif act == a_tag:
             self.new_tag()
         elif act == a_link:

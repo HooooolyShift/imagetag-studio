@@ -303,6 +303,10 @@ class TagManagerDialog(QDialog):
         self.search.setPlaceholderText("搜索标签…")
         self.search.textChanged.connect(self.reload)
         top.addWidget(self.search, 1)
+        self.cb_group = QCheckBox("按分类折叠显示")
+        self.cb_group.setToolTip("按图谱里的分类分组，点分组标题即可折叠/展开该分类下的标签")
+        self.cb_group.stateChanged.connect(self.reload)
+        top.addWidget(self.cb_group)
         for text, slot in (("新增标签", self.add_tag), ("删除选中", self.delete_selected),
                            ("合并到上一个", self.merge_selected), ("编辑选中", self.edit_selected),
                            ("类型管理…", self.manage_categories)):
@@ -323,6 +327,7 @@ class TagManagerDialog(QDialog):
         self.table.setColumnWidth(4, 320)
         self.table.setColumnWidth(5, 170)
         self.table.itemChanged.connect(self._item_changed)
+        self.table.cellClicked.connect(self._on_group_click)
         self.table.setSortingEnabled(False)
         self._limit_note = QLabel("")
         self._limit_note.setStyleSheet("color:#ffcc66;")
@@ -352,15 +357,43 @@ class TagManagerDialog(QDialog):
         self._limit_note.setText(
             (f"标签共 {len(all_rows)} 个，为流畅只列出前 {LIMIT} 个 —— 用上方搜索框找具体标签"
              if len(all_rows) > LIMIT else ""))
-        self.table.setRowCount(len(rows))
-        for i, t in enumerate(rows):
+        # 多分类：一个标签可能连到多个分类节点（图谱允许连多条线），这里全列出来
+        multi = self.store.tag_name_groups()
+
+        def cat_text(t) -> str:
+            names = multi.get(t["name"])
+            if names:
+                return " / ".join(names[:3])
+            from .. import categories as _c
+            return _c.label_of(self.store, t["category"])
+
+        grouped = self.cb_group.isChecked()
+        order = rows
+        if grouped:
+            order = sorted(rows, key=lambda t: (cat_text(t), t["name"]))
+        self.table.setRowCount(len(order) + (len({cat_text(t) for t in order}) if grouped else 0))
+        i = 0
+        last_cat = None
+        self._group_rows: dict[str, list[int]] = {}
+        for t in order:
+            cat = cat_text(t)
+            if grouped and cat != last_cat:
+                last_cat = cat
+                head = QTableWidgetItem(f"▼ {cat}（点这行折叠/展开）")
+                head.setData(Qt.UserRole, ("group", cat))
+                head.setBackground(QColor("#2b3d52"))
+                for c in range(self.table.columnCount()):
+                    self.table.setItem(i, c, head if c == 0 else QTableWidgetItem(""))
+                self.table.setSpan(i, 0, 1, self.table.columnCount())
+                self._group_rows.setdefault(cat, [])
+                i += 1
             from .. import tag_i18n, categories as _cats
             it_name = QTableWidgetItem(tag_i18n.display(t["name"], t["zh"] or ""))
             it_name.setToolTip(f"{t['name']}（双击行或用「编辑选中」改类型/提示词）")
             it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
             it_name.setData(Qt.UserRole, int(t["id"]))
             self.table.setItem(i, 0, it_name)
-            cat_item = QTableWidgetItem(_cats.label_of(self.store, t["category"]))
+            cat_item = QTableWidgetItem(cat)
             cat_item.setData(Qt.UserRole, t["category"])
             cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(i, 1, cat_item)
@@ -374,8 +407,25 @@ class TagManagerDialog(QDialog):
             self.table.setItem(i, 4, QTableWidgetItem(t["prompt"] or ""))
             self.table.setItem(i, 5, QTableWidgetItem(t["requires"] or ""))
             self.table.setItem(i, 6, QTableWidgetItem(t["note"] or ""))
+            if grouped:
+                self._group_rows.setdefault(cat, []).append(i)
+            i += 1
         self._loading = False
-        self.info.setText(f"共 {len(rows)} 个标签")
+        self.info.setText(f"共 {len(all_rows)} 个标签"
+                          + ("（按分类分组，可折叠）" if grouped else ""))
+
+    def _on_group_click(self, row: int, _col: int) -> None:
+        """点分组标题行 → 折叠/展开该分类下的标签。"""
+        item = self.table.item(row, 0)
+        data = item.data(Qt.UserRole) if item else None
+        if not isinstance(data, tuple) or data[0] != "group":
+            return
+        cat = data[1]
+        shown = self._group_rows.get(cat, [])
+        hide = any(not self.table.isRowHidden(r) for r in shown)
+        for r in shown:
+            self.table.setRowHidden(r, hide)
+        item.setText(("▶ " if hide else "▼ ") + f"{cat}（点这行折叠/展开）")
 
     def _row_tag_id(self, row: int) -> int | None:
         item = self.table.item(row, 0)

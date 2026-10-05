@@ -1690,6 +1690,38 @@ class Library:
                         out += [t["name"] for t in self.store.list_tags() if t["category"] == c["key"]]
         return out
 
+    # -------------------------------------------------- 图谱 → 分类（连线即改分类）
+    def sync_tag_categories_from_graph(self, tag_id: int | None = None) -> int:
+        """按图谱里的连线更新标签的分类。
+
+        一个标签可能连到多个分类节点（多分类），这里取第一个作为主分类写进 tags.category，
+        其余分类仍然保留在图谱关系里（标签管理界面会显示全部分类）。
+        """
+        n = 0
+        tag_ids = [tag_id] if tag_id else [int(r["id"]) for r in self.store.query("SELECT id FROM tags")]
+        for tid in tag_ids:
+            keys: list[str] = []
+            for p in self.store.parents_of_tag(int(tid)):
+                key = self.store.category_key_by_label(p["name"])
+                if key and key not in keys:
+                    keys.append(key)
+            if keys:
+                row = self.store.one("SELECT category FROM tags WHERE id=?", (int(tid),))
+                if not row or row["category"] != keys[0]:
+                    self.store.update_tag(int(tid), category=keys[0])
+                    n += 1
+        self.store.refresh_counts()
+        return n
+
+    def tag_categories_map(self) -> dict[int, list[str]]:
+        """tag_id -> 图谱里连着的全部分类名（供标签管理显示多分类）。"""
+        out: dict[int, list[str]] = {}
+        for r in self.store.query(
+                "SELECT e.child_id AS tid, n.name AS name FROM taxonomy_edges e "
+                "JOIN nodes n ON n.id=e.parent_id WHERE e.child_kind='tag' ORDER BY n.sort, n.name"):
+            out.setdefault(int(r["tid"]), []).append(r["name"])
+        return out
+
     # -------------------------------------------------- 任务持久化（断电续跑）
     def start_job(self, kind: str, ids: Sequence[int], params: dict | None = None, note: str = "") -> int:
         return self.store.create_job(kind, ids, params, note)

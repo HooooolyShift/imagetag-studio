@@ -1123,6 +1123,19 @@ class Store:
             out.setdefault(r["tag_name"], []).append(r["node_name"])
         return out
 
+    def category_key_by_label(self, text: str) -> str | None:
+        """把分类节点的名字（或 key）对应回标签类型的 key，供「连线即改分类」使用。"""
+        t = (text or "").strip()
+        if not t:
+            return None
+        for c in self.categories():
+            if t == c["key"] or t == c["label"]:
+                return str(c["key"])
+        for c in self.categories():          # 宽松匹配：名字里包含类型名也算
+            if c["label"] and c["label"] in t:
+                return str(c["key"])
+        return None
+
     # ================== 自训练探针 ==================
     def set_probe(self, tag_id: int, kind: str, data: bytes, n_pos: int, n_neg: int) -> None:
         self.execute("INSERT OR REPLACE INTO tag_probe(tag_id,kind,data,n_pos,n_neg,updated_at) VALUES(?,?,?,?,?,?)",
