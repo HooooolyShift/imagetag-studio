@@ -1,0 +1,581 @@
+tag,category,aliases,zh,count,notes
+highres,5,high_res|high_resolution|hires,高分辨率,8033637,宽至少1600像素或高至少1200像素的高分辨率图
+commentary_request,5,,请求注释翻译,6264839,画师注释尚未完整译成英文，等待翻译
+rating:sensitive,5,rating:s,敏感,5270447,Danbooru分级标签：敏感，介于全年龄与擦边之间
+rating:general,5,rating:g,全年龄,4486953,Danbooru分级标签：全年龄，适合所有观众
+commentary,5,commentaries,作者注释,3190166,画师注释可被英语读者读懂的帖子，含已英译的情况
+absurdres,5,,超高分辨率,2939616,宽至少3200或高至少2400像素的超高分辨率图
+bad_id,5,,错误ID,1440267,原来源链接已失效（图被删或设私）的帖子
+english_commentary,5,,英文注释,1299333,画师注释原文为英文的图
+rating:explicit,5,rating:e,露骨,1234414,Danbooru分级标签：露骨，含明确的性描写
+rating:questionable,5,rating:q,擦边,1233734,Danbooru分级标签：擦边，含轻度性暗示
+bad_pixiv_id,5,,错误Pixiv ID,1099603,Pixiv原图已被删除或设为私密
+translation_request,5,,请求翻译,840027,图中非英文文字需要翻译成英文的帖子
+photoshop_(medium),5,photoshop,Photoshop,709666,用Adobe Photoshop创建或合成的图片
+translated,5,translation,已翻译,649625,图中注释已被完整翻译成英文的帖子
+official_art,5,仕事绘|公式|工作图|版権绘,官方图,533057,由作品官方公司或原作者发布的图，常带版权标注
+commission,5,artcommission|com|comission|comm|commissionart|commissionedart|commissions|commissionsart|付费委托|依赖绘|印象服设|委托|有偿依赖|服设|私人稿件|稿件展示|约稿展示,约稿,330724,受他人付费委托绘制的作品，图中或注释标有commission
+untranslatable_commentary,5,emoji_commentary|symbol-only_commentary|symbol_commentary,无需翻译注释,325509,注释只有符号、数字、表情或乱码等无法翻译的内容
+chinese_commentary,5,simplified_chinese_commentary,中文注释,311677,画师注释包含中文文字
+bad_twitter_id,5,,错误Twitter ID,249317,Twitter原帖或原图已不可见
+variant_set,5,,差分,226216,同一姿势的基准图加若干变体组成的一组图
+korean_commentary,5,,韩文注释,197347,画师注释为韩文的图
+non-web_source,5,,非网页来源,181063,来源为纯文字说明或本地文件名而非网址的帖子
+game_asset,5,game_cg|gamecg,游戏素材,169485,从电子游戏中提取的插画或动画素材
+partial_commentary,5,,部分译注,155869,注释只被部分翻译、通常只有标题的帖子
+artist_request,5,tagme_(artist),请求画师,142579,请求识别帖子画师，有来源时应直接创建画师标签
+animated,5,animation,动画,130608,动图或动画片段（GIF、APNG、Ugoira、视频等）
+paid_reward_available,5,reward_available|付费内容,有付费内容,129716,画师在订阅平台提供完整版或相关素材的帖子
+traditional_media,5,handdrawn|traditional_art|traditionalart|手绘|素描,传统媒介,125017,用铅笔、马克笔、颜料等传统工具手绘的图
+copyright_request,5,series_request,请求作品,123117,请求识别帖子出处作品（copyright）的标签
+md5_mismatch,5,,MD5不匹配,115334,文件MD5与来源处不同的帖子，来源可能有改动
+lowres,5,,低分辨率,112321,宽或高小于500像素的低分辨率图
+skeb_commission,5,skeb,Skeb约稿,111460,通过Skeb平台委托创作的作品
+large_variant_set,5,,大量差分,109590,属于含6张以上图片的差分组中的帖子
+third-party_source,5,搬运|盗作|转载|遗作,第三方来源,101769,来源为画师官方之外的搬运、转载等第三方网站
+second-party_source,5,来源:约稿方|第二方,第二方来源,97644,来源为代画师转发作品的账号
+scan,5,,扫图,94106,从海报、画集或杂志等实体媒介扫描的图片
+mixed-language_commentary,5,,多语言注释,84142,画师注释混用多种语言的图
+revision,5,revised|修改|修正|修正版|加工|加笔,修订版,82049,画师本人修正错误或加笔后的修订版本
+video,5,videos,视频,80789,站内的视频帖，支持WebM与MP4等格式
+character_request,5,tagme_(character),请求角色,73071,请求识别图中出自已知作品的具体角色
+bad_link,5,,错误链接,60451,来源为图片直链，而非包含该图的页面
+self-datamine,5,,自行解包,48141,上传者自己从游戏中提取的资源图，来源为本地
+spoilers,5,spoiler|spoiler_warning|tma_spoilers|捏他,剧透,46930,内容会剧透作品情节或结局的帖子
+check_translation,5,,核对翻译,43740,原文已翻译，但需要第二人复核译文是否准确
+visual_novel_cg,5,,视觉小说CG,43495,视觉小说中作对白背景的固定插画
+pixiv_commission,5,pixiv_request,Pixiv约稿,43303,通过Pixiv约稿功能委托创作的作品
+duplicate,5,dupe|repost,重复,42391,与站内已有帖子相同或更差的后传重复帖
+protected_link,5,,受保护链接,35993,来源仅特定用户可见，如关注者限定或需登录
+sound,5,flash_with_sound|video_with_sound,有声音,34666,带可听声音的视频或Flash，由站内自动添加
+source_request,5,cg_request|need_source|no_source,请求来源,34490,来源不明、请求他人补充出处的帖子
+resolution_mismatch,5,,分辨率不匹配,32385,站内图片分辨率与来源不一致的帖子
+painting_(medium),5,canvas_(medium)|paint_(medium),绘画,30714,用丙烯、水彩、水粉或油画颜料绘制的画作
+self-upload,5,self_upload,作者本人上传,29391,由作品作者本人上传到站内的图片
+third-party_edit,5,cardedit|photoshopped|二改|加工|图改,第三方修改,27732,被画师以外的人修改过的图片，一般禁止上传
+inactive_account,5,,账号停用,27675,来源账号已被停用、冻结或注销的图
+jpeg_artifacts,5,jpeg_artefacts|jpg_artifacts,JPEG伪影,27327,JPEG压缩产生的块状噪点、蚊状噪点等瑕疵
+textless_version,5,,无字版,27148,画师另发布的去字版本，如无对白或无标题版
+pixel-perfect_duplicate,5,,像素级重复,26841,与父帖逐像素完全相同、来源更差的重复图
+bad_fc2_link,5,,错误FC2链接,26702,来源为FC2图片直链，而非博客文章页面
+bad_source,5,,错误来源,26520,来源未直接指向原图或原页面，含跳转链接与主页链接
+photo_(medium),5,摄影|撮影,照片,26456,由相机拍摄的照片，多数类型属站外话题
+animated_gif,5,gif,动图GIF,26443,会动的GIF图片，由Danbooru自动添加
+derivative_work,5,derivative|plagiarism|临摹|描改|模写|盗作,二次创作,24701,部分或全部参考、描摹他人作品的再创作
+bad_tumblr_id,5,,错误Tumblr ID,24507,Tumblr原帖已不可见，用转发作来源时应改标第三方来源
+partially_translated,5,partial_translation|partly_translated,部分翻译,23315,带有翻译批注但翻译不完整的帖子
+unfinished,5,wip|work_in_progress|草稿|途中,未完成,23075,草稿、线稿或平涂等未完成的作品
+looping_animation,5,,循环动画,22432,首尾相接、无缝循环播放的动画
+ugoira,5,,Ugoira,22412,Pixiv专用的动图格式，本质为图片ZIP包
+check_commentary,5,检查解说翻译,核对注释,22343,注释已翻译，但需要第二人复核译文是否准确
+watercolor_(medium),5,watercolor|watercolour|水彩画|透明水彩,水彩,22282,用透明水彩颜料绘制的传统绘画作品
+dated_commentary,5,,带日期注释,21304,注释中标明创作日期的图，图中带日期则用dated
+marker_(medium),5,copics,马克笔,18184,用马克笔（如Copic）绘制的作品
+tall_image,5,,竖长图,17794,高至少1024像素且长宽比达4:1以上的竖长图
+ai-generated,5,ai|ai-created|ai_generated|ai_generated_art|aigenerated|aigeneratedart,AI生成,17689,完全由AI模型生成的图片或动画
+paid_reward,5,,付费内容,17521,Patreon、Fantia等平台的付费限定图，禁止上传
+source_smaller,5,,来源更小,17130,来源图片分辨率低于站内图片的帖子
+anime_screenshot,5,anime_screencap|screencap,动画截图,15637,从动画或卡通中截取的静帧或动画片段
+hashtag-only_commentary,5,,仅标签注释,15532,已废弃，改用无法翻译注释、注释请求或注释标签
+alt_text,5,source_image_text,替代文本,15101,在图片alt文字中附带说明的帖子
+promotional_art,5,official_ad|宣伝绘|宣传绘,宣传图,14848,用于动画、漫画或同人活动宣传的官方图
+cropped,5,抠图|裁剪,裁切,14643,原图被裁切后只剩局部的图片
+painttool_sai_(medium),5,paint_tool_sai|painttoolsai|painttoolsai2|sai,SAI,14432,用PaintTool SAI创建或编辑的图片
+making-of_available,5,作业工程,有制作过程,14262,站内或站外存有该图制作过程视频或图片的帖子
+source_larger,5,,来源更大,13782,来源图片分辨率高于站内图片的帖子
+commissioner_upload,5,,委托人上传,13602,由付费委托方本人上传到站内的约稿作品
+graphite_(medium),5,graphite|pencil_(medium)|pencil_sketch|铅笔画,铅笔,13466,用铅笔或自动铅笔绘制的作品
+audible_music,5,,可听到音乐,13295,视频或动画中包含可听到的音乐
+imageboard_desourced,5,,图站去源,13190,来源被站方改写为图站通用地址的图，历史遗留
+clip_studio_paint_(medium),5,clip_studio_paint|clipstudio|clipstudiopaint|comic_studio_(medium)|comicstudio|illust_studio_(medium)|illuststudio|manga_studio_(medium)|mangastudio,CLIP STUDIO PAINT,12889,用Clip Studio Paint制作或编辑的作品
+photo-referenced,5,photo_reference|photo_study|photostudy|写真参考|写真模写|参考照片,照片参考,12237,以照片或视频为参考创作的图，常标注写真模写
+audible_speech,5,,可听到说话,12166,视频或动画中有可辨识语言的说话声，单纯呻吟不算
+corrupted_twitter_file,5,,Twitter文件损坏,11556,被Twitter自身压缩损坏的图，底部常出现重复像素行
+image_sample,5,,图站缩略图,10983,网站为省流量生成的压缩或缩小版图片
+artist_collaboration,5,artcollab|collab|multiple_artists|合作|合绘|绘画接龙,合作绘图,10558,由多位画师共同完成的一张图
+adversarial_noise,5,glaze_artifacts|glaze_protected_image,对抗噪声,10484,用Glaze、Nightshade等工具添加防AI训练噪点的图
+official_wallpaper,5,,官方壁纸,10474,官方渠道如官网下载区发布的壁纸
+colorized,5,,上色,9773,把原本单色的图重新上色的版本，常为他人改色
+official_artist_extra,5,,官方画师同人,9325,官方画师为自己笔下的角色画的同人图
+novel_illustration,5,挿绘,小说插图,9200,小说，多为轻小说，书中的官方插图
+bilingual_commentary,5,,双语注释,9122,画师注释以两种语言给出同一段文字
+patreon_reward,5,,Patreon内容,8972,Patreon的付费赞助图，现已禁止上传
+bad_deviantart_id,5,,错误DeviantArt ID,8966,DeviantArt原帖或原图已不可见
+off-topic,5,non-anime_related,跑题,8643,与动漫、漫画、游戏等站内主题无关的违规帖子
+has_bad_revision,5,bad_revision,有劣质修订,8387,来源修订版质量差、不应上传的帖子
+ai-assisted,5,ai_assisted|aiassisted,AI辅助,8089,先由AI生成、再经画师修正或覆盖绘制的作品
+concept_art,5,,概念图,8022,作品投入制作前传达角色或作品设计、构想的美术图
+procreate_(medium),5,procreate|procreate3|procreate4|procreateart,Procreate,7751,用iPad绘画应用Procreate创建或编辑的图片
+colored_pencil_(medium),5,pencil_crayon_(medium)|彩铅画|色铅笔|色铅笔画,彩铅,7480,用彩色铅笔绘制的作品
+clothing_request,5,,请求服装,7183,不知该用哪种服饰标签时使用的请求标签
+magazine_scan,5,,杂志扫图,7127,杂志内页（而非封面）的扫描图
+hard-translated,5,hard_translated|hard_translation|hardsub,硬翻,7087,第三方把原文直接替换成英文的翻译图
+mihuashi_commission,5,,米画师约稿,6866,通过米画师平台委托创作的约稿作品
+resized,5,补分辨率,已缩放,6693,尺寸被改动过的图，需配合upscaled或downscaled
+incredibly_absurdres,5,,极高分辨率,6521,宽或高至少10000像素的极高分辨率图
+pen_(medium),5,,钢笔,6514,用钢笔等硬笔蘸墨绘制的作品，线条细而锐利
+bad_twitter_link,5,,错误Twitter链接,6239,来源为Twitter图片直链，而非推文页面
+spanish_commentary,5,,西班牙文注释,5803,注释用西班牙文写成的帖子
+bad_nicoseiga_id,5,,错误Niconico静画ID,5751,Niconico静画原图不可见，2024年起限制日本境外访问
+screenshot,5,,截图,5347,来自动画与游戏以外内容的截图
+making-of,5,making_of|绘画过程,制作过程,5207,展示绘制过程的多图或延时视频的帖子
+screenshot_redraw,5,screencap_redraw,截图重绘,5158,画师把真实截图重画一遍的作品
+voice_drama_available,5,,有音声,5027,为音声作品、多为ASMR绘制的配图
+artbook,5,,画集,4829,从画集中扫描的作品，含官方图与原创图
+pixiv_sample,5,pixiv_manga_sample|pixiv_thumbnail,Pixiv缩略图,4780,Pixiv的缩略图样本，并非原图，由机器人自动添加
+mixed_media,5,,综合媒介,4687,同时使用传统与数字等多种媒介创作的作品
+flower_request,5,,请求花卉,4576,请求补充图中花卉种类标签的标签
+check_copyright,5,,核对作品,4423,作品归属已识别，但需要第二人复核确认
+english_audio,5,,英语音频,4256,含英语人声或英语歌词的帖子
+japanese_audio,5,,日语音频,4256,含日语人声或日语歌词的帖子
+blender_(medium),5,blender|blender3d,Blender,4239,用开源3D软件Blender制作的图像或动画
+card_commentary,5,,卡牌注释,4128,来自实体卡牌或游戏卡牌的说明文字
+scan_artifacts,5,bad_scan|scanner_artifacts|scanning_artifacts,扫图瑕疵,4016,因扫描或后期不佳产生的折痕、透印等瑕疵
+tagme,5,,待补标签,3876,明知还缺标签却找不到时使用，满30个标签后自动移除
+alternate_language,5,官方翻译版|正规翻訳版,其他语言版,3872,画师本人或授权方硬翻成其他语言（多为英文）的版本
+fanbox_reward,5,,Fanbox内容,3849,Pixiv FANBOX的付费赞助图，现已禁止上传
+fan_request,5,,点图,3697,应观看者免费请求而创作的作品
+merchandise_available,5,,有周边,3666,被设计成可作手办、徽章、立牌等周边售卖的图
+annotated,5,,有批注,3664,图上附加了翻译、解说或人物标注的帖子
+has_censored_revision,5,,有和谐修订,3648,来源修订版被加码或遮挡更多的帖子
+romaji_commentary,5,,罗马字注释,3559,注释用罗马字拼写写成的帖子
+bad_lofter_id,5,,错误Lofter ID,3539,Lofter原帖或原图已不可见
+live2d,5,,Live2D,3520,用Live2D制作的2D动态立绘或动画
+redrawn,5,,重绘,3438,画师把旧作完全重画一遍的版本，常用于对比进步
+stitched,5,stitch,拼接图,3415,把画师发布的多张图拼接成一张的作品
+key_visual,5,,主视觉图,3357,动画公司为宣传新作发布的主视觉图
+paint.net_(medium),5,,Paint.NET,3338,用Paint.NET创建或编辑的图片
+check_character,5,,核对角色,3286,角色已识别，但需要第二人复核确认
+archived_source,5,,存档来源,3255,来源填的是网页存档链接而非原始链接
+bad_tumblr_link,5,,错误Tumblr链接,3253,来源为Tumblr图片直链，而非帖子页面
+thai_commentary,5,,泰文注释,3195,注释用泰文写成的帖子
+check_artist,5,,核对画师,3146,画师已识别，但需要第二人复核确认
+guest_art,5,商业绘图|商单|応援绘,嘉宾绘,3069,客座画师为作品绘制的官方应援插画
+upscaled,5,upscale,超分放大,3056,被超分辨率放大的图，第三方放大一般禁止上传
+multi-source_commentary,5,multiple_commentaries,多来源注释,2927,画师注释取自多个不同来源的帖子
+acrylic_paint_(medium),5,acrylic_paint,丙烯,2886,用丙烯颜料绘制的作品
+gift_art,5,,赠图,2825,画师无偿赠送给他人而绘制的图
+production_art,5,概念图,制作资料图,2774,动画等制作过程中的未完成稿或参考资料
+downscaled,5,,缩小,2771,由原图缩小尺寸得到的图片
+gender_request,5,,请求性别,2751,请求为角色补上性别标签（1girl等）的标签
+bad_bcy_id,5,,错误半次元ID,2685,半次元（bcy.net）2023年停服，原帖全部不可见
+bad_drawr_id,5,,错误Drawr ID,2666,drawr 2019年停服，原帖全部不可见
+wide_image,5,,横长图,2549,宽至少1024像素且长宽比达4:1以上的横长图
+food_request,5,,请求食物,2500,请求识别图中食物种类的标签
+millipen_(medium),5,millipen,针管笔,2481,用针管笔（ミリペン）绘制的作品
+russian_commentary,5,,俄文注释,2419,注释用俄文写成的帖子
+vgen_commission,5,vgen|vgencomm|vgencomms,VGen约稿,2394,通过VGen平台委托创作的作品
+nude_filter,5,nudefilter,去衣滤镜,2331,用工具抹去角色衣物使其裸露的图，违反上传规则
+has_downscaled_revision,5,,有缩小修订,2264,来源修订版为缩小尺寸版本的帖子
+gimp_(medium),5,gimp,GIMP,2212,用GIMP制作或编辑的图
+weapon_request,5,,请求武器,2202,请求他人识别图中武器具体型号的帖子
+unconventional_media,5,,非常规媒介,2188,用食物、拉花等非常规材料或技法制作的实体作品
+cosplay_photo,5,cosplay,角色扮演照片,2183,现实中的真人cosplay摄影照片
+alpha_transparency,5,,透明通道,2081,含半透明区域的图片，深浅色背景下显示效果不同
+ibispaint_(medium),5,ibispaint|ibispaintx|ibispaintxartist,ibisPaint,2046,用ibisPaint制作或编辑的图
+vector_trace,5,,矢量描摹,2035,在矢量软件中描摹后导出为位图的图片
+figure_(medium),5,,手办,2013,实体手办的实物照片
+crease,5,,折痕,2007,扫描图上可见的纸张折痕
+bad_nico_seiga_link,5,,错误Nico静画链接,1950,来源为Niconico静画图片直链，而非作品页面
+bad_imgur_id,5,,错误Imgur ID,1903,Imgur原图已被删除或设为私密
+lossy-lossless,5,,有损转无损,1768,有损格式被转成无损格式的图，多仍带JPEG瑕疵
+oil_painting_(medium),5,oil_painting|oilpainting|油彩|油绘,油画,1729,用油彩在画布上绘制的作品
+fancy_embedded_notes,5,,花式注释,1609,翻译或注解形式远超普通文字、排版华丽的注释图
+commentary_typo,5,,注释笔误,1597,画师注释中出现拼写或打字错误的图
+art_study,5,artstudy|studies|study,习作,1555,为学习特定对象或部位而画的练习作品
+nib_pen_(medium),5,fountain_pen_(medium)|nib_pen|tsukepen|万年笔,蘸水笔,1555,用蘸水笔绘制的作品，需反复蘸墨，线条表现力强
+third-party_watermark,5,,第三方水印,1490,被图库、壁纸站等第三方网站添加水印的图
+bad_discord_link,5,,错误Discord链接,1488,来源为Discord图片直链，链接还会过期失效
+decensored,5,descensored,去码,1481,第三方把原图马赛克或遮挡补画掉的无码版本
+bad_hentai_foundry_id,5,bad_hentai-foundry_id,错误Hentai Foundry ID,1469,Hentai Foundry原帖已被删除或设为私密
+engrish_commentary,5,,生硬英文注释,1464,注释为语法生硬、不自然的英文
+album_cover_redraw,5,,专辑封面重绘,1402,重绘专辑封面，多为恶搞
+bad_patreon_id,5,,错误Patreon ID,1391,Patreon来源链接已失效
+self-portrait,5,self_portrait,自画像,1389,画师画的自画像，也含代表自己的原创角色
+game_screenshot,5,,游戏截图,1334,电子游戏的截图，通常被视为离题内容
+detexted,5,,去字,1279,第三方把封面等扫描图文字抹去并补全背景的版本
+completion_time,5,drawing_time,完成耗时,1270,图中或注释标明绘制该作品总耗时的图
+end_card,5,endcard,片尾卡,1267,动画片尾由客座画师绘制的插图
+koikatsu_(medium),5,koikatu,恋活,1242,用Illusion的成人游戏《恋活》制作的3D图或动画
+bad_nijie_id,5,,错误Nijie ID,1227,Nijie原帖或原图已不可见
+paint_chat_(medium),5,绘茶,绘聊,1208,Magma、Drawpile等协作绘画网站上的多人合绘作品
+flash,5,,Flash,1202,用Adobe Flash制作的游戏、动画或MV，现已停止上传
+aliasing,5,resampling_artifacts,锯齿,1200,线条呈锯齿或像素块状的画质缺陷
+microsoft_paint_(medium),5,ms_paint|ms_paint_(medium)|mspaint|mspaint_(medium),画图,1180,用Windows画图（MS Paint）制作或编辑的图
+comic_panel_redraw,5,manga_panel_redraw,漫画分镜重绘,1161,重绘漫画或同人志分镜、页面的作品
+mikumikudance_(medium),5,mikumikudance|mmd_(medium),MMD,1147,用MikuMikuDance制作的3D动画或静图
+headwear_request,5,,请求头饰,1142,请求识别帽子、头盔等头饰的标签
+annotation_request,5,,请求批注,1137,请求为图中人物补上翻译或标注
+bad_blogspot_link,5,bad_blogger_link,错误Blogspot链接,1099,来源为Blogger图片直链，而非所在文章页面
+ych_commission,5,,YCH约稿,1076,画师先出模板角色、再由他人约稿替换成自己角色的委托
+ballpoint_pen_(medium),5,ballpoint_pen,圆珠笔,1070,用圆珠笔绘制的作品
+source_mismatch,5,,来源不匹配,1050,来源链接现已指向完全不同内容的帖子
+fantia_reward,5,,Fantia内容,1041,Fantia的付费赞助图，现已禁止上传
+bad_instagram_id,5,,错误Instagram ID,992,Instagram来源链接已失效
+ink_(medium),5,,墨水,974,用墨水绘制的作品，包括钢笔、圆珠笔、毛笔等
+psd_available,5,,有PSD,970,该帖作品另有PSD源文件可下载
+bad_poipiku_id,5,,错误Poipiku ID,967,Poipiku原帖或原图已不可见
+music_video,5,,音乐视频,959,配有音乐的视频，可为纯音乐或歌曲
+adoptable,5,adopt|adoptables|adoptableth|adopts,可领养设,953,画师出售或拍卖的原创角色设定，买家获得该角色的使用权
+bad_weibo_id,5,,错误微博ID,948,微博原帖已删除、设私或链接失效
+60+fps,5,,60帧以上,946,帧率达60fps以上的动画，可查看文件元数据中的帧率确认
+check_clothing,5,,核对服装,929,服饰已识别，但需要第二人复核确认
+imageboard_first-party_source,5,,图站一手来源,923,画师本人先发在其他图站、再从那里转来的帖子
+object_request,5,check_object,请求物品,922,请求他人识别图中物品名称的帖子
+audible_internal_cumshot,5,,可听出内射,911,带声音作品中能听到内射声响的帖子
+multilingual_commentary,5,,多语注释,902,同一段注释用两种以上语言重复书写的帖子
+pdf_available,5,,有PDF,897,该帖作品另有PDF文件可下载，站内不能上传PDF
+bad_facebook_link,5,,错误Facebook链接,874,来源为Facebook图片直链，链接会过期且无法回溯
+french_commentary,5,,法文注释,840,画师注释为法文的图
+calligraphy_brush_(medium),5,,毛笔,836,用毛笔书写的文字或绘制的作品，常带印章
+enty_reward,5,,Enty内容,835,Enty平台的付费赞助图，现已禁止上传
+watercolor_pencil_(medium),5,watercolor_pencil|watercolour_pencil|水彩色铅笔,水彩铅笔,835,用水溶性水彩铅笔画的作品，可遇水晕染
+bad_fanbox_id,5,,错误Fanbox ID,811,Pixiv FANBOX来源链接已失效
+waifu2x,5,,waifu2x放大,799,用waifu2x对动漫风图片降噪并放大的图
+twitter_sample,5,,Twitter缩略图,797,Twitter的缩略图样本，原图后缀为orig
+story_in_commentary,5,,注释故事,796,画师在注释里讲述图中角色背景或后续故事的帖子
+tumblr_sample,5,,Tumblr缩略图,791,Tumblr的缩略图样本，并非原图
+ruffle_compatible,5,,Ruffle兼容,780,确认可在站内Ruffle模拟器上正常播放的Flash
+indonesian_commentary,5,,印尼文注释,771,画师注释为印尼文的图
+origins,5,,梗源,754,开创某个持续流传的梗或风潮的原始作品
+bad_arca.live_id,5,,错误Arca.live ID,744,Arca.live上的原帖已无法访问
+hard-translated_(non-english),5,hard_translated_(non-english),非英文硬翻,744,第三方把原文替换成英文以外语言的翻译图，上传受限
+krita_(medium),5,krita|kritaart,Krita,739,用Krita制作或编辑的图
+epilepsy_warning,5,seizure_warning,癫痫警告,737,含快速闪烁等可能诱发光敏性癫痫画面的帖子
+pastel_(medium),5,oil_pastel|oilpastel|oilpastels|pastel,粉彩,736,用粉彩棒绘制的作品，颜料为粉末加黏合剂
+vehicle_request,5,car_request,请求载具,736,请求他人识别图中车辆型号或类型的帖子
+bad_artstation_id,5,,错误ArtStation ID,720,ArtStation原帖或原图已不可公开访问
+costume_request,5,,请求衣装,719,请求识别角色所穿官方换装名称的标签
+eyecatch,5,eye_catch,过场图,717,动画广告前后或漫画章首的整页插图
+third-party_extraction,5,,第三方提取,717,他人从原图中抠出角色的提取图
+spine_(medium),5,,Spine,707,用Spine制作的2D骨骼动画作品
+source_filmmaker_(medium),5,,Source Filmmaker,702,用Valve的Source Filmmaker制作的图或动画
+thumbnail_collage,5,twitter_thumbnail_collage,缩略图拼贴,701,多张帖子在同一平台缩略图中拼成完整画面的图组
+artist-provided_artwork,5,,画师提供原图,698,文件由画师本人直接提供给上传者，故非网络来源
+countdown_illustration,5,,倒计时图,695,为活动或作品发售倒数绘制的插图
+meme_request,5,,请求梗,684,无法识别图中梗或不知对应标签时使用
+parody_request,5,,请求恶搞对象,680,请求他人识别图中恶搞作品出处的帖子
+corrupted_metadata,5,corrupted_exif_data,元数据损坏,671,EXIF等元数据错误或损坏、导致旋转或色彩异常的图
+portuguese_commentary,5,,葡萄牙文注释,668,注释用葡萄牙文写成的帖子
+contest_winner,5,,比赛获奖,659,在某项比赛中获奖的作品，需同时标注比赛名
+24-hour_relay,5,,24小时接力,654,24小时接力绘画活动，每小时由一名画师投稿一幅作品
+bad_yandere_id,5,,错误Yandere ID,643,Yandere原帖或原图已不可见
+reverse_translation,5,,回译,641,图中英文被回译成日文等其他语言的帖子
+e-hentai_sample,5,ehentai_sample,E-Hentai缩略图,640,从E-Hentai抓到的缩小版图片而非原图
+artstation_sample,5,,ArtStation缩略图,632,ArtStation缩略图，尺寸或画质低于原图
+bad_piapro_id,5,,错误Piapro ID,614,Piapro原图已不可访问
+bmp-to-png_conversion,5,,BMP转PNG,610,上传前由BMP转成PNG的图片
+deviantart_sample,5,,DeviantArt缩略图,604,从DeviantArt抓到的缩小版缩略图而非原图
+mousepad_(medium),5,,鼠标垫,604,做成鼠标垫形状的图，护腕处常为角色身体部位
+partially_annotated,5,,部分批注,604,图中只有部分角色或物品被批注的帖子
+figure_available,5,,有手办,598,原图被直接做成实体手办的立绘等作品
+bad_mihuashi_id,5,,错误米画师ID,597,米画师上的原帖或原图已不可见
+papercraft_(medium),5,,纸艺,593,以纸为材料的作品，如纸模、剪纸、折纸等
+ko-fi_commission,5,,Ko-fi约稿,587,通过Ko-fi平台委托创作的约稿作品
+video_thumbnail,5,,视频封面,583,用作YouTube、bilibili等视频封面的画作
+tegaki_draw_and_tweet,5,tegaki_dt,手绘发推,574,用tegaki Draw and Tweet在线绘图工具画的图
+traditional_chinese_commentary,5,,繁体中文注释,549,注释用繁体中文写成的帖子
+exif_rotation,5,,EXIF旋转,540,旋转方向由EXIF元数据指定、部分软件显示异常的图
+rotated,5,,已旋转,533,整图被旋转的图，多用于把倒图转正
+headshop,5,,换头,531,第三方把角色头部换成别的角色的违规改图
+cosplay_request,5,,请求角色扮演,530,请求识别图中cosplay对象、识别完后应移除的标签
+official_art_redraw,5,,官方图重绘,521,他人重新绘制官方图的帖子，常附原图作对照
+vietnamese_commentary,5,,越南文注释,517,注释用越南文写成的帖子
+german_commentary,5,,德文注释,516,画师注释为德文的图
+yandere_sample,5,,Yandere缩略图,496,来自Yande.re的缩略图样本，并非原图
+art_trade,5,arttrade,交换绘,479,两位画师约定互赠、复杂度对等的交换绘
+bad_weibo_link,5,,错误微博链接,473,来源为微博图片直链，而非微博正文页面
+game_model,5,,游戏模型,457,把角色画成其游戏内3D模型样子的作品
+medium_request,5,,请求媒介,430,创作媒介不明时请求识别的标签
+figure-referenced,5,,参照手办,422,参照实体手办照片绘制的作品
+bad_fantia_id,5,,错误Fantia ID,418,Fantia来源链接已失效
+paywall_cliffhanger,5,,付费截断,417,视频被结尾卡片截断，需付费才能看到完整版
+corrupted_file,5,corrupted_image|corrupted_video,文件损坏,414,图片文件损坏、只显示部分或出现坏像素的图
+animal_request,5,,请求动物,410,请求为图中动物补上具体物种标签
+variant_set_available,5,,有完整差分,409,来源处有完整差分图组但站内未全部搬运的帖子
+emofuri,5,,E-mote,400,用E-Mote Free Movie Maker制作的动画
+fanfiction_available,5,,有同人小说,391,为线上同人小说创作或以其为原作的图
+hairstyle_request,5,check_hairstyle|hair_request|hair_style_request,请求发型,389,请求识别图中发型类型的标签
+bad_facebook_id,5,,错误Facebook ID,385,Facebook来源链接已失效
+magazine_request,5,,请求杂志,385,请求补充扫描图出处杂志标签的标签
+merged_layers,5,,图层合并,382,原本分层、被合并成单张的作品，多为游戏素材
+plant_request,5,,请求植物,380,请求他人识别图中植物种类的帖子
+has_watermarked_revision,5,,有水印修订,365,来源修订版被加上水印的帖子
+animated_png,5,,动态PNG,356,APNG格式的动态图，支持全彩与透明度
+ascii_art_commentary,5,,ASCII艺术注释,356,画师注释以ASCII字符画形式呈现
+bird_request,5,,请求鸟类,356,图中有鸟但缺具体种类标签时的请求标签
+first-party_extraction,5,,官方提取,354,由原作者本人从原图中抠出角色、去除背景的图
+ugoira_conversion,5,,动图转换,352,把Pixiv Ugoira转成其他动图或视频格式上传的图
+bad_pinterest_link,5,,错误Pinterest链接,351,来源为Pinterest图片直链，而非图钉页面
+chinese_audio,5,,中文语音,351,含可听中文说话声或中文歌词的作品
+zbrush_(medium),5,zbrush,ZBrush,349,用3D建模软件ZBrush制作或编辑的作品
+sprite_redraw,5,,像素图重绘,347,把游戏像素立绘等素材重新绘制的作品
+masking_tape_(medium),5,washi_tape_(medium),美纹纸胶带,342,用美纹纸胶带或和纸胶带拼贴创作的作品
+flower_stand_art,5,,花篮绘,339,为展示在庆祝花篮上而创作的插画
+maya_(medium),5,,Maya,338,用Autodesk Maya制作或编辑的图
+bad_miyoushe_link,5,,错误米游社链接,329,来源为米游社图片直链，而非帖子页面
+bad_4chan_link,5,,错误4chan链接,320,来源为4chan图片直链，而非所在帖子页面
+volume_warning,5,sound_warning,音量警告,317,声音含突然的音量变化或本身很响的帖子
+color_ink_(medium),5,,彩色墨水,310,用彩色墨水绘制的作品
+bad_ameba_link,5,,错误Ameba链接,308,来源为Ameba图片直链，无法回溯到原帖
+check_gender,5,,核对性别,307,角色性别已标注，但需要第二人复核确认
+ai-generated_background,5,,AI生成背景,304,背景由AI生成、其余部分为人工绘制的图
+stable_diffusion,5,stablediffusion,Stable Diffusion,296,用Stable Diffusion模型生成的AI图
+pose_request,5,posture_request,请求姿势,295,请求他人识别图中姿势或体态标签的帖子
+bad_daum_id,5,,错误Daum ID,294,Daum原图已不可见
+bad_pawoo_id,5,,错误Pawoo ID,294,Pawoo原帖或原图已不可见
+cameo_request,5,,请求客串角色,287,图中客串角色不明时，代替作品请求与角色请求使用
+lossless-lossy,5,,无损转有损,287,无损格式被转成有损格式的图，原图可得时会被删
+self-scan,5,,自行扫图,287,由扫描者本人上传的扫图，来源为本地
+reversed,5,,左右翻转,283,整图被水平翻转的图，多为第三方修改
+app_filter,5,,应用滤镜,282,作品完成后另用应用或网站叠加的滤镜
+medibang_paint_(medium),5,mediabangpaint|medibangpaint|medibangpaintpro,MediBang Paint,280,用MediBang Paint制作或编辑的图
+missing_commentary,5,,缺少注释,278,来源有注释但暂时抓取不到时临时标注的标签
+video_game_cover_redraw,5,,游戏封面重绘,274,重绘游戏封面的作品，常为恶搞
+italian_commentary,5,,意大利文注释,271,画师注释为意大利文的图
+gouache_(medium),5,gouache|不透明水彩,水粉,269,用水粉颜料绘制的作品
+has_cropped_revision,5,,有裁切修订,263,来源修订版为裁切版本的帖子
+roulette_animation,5,,轮盘动画,263,快速轮播多张图的动画，需暂停截取其中一张
+art_fight_attack,5,art_fight_gift|artfight_attack|artfight_gift,Art Fight互绘,261,为Art Fight年度互绘活动创作的赠图
+color_halftone,5,screening,半色调,259,高分辨率扫描印刷品时出现的网点状纹理
+flipnote_studio_(medium),5,,Flipnote Studio,257,用任天堂DSi/3DS的Flipnote Studio制作的动画
+gif_artifacts,5,,GIF瑕疵,257,GIF 256色限制造成的抖动、色带等画质瑕疵
+mecha_request,5,check_mecha|mecha_to_identify,请求机甲,257,请求识别有名称的机甲或机械的标签
+collage_(medium),5,,拼贴,254,把现成材料、图像或文字拼贴组合成的新作品
+youtube_video_thumbnail,5,,YouTube视频封面,254,YouTube视频的封面缩略图
+character_counter_request,5,,请求角色计数,252,图中角色数量或性别不明时请求补上计数标签
+korean_audio,5,,韩语音频,251,含韩语人声或韩语歌词的帖子
+download_link,5,,下载链接,244,来源为下载链接而非普通页面或直链的帖子
+gumroad_reward,5,,Gumroad内容,244,Gumroad的付费赞助图，现已禁止上传
+non-repeating_animation,5,non-repeating_gif,非循环动图,242,播放到结尾即停止、不循环的GIF或PNG动画
+custom_maid_3d_2,5,,定制女仆3D2,238,用KISS的成人游戏《定制女仆3D2》制作或截取的CG
+thumbnail_surprise,5,,缩略图反差,235,缩略图与完整图观感差别很大的帖子
+reference_request,5,,请求参考,230,请求他人补充参考素材的帖子
+nai_diffusion,5,novelaidiffusion|novelaidiffusionv3|novelaidiffusionv4,NovelAI,227,用NovelAI系列模型生成的AI图
+bad_bilibili_id,5,,错误Bilibili ID,225,Bilibili原帖或原图已不可见
+gibberish_commentary,5,,乱码注释,225,注释为无意义乱码、无法翻译的图
+hair_ornament_request,5,,请求发饰,224,请求补充具体发饰类型标签的标签
+aseprite_(medium),5,aseprite,Aseprite,223,用像素绘图软件Aseprite制作或编辑的作品
+bad_vkontakte_id,5,,错误VK ID,223,VKontakte来源链接已失效
+still_animation,5,,静止动画,223,播放后画面静止的动画，只有一帧或各帧相同
+song_request,5,,请求歌曲,215,请求识别背景音乐或歌声所用曲目与声库的帖子
+blueprint_(medium),5,図面,蓝图,214,以蓝图风格多角度展示机体或载具细节的设定图
+check_source,5,,核对来源,213,来源需要复核，尤其怀疑是第三方来源时
+color_study,5,,色彩习作,212,以研究配色与有限色板为目的的练习作品
+bad_tinami_id,5,,错误Tinami ID,210,Tinami原帖或原图已不可见
+gesture_request,5,,请求手势,207,请求识别图中手势或动作的标签
+bad_aspect_ratio,5,,错误宽高比,204,宽高比被不当拉伸或压缩的图
+recolored,5,,重上色,203,被人重新上色、与原图配色不同的版本
+flash_game,5,,Flash游戏,201,用Adobe Flash制作的游戏
+bad_postype_id,5,,错误Postype ID,197,Postype原帖或原图已不可见
+autodesk_3ds_max_(medium),5,3ds_max,3ds Max,195,用Autodesk 3ds Max制作的3D作品
+bad_newgrounds_id,5,,错误Newgrounds ID,195,Newgrounds来源链接已失效
+hatsune_miku_(voicebank),5,,初音未来音源,193,使用初音未来声库的人声作品，多为歌曲样本
+meme_attire_request,5,,请求梗服装,190,请求识别图中梗服装的标签
+fixed,5,,已修复,189,扫描瑕疵或折痕被数字修复过的干净版本
+zip_available,5,,有压缩包,188,画师在来源页面提供ZIP压缩包下载的帖子
+bad_bilibili_link,5,,错误Bilibili链接,184,来源为Bilibili图片直链，而非动态或专栏页面
+bad_dc_inside_id,5,,错误DcInside ID,182,DcInside上的原帖已不可见
+bad_reddit_id,5,,错误Reddit ID,180,Reddit原帖或原图已不可见
+bad_baraag_id,5,,错误Baraag ID,179,Baraag.net上的原帖已无法访问
+style_request,5,,请求画风,179,请求他人识别图中模仿了哪种画风的帖子
+acrylic_stand_(medium),5,,亚克力立牌,178,角色亚克力立牌的实物照片，常作为周边商品出售
+bleed_through,5,,透背,178,扫描时纸张背面的图像透印出来
+neckwear_request,5,,请求颈饰,177,请求他人识别图中颈饰具体类型的帖子
+color_banding,5,posterization,色带,176,低色深图片中颜色过渡出现条带的瑕疵
+magma_(medium),5,,Magma,174,用在线协作绘图工具Magma（原aggie.io）创作的作品
+animal_ear_request,5,,请求兽耳,166,不知该用哪种兽耳标签时使用的请求标签
+lego_(medium),5,lego|legomech,乐高,164,用乐高积木拼出的作品或像素画
+sound_effect_request,5,,请求音效翻译,164,图中音效文字未被翻译、需要翻译的帖子
+food_art_(medium),5,,食物艺术,162,拉花、角色便当等真实食物艺术的照片
+metadata_reference,5,filesize_reference|metadata_pun|resolution_reference,元数据参考,162,用文件大小、尺寸、时长等元数据玩梗或呼应的图
+paper_cutout_(medium),5,,剪纸,161,把纸剪刻后拼贴层叠而成的作品
+bad_artstation_link,5,,错误ArtStation链接,160,来源为ArtStation图片直链，而非作品页面
+drawpile_(medium),5,,Drawpile,160,用协作绘图工具Drawpile创作的作品
+nicoseiga_sample,5,,Niconico静画缩略图,160,来自Niconico静画的缩略图，并非原图
+creature_request,5,,请求生物,155,请求识别图中虚构生物名称的标签
+bad_drawcrowd_id,5,,错误Drawcrowd ID,152,Drawcrowd原帖已不可见，站点2018年初关闭
+bad_blogspot_id,5,bad_blogger_id,错误Blogspot ID,151,Blogspot原帖或原图已不可见
+transcoded,5,,转码,151,上传前被转码成其他格式或码率的视频
+naver_sample,5,,Naver 缩略图,150,从Naver抓取的缩略图，并非原图
+bad_bluesky_id,5,,错误Bluesky ID,147,Bluesky上的原帖已无法访问
+bad_tinami_link,5,,错误Tinami链接,146,来源为Tinami图片直链，而非作品页面
+has_artifacted_revision,5,,有压缩瑕疵修订,144,来源修订版比原图有更多压缩瑕疵的帖子
+latin_commentary,5,,拉丁文注释,142,画师注释为拉丁文的图
+cleaned,5,,已清理,140,去除了文字、杂物或背景的清理版扫描图
+nurimas,5,,涂色挑战,139,CSP与ibisPaint定期举办的上色比赛作品
+fashion_style_request,5,,请求时尚风格,137,请求识别角色所穿时尚风格的标签
+background_request,5,check_background,请求背景,135,不知该用哪个背景标签时使用的请求标签
+bad_plurk_link,5,,错误Plurk链接,133,来源为Plurk图片直链，而非噗文页面
+comic_cover_redraw,5,,漫画封面重绘,133,重绘漫画书封面的作品
+bad_skeb_id,5,,错误Skeb ID,132,Skeb来源链接已失效
+footwear_request,5,,请求鞋子,131,不知道鞋类对应标签时请求识别的标签
+location_request,5,,请求地点,130,请求识别图中现实地点或场景的标签
+adobe_animate_(medium),5,adobe_flash_(medium),Adobe Animate,127,用Adobe Animate（原Flash）制作的图像或动画，非SWF文件
+has_adversarial_noise_revision,5,has_glazed_revision,有对抗噪声修订,122,来源修订版被加入对抗噪声的帖子
+bad_reddit_link,5,,错误Reddit链接,121,来源为Reddit图片直链，而非帖子页面
+crayon_(medium),5,,蜡笔,120,用蜡笔绘制或上色的作品
+fish_request,5,,请求鱼类,120,请求补充图中鱼类具体种类标签的标签
+ukrainian_commentary,5,,乌克兰文注释,120,注释用乌克兰文写成的帖子
+postage_stamp_(medium),5,,邮票,119,做成邮票样式的图片
+color_issue,5,,色彩问题,117,扫描色彩还原不准，过饱和、偏色或对比异常
+voice_actor_drawing_own_character,5,,声优绘制自己角色,117,由角色声优本人绘制的该角色
+mixed-language_audio,5,,多语言音频,116,含多种语言人声或歌词的帖子，需同时标注各语言
+kisekae,5,,换装人偶,115,可用于换装的纸人偶或Flash换装游戏图
+twitter_banner,5,,Twitter横幅,115,画师Twitter主页的横幅图
+bad_vkontakte_link,5,bad_vk_link,错误VK链接,114,来源为VK图片直链，而非帖子页面
+stop_motion_animation,5,,定格动画,113,逐帧摆拍物体后连续播放形成的动画，如黏土动画
+dog_request,5,,请求狗,112,请求补充具体犬种标签的标签
+model_kit_(medium),5,,拼装模型,112,拼装模型实物照片，含自制高达与树脂件
+mojibake_commentary,5,,乱码注释,112,注释因编码错误而显示成乱码的帖子
+lighting_study,5,,光影练习,111,以光影和明暗为对象的绘画练习
+adobe_firefly_(medium),5,,Adobe Firefly,110,用Adobe Firefly生成或修改的图片
+cinema_4d_(medium),5,,Cinema 4D,110,用Cinema 4D制作的3D作品
+arabic_commentary,5,,阿拉伯语注释,109,画师注释使用阿拉伯语的帖子
+bad_tistory_link,5,,错误Tistory链接,109,来源为Tistory图片直链，而非文章页面
+brush_(medium),5,,画笔,109,用画笔（刷）类工具绘制的作品
+bad_ruliweb_link,5,,错误Ruliweb链接,108,来源为Ruliweb图片直链，而非帖子页面
+cosplay-referenced,5,,参照Cosplay,107,参照真人cosplay照片绘制的作品，形象常与官方设定有出入
+poorly_translated,5,,翻译质量差,105,字幕或硬翻与原文不符、质量低劣的帖子
+cursor_(medium),5,,鼠标指针,104,自定义鼠标指针套装，通常在注释提供下载链接
+rotoscoping,5,,转描,104,逐帧描摹实拍影像以得到流畅动作的动画技法
+avatar_generator,5,,头像生成器,102,用Picrew等头像生成器的预制素材拼出的图片
+has_lossy_revision,5,,有有损修订,102,来源修订版被转成有损格式的帖子
+instrument_request,5,check_instrument,请求乐器,102,请求识别图中乐器名称或型号的标签
+animatic,5,,动态分镜,100,动画制作中的简易动态分镜稿，用于预览节奏与演出
+book_cover_redraw,5,,书籍封面重绘,98,重绘书籍封面，多为恶搞
+emotelab_(medium),5,,EmoteLab,98,用EmoteLab制作的贴纸图
+bad_fandom_id,5,,错误Fandom ID,95,Fandom（原Wikia）来源链接已失效
+check_vehicle,5,,核对载具,95,载具已识别，但需要第二人复核确认
+constellation_request,5,,请求星座,95,请求识别图中星座、识别完后应移除的标签
+huashijie_(medium),5,,画世界,95,用绘画App画世界（Huashijie）创作的作品
+opencanvas_(medium),5,,openCanvas,95,用openCanvas绘图软件制作的作品
+easytoon_(medium),5,,Easytoon,94,用Easytoon制作的逐帧动画或GIF
+third-party_ai_edit,5,,第三方AI修改,94,被画师以外的人用AI修改过的图片
+adobe_illustrator_(medium),5,,Adobe Illustrator,92,用Adobe Illustrator制作的作品
+bad_misskey.io_id,5,,错误Misskey.io ID,92,Misskey.io上的原帖已被删除或不可访问
+picrew_(medium),5,,Picrew,91,用Picrew捏人网站生成的头像图片
+rule34.xxx_sample,5,,rule34 缩略图,91,来自rule34.xxx的缩略图样本，并非原图
+art_program_request,5,,请求绘图软件,88,请求识别作品所用绘图软件的标签
+bad_pawoo_link,5,,错误Pawoo链接,88,来源为Pawoo图片直链，而非帖子页面
+slideshow_animation,5,,幻灯片动画,88,把多张独立图片以幻灯片形式轮流播放的动图
+vrchat_(medium),5,vrc|vrchat,VRChat,88,用虚拟现实游戏VRChat拍摄或制作的作品
+bad_tistory_id,5,,错误Tistory ID,87,Tistory上的原帖已不可见
+second-party_edit,5,,第二方修改,87,由约稿方等第二方而非陌生人修改过的图片
+spanish_audio,5,,西班牙语语音,87,含西班牙语人声或歌词的帖子
+3d_custom_girl,5,,3D定制少女,86,用3D定制少女（3D Custom Girl）软件捏制的角色图
+fiverr_commission,5,,Fiverr约稿,85,通过Fiverr平台委托创作的约稿作品
+bad_carrd_link,5,,错误Carrd链接,84,来源为Carrd图片直链，应填Carrd页面地址
+check_weapon,5,,核对武器,84,武器已识别，但需要第二人复核确认
+alight_motion_(medium),5,,Alight Motion,83,用手机剪辑软件Alight Motion制作的补间动画
+bad_deviantart_link,5,,错误DeviantArt链接,83,来源为DeviantArt图片直链，缺少作品ID
+binding_discoloration,5,,装订变色,82,书页未贴合扫描仪造成的装订侧变色与模糊
+print_(medium),5,,版画,81,用木版或胶版刻制后印到纸上的版画作品
+fake_translation,5,,假翻译,80,第三方伪造、通常为恶搞的错误译文图，站内禁止上传
+airbrush_(medium),5,,喷枪,79,用喷枪喷绘上色的作品
+bad_lofter_link,5,,错误Lofter链接,79,来源为Lofter图片直链，而非帖子页面
+greek_commentary,5,,希腊文注释,79,画师注释为希腊文的图
+charcoal_(medium),5,,木炭,78,用木炭绘制的作品，黑白对比强烈
+bad_e-hentai_link,5,,错误E-Hentai链接,77,来源为E-Hentai图片直链，而非画廊页面
+exif_thumbnail_surprise,5,,EXIF缩略图差异,77,内嵌EXIF缩略图与完整图内容不符的图
+magicaldraw_(medium),5,,MagicalDraw,77,用在线绘图工具MagicalDraw创作的作品
+daz_studio_(medium),5,daz-studio|dazstudio,Daz Studio,75,用Daz Studio制作的3D人物作品
+corrected_aspect_ratio,5,,修正画幅比,74,第三方把原本错误画幅比的原图改为正确画幅比的图
+expression_request,5,,请求表情,74,不知道表情对应标签时请求识别的标签
+reference_photo,5,,参考照片,74,画师创作时用作参考的照片
+anatomy_study,5,,人体习作,73,以人体或特定身体部位为对象的练习作品
+bad_google+_id,5,,错误Google+ ID,72,Google+ 2019年停服，原帖链接均已失效
+check_spoilers,5,,核对剧透,72,不确定spoilers剧透标签是否适用时使用
+rebelle_(medium),5,,Rebelle,72,用Rebelle绘制的作品，该软件可模拟传统绘画质感
+check_flower,5,,核对花卉,71,花种已识别，但需要第二人复核确认
+environment_study,5,,环境练习,71,以风景、街景等场景为对象的绘画练习
+bad_cghub_id,5,,错误CGHub ID,70,CGHub 2014年关站，原帖已不可见
+bad_cgsociety_id,5,,错误CGSociety ID,70,CGSociety原帖或原图已不可见
+bad_e-hentai_id,5,,错误E-Hentai ID,70,E-Hentai原帖或原图已不可见
+webp-to-png_conversion,5,,WebP转PNG,70,上传前由WebP转成PNG的图片
+acrylic_gouache_(medium),5,,丙烯水粉,69,用丙烯水粉颜料绘制的作品
+doll_(medium),5,,玩偶,69,实体玩偶的实物照片
+bad_paheal_link,5,,错误Paheal链接,68,来源为Paheal图片直链，而非帖子页面
+after_effects_(medium),5,,After Effects,67,用Adobe After Effects制作或编辑的作品，常用于补间动画
+clay_(medium),5,,黏土,67,用黏土制作的实物雕塑，也用于黏土定格动画
+line_sticker_available,5,,有LINE贴纸,67,有对应的LINE贴纸可用的图
+kasane_teto_(voicebank),5,,重音Teto音源,66,使用重音Teto声库的人声作品
+mihuashi_sample,5,,米画师缩略图,66,从米画师抓到的缩小版图片而非原图
+garry's_mod_(medium),5,,Garry's Mod,65,用Garry's Mod制作的作品
+latte_art_(medium),5,coffee_art_(medium),拉花,65,真实咖啡拉花艺术的照片
+swedish_audio,5,,瑞典语语音,65,含瑞典语人声或歌词的帖子
+bad_furaffinity_link,5,,错误FurAffinity链接,64,来源为FurAffinity图片直链，而非作品页面
+coupy_pencil_(medium),5,,Coupy铅笔,64,用樱花Coupy彩色塑料铅笔绘制的作品
+midjourney,5,midjourneyv61|nijijourney|nijijourneyv5|nijijourneyv6,Midjourney,64,Midjourney生成的AI图，含二次元向的niji模型
+corel_painter_(medium),5,,Corel Painter,63,用Corel Painter绘制或编辑的图
+unreal_engine_(medium),5,unreal_(medium),Unreal Engine,63,用Epic的虚幻引擎制作的图片或动画
+noise_reduction,5,,降噪,62,用waifu2x等工具降低JPEG伪影与噪点的图
+pattern_request,5,print_request,请求图案,62,请求他人识别图中花纹或图案的帖子
+wallpaper_forced,5,,强行壁纸化,61,被改到1920x1080等壁纸标准分辨率的图
+autodesk_sketchbook_(medium),5,,Autodesk Sketchbook,60,用Autodesk Sketchbook绘制的作品
+bad_youtube_id,5,,错误YouTube ID,60,YouTube来源链接已失效
+vector_art,5,,矢量图,60,由点线曲线等几何形状直接生成的矢量图形
+xnalara_(medium),5,,XNALara,60,用XNALara摆姿势的3D模型渲染作品
+wigglypaint_(medium),5,,WigglyPaint,59,用WigglyPaint在线工具绘制、带抖动质感的作品
+bad_xiaohongshu_id,5,,错误小红书ID,58,小红书上的原图已不可见
+reference_work_request,5,,请求参考作品,58,请求他人指出图中参考了哪部作品的帖子
+zalgo_commentary,5,,扭曲文字注释,58,注释含大量附加符号、呈现扭曲惊悚效果的帖子
+fruit_request,5,,请求水果,57,不知道水果对应标签时请求识别的标签
+check_food,5,,核对食物,56,食物已识别，但需要第二人复核确认
+engraving_(medium),5,,版画,56,用雕版或蚀刻版画技法制作的作品
+low_bitrate,5,,低码率,56,视频或动画出现宏块、色带等压缩瑕疵的帖子
+bad_dlsite_link,5,,错误DLsite链接,55,来源为DLsite图片直链，而非商品页面
+custom_order_maid_3d_2,5,,COM3D2,55,用KISS的成人游戏《定制女仆3D2 COM》制作或截取的CG
+drawcrowd_sample,5,,Drawcrowd缩略图,54,从Drawcrowd抓到的缩小版图片而非原图
+firealpaca_(medium),5,,FireAlpaca,54,用FireAlpaca制作或编辑的图
+fantia_commission,5,,Fantia约稿,53,通过Fantia平台委托画师创作的约稿作品
+postcard_(medium),5,,明信片,52,做成明信片样式的图片
+scan_dust,5,scanning_dust,扫图灰尘,52,扫描仪玻璃未清洁导致画面出现灰尘的瑕疵
+bad_nijie_link,5,,错误Nijie链接,51,来源为Nijie图片直链，而非作品页面
+unity_(medium),5,,Unity,51,用Unity引擎渲染或制作的作品
+vocal_synthesizer_audio,5,,声库演唱,51,用VOCALOID、UTAU等声库合成的语音或歌声
+whiteboard_(medium),5,,白板,33,用马克笔在教室白板上绘制的作品
+chalk_(medium),5,,粉笔,24,用粉笔在黑板上绘制的作品
+dall-e,5,dalle|dalle2|dalle3,DALL·E,12,OpenAI的文本生成图像服务，用它生成的AI图
+flyer_(medium),5,,传单,7,传单或宣传单页的实物照片
+abyss_orange_mix,5,,AbyssOrangeMix,0,以二次元混合作画风格为主的Stable Diffusion混合模型，非Danbooru标签
+animaginexl,5,,Animagine XL,0,以动漫风格为主的Stable Diffusion XL微调模型，非Danbooru标签
+anything_(model),5,,Anything,0,二次元风格的Stable Diffusion早期混合模型，非Danbooru标签
+anythingelse,5,,AnythingElse,0,Anything系列的二次元风格Stable Diffusion混合模型，非Danbooru标签
+asian,5,,亚洲人,0,含义模糊的亚洲人标签，东亚人见East Asian、南亚人见Desi
+autismmix,5,,AutismMix,0,以二次元插画为主的Stable Diffusion混合模型，非Danbooru标签
+bad_quality,5,,质量差,0,画质低劣、模糊或结构崩坏的图片
+based_mix,5,,BasedMix,0,以二次元风格为主的Stable Diffusion混合模型，非Danbooru标签
+best_quality,5,,质量最好,0,画质极佳、细节丰富的图，也常被AI绘图用作正面提示词
+collaboration_request,5,,请求合作,0,已废弃，改用artist_request与artist_collaboration
+counterfeit,5,counterfeit_(model),Counterfeit,0,以二次元插画为主的SDXL微调模型，非Danbooru标签
+doujinshi,5,,同人志,0,已废弃的标签，同人漫画请改用comic
+explicit,5,rating_explicit,露骨,0,已停用的分级标签，改用rating:explicit
+extraction,5,,提取,0,第三方把角色从原图中提取出、背景被去除的图
+general,5,rating_general,全年龄,0,含义模糊，可指general分级或名为general的标签
+gyozanmix,5,,GyozanMix,0,画风偏写实的二次元融合模型，非Danbooru标签
+hassaku_xl_(pony),5,,Hassaku XL,0,基于Pony Diffusion的二次元向SDXL微调模型，非Danbooru标签
+huge_filesize,5,,超大文件,0,已废弃，改用filesize搜索超大文件
+illustrious_xl,5,illustrious-xl,Illustrious XL,0,以二次元插画为主的SDXL基座模型
+japanese_(nationality),5,,日本国籍,0,设定为日本国籍的角色
+japanese_commentary,5,,日文注释,0,已停用，改用commentary或commentary request
+metadata_request,5,,元数据请求,0,请求补充或说明图片元数据的标签
+model_request,5,,请求模型,0,请求他人识别生成该图所用AI模型的帖子
+nijijourney,5,,Niji Journey,0,Midjourney的二次元风格AI绘图模型，非Danbooru标签
+non-asian,5,,非亚洲人,0,标记图中人物外貌为非亚洲人特征
+noobai-xl,5,,NoobAI XL,0,以动漫与furry图为主的Illustrious系SDXL微调模型，非Danbooru标签
+normal_quality,5,,质量一般,0,表示画面质量中等的分级提示词
+novelai,5,,NovelAI,0,Anlatan公司的AI绘图服务，其二次元模型对同人插画影响很大
+number-only_commentary,5,,纯数字评论,0,注释内容只有数字、没有可翻译文字的帖子
+phone_screenshot,5,,手机截图,0,手机界面或其他手机画面的截图
+pony_diffusion_xl,5,,Pony Diffusion XL,0,以二次元与furry训练集为主的SDXL微调模型，非Danbooru标签
+promotional_menu,5,,宣传菜单,0,餐饮店等宣传用的菜单图片，非Danbooru标签
+questionable,5,rating_questionable,擦边,0,已废弃的分级标签，改用rating:questionable
+sensitive,5,rating_sensitive,敏感,0,已废弃的分级标签，改用rating:sensitive
+stable_diffusion_xl,5,,Stable Diffusion XL,0,Stability AI的SDXL文生图模型，非Danbooru标签
+t-ponynaiv3,5,,T-ponynai3,0,基于Pony与NovelAI的二次元AI绘图模型，非Danbooru标签
+trinart,5,,TrinArt,0,早期动漫风格的Stable Diffusion微调模型，非Danbooru标签
+wai-nsfw-illustrious-sdxl,5,,WAI NSFW Illustrious SDXL,0,基于Illustrious的NSFW向AI绘图模型
+waifudiffusion,5,waifu_diffusion,Waifu Diffusion,0,以动漫图训练的早期Stable Diffusion微调模型
+worst_quality,5,,质量最差,0,AI绘图常用的负面质量提示词，非Danbooru标签
+zuki_cute_ill,5,,ZUKI cute ILL,0,偏可爱风格的Illustrious系AI绘图模型，非Danbooru标签

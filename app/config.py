@@ -172,6 +172,11 @@ class Settings:
     show_model_tip: bool = True            # 启动时是否提示"模型未下载"（可勾选不再提示）
     graph_show_all_tags: bool = False      # 图谱是否画出全部标签（默认只画常用的前 600 个）
     graph_expand_reset_done: bool = False  # 是否已清掉老版本"自动折叠"留下的标记（一次性）
+    # 图谱可调参数
+    graph_ring_radius: float = 900.0       # 第一层中心所在的圆半径（越大越松）
+    graph_anim_ms: int = 340               # 布局变化/拖拽回弹的动画时长（毫秒）
+    graph_drag_limit: float = 240.0        # 拖拽节点最多能拉离原位多少像素（弹簧极限）
+    graph_label_len: int = 22              # 节点名字最多显示多少字
     # 扫描
     ignore_dirs: list[str] = field(default_factory=lambda: [".imtag", "@eaDir", ".git", "$RECYCLE.BIN", "System Volume Information"])
 

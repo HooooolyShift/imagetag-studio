@@ -974,6 +974,19 @@ class SettingsDialog(QDialog):
         self.infer_parent.setToolTip("文件名只写了「白裙子」时，重新扫描/换机器建索引会自动把\n"
                                      "它的父标签（裙子、服装…）一起补进库里，避免丢层级。")
         f1.addRow("", self.infer_parent)
+        # 图谱可调参数
+        self.g_ring = QSpinBox(); self.g_ring.setRange(300, 4000); self.g_ring.setSingleStep(50)
+        self.g_ring.setValue(int(getattr(settings, "graph_ring_radius", 900)))
+        self.g_ring.setToolTip("图谱里第一层分类所在圆的半径：越大各中心之间越松")
+        f1.addRow("图谱：中心间距", self.g_ring)
+        self.g_anim = QSpinBox(); self.g_anim.setRange(0, 2000); self.g_anim.setSingleStep(40)
+        self.g_anim.setValue(int(getattr(settings, "graph_anim_ms", 340)))
+        self.g_anim.setToolTip("增删标签/分类后重排、以及拖拽回弹的动画时长（0 = 不动画）")
+        f1.addRow("图谱：动画时长(ms)", self.g_anim)
+        self.g_drag = QSpinBox(); self.g_drag.setRange(0, 1200); self.g_drag.setSingleStep(20)
+        self.g_drag.setValue(int(getattr(settings, "graph_drag_limit", 240)))
+        self.g_drag.setToolTip("拖拽节点最多能拉离原位多少像素（松开弹回原位）")
+        f1.addRow("图谱：拖拽极限(px)", self.g_drag)
         tabs.addTab(w1, "常规")
 
         # WD14
@@ -1123,6 +1136,9 @@ class SettingsDialog(QDialog):
         settings.rename_keep_original = self.keep_orig.isChecked()
         settings.tag_most_specific_on_disk = self.specific_only.isChecked()
         settings.infer_parent_tags = self.infer_parent.isChecked()
+        settings.graph_ring_radius = float(self.g_ring.value())
+        settings.graph_anim_ms = int(self.g_anim.value())
+        settings.graph_drag_limit = float(self.g_drag.value())
         settings.dup_threshold = int(self.dup_th.value())
         settings.dup_use_clip = self.dup_clip.isChecked()
         settings.rating_enabled = self.rating_on.isChecked()

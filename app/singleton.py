@@ -38,6 +38,24 @@ def acquire(data_dir: str | Path) -> bool:
     except Exception:
         return True                     # 拿不到锁文件时不阻塞使用
     if not _try_lock(fd):
+        # 拿不到锁：看看原来的持有者是不是还活着。进程已经退了的"僵尸锁"直接接管，
+        # 否则会出现"没有窗口却提示重复实例"
+        try:
+            os.lseek(fd, 0, 0)
+            raw = os.read(fd, 32).decode("ascii", "ignore").strip()
+            old_pid = int(raw) if raw.isdigit() else 0
+        except Exception:
+            old_pid = 0
+        if old_pid and not _pid_alive(old_pid):
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                os.remove(str(p))            # 清掉僵尸锁再抢一次
+            except Exception:
+                pass
+            return acquire(data_dir)
         try:
             os.close(fd)
         except Exception:
@@ -91,3 +109,20 @@ def is_running(data_dir: str | Path) -> bool:
     except Exception:
         pass
     return not ok
+
+
+def _pid_alive(pid: int) -> bool:
+    """判断那个 PID 是否还在跑（Windows 上用 tasklist，其它平台用 os.kill）。"""
+    if pid <= 0:
+        return False
+    import sys
+    try:
+        if sys.platform == "win32":
+            import subprocess
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                                 capture_output=True, text=True, timeout=8).stdout
+            return str(pid) in out
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False

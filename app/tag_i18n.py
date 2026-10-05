@@ -319,7 +319,26 @@ def zh_index(store=None) -> dict[str, str]:
     同一个中文名可能对上多个标签（例如库里既有 skirt 又有 skirt_hold，中文名都填了「裙子」），
     这时按"有图 > 无图、下划线少 > 多、名字短 > 长"挑更基础的那个，避免被垃圾标签劫持。
     """
-    idx = dict(zh_to_name())
+    idx: dict[str, str] = {}
+    if store is not None:
+        # 库里的标签名本身就是中文（如评级标签「全年龄」「R15」）→ 它自己优先，
+        # 否则会被词典里的英文规范名（Danbooru 的 rating:general）抢走
+        for r in store.query("SELECT name FROM tags"):
+            nm = str(r["name"])
+            if re.search(r"[\u4e00-\u9fff]", nm):
+                idx.setdefault(nm, nm)
+    for zh, canonical in zh_to_name().items():
+        idx.setdefault(zh, canonical)
+    # 旧译名也能认：词典改过之后，以前写进文件名的老中文名（如「白裙子」）
+    # 仍要能还原成同一个标签，否则重新扫描会凭空多出一堆"新标签"
+    try:
+        hist = json.loads((Path(__file__).with_name("tag_zh_fix_history.json")).read_text(encoding="utf-8"))
+        for tag, pair in hist.items():
+            old = (pair[0] if isinstance(pair, (list, tuple)) and pair else "") or ""
+            if old.strip():
+                idx.setdefault(old.strip(), tag)
+    except Exception:
+        pass
     if store is not None:
         best: dict[str, tuple] = {}
         for r in store.query(

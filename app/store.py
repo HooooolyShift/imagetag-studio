@@ -407,7 +407,24 @@ class Store:
         cur = self.execute(
             "INSERT INTO tags(name,category,prompt,enabled,auto,count,created_at,updated_at) VALUES(?,?,?,1,?,0,?,?)",
             (name, category, prompt, auto, now, now))
-        return int(cur.lastrowid)
+        tid = int(cur.lastrowid)
+        # 新增标签时自动带上中文名：内置词典来自 Danbooru 社区词表（本地 app/booru_zh/），
+        # 以后你新建的标签只要能对上，中文名就直接填好
+        self.fill_zh_from_dict(tid, name)
+        return tid
+
+    def fill_zh_from_dict(self, tag_id: int, name: str) -> str:
+        """从本地词典给标签补中文名（只补空的，不动你手填的）。返回补上的名字。"""
+        import re
+        from . import tag_i18n
+        row = self.one("SELECT zh FROM tags WHERE id=?", (int(tag_id),))
+        if not row or (row["zh"] or "").strip():
+            return ""
+        zh = tag_i18n.label(name or "", "")
+        if not zh or zh == name or not re.search(r"[\u4e00-\u9fff]", zh):
+            return ""
+        self.update_tag(int(tag_id), zh=zh)
+        return zh
 
     # ---------------- 标签类型 ----------------
     def categories(self) -> list[sqlite3.Row]:

@@ -65,24 +65,58 @@ def main() -> int:
                             "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
         return 1
     store = Store()
-    try:
-        from .library import Library
-        res_zh = Library(store, settings).merge_notes_into_zh()
-        if res_zh["merged"] or res_zh.get("cleaned"):
-            print(f"标签中文名整理：合并备注 {res_zh['merged']} 个，清理脏数据 {res_zh.get('cleaned', 0)} 个")
-    except Exception:
-        pass
-    try:
-        other = store.one("SELECT COUNT(*) c FROM tags WHERE category IN ('','other')")["c"]
-        if other:
-            res = Library(store, settings).auto_organize_tags()
-            print(f"标签整理：分类 {res['categorized']} 个，补中文 {res['zh']} 个")
-    except Exception:
-        pass
-    store_stats = store.stats()
     win = MainWindow(store, settings)
     win.statusBar().showMessage(f"性能挡位：{perf.describe()}", 8000)
     win.show()
+
+    # 一次性数据整理挪到窗口显示之后跑，避免启动卡在"没窗口"的几秒里
+    def housekeeping() -> None:
+        from .library import Library
+        lib = Library(store, settings)
+        if not getattr(settings, "zh_housekeeping_done", False):
+            try:
+                res_zh = lib.merge_notes_into_zh()
+                if res_zh["merged"] or res_zh.get("cleaned"):
+                    print(f"标签中文名整理：合并备注 {res_zh['merged']}，清理脏数据 {res_zh.get('cleaned', 0)}")
+            except Exception:
+                pass
+            try:
+                if store.one("SELECT COUNT(*) c FROM tags WHERE category IN ('','other')")["c"]:
+                    res = lib.auto_organize_tags()
+                    print(f"标签整理：分类 {res['categorized']} 个，补中文 {res['zh']} 个")
+            except Exception:
+                pass
+            settings.zh_housekeeping_done = True
+            try:
+                settings.save()
+            except Exception:
+                pass
+
+    QTimer.singleShot(600, housekeeping)
+
+    # ---------------- 托盘图标：关窗口不退出，托盘菜单里退出 ----------------
+    tray = None
+    try:
+        from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+        from PySide6.QtGui import QIcon as _QIcon
+        icon = next((_QIcon(str(p)) for p in (project_root() / "assets" / "icon.ico",
+                                              project_root() / "assets" / "icon.png") if p.exists()),
+                    win.windowIcon())
+        tray = QSystemTrayIcon(icon, win)
+        tray.setToolTip(f"{APP_NAME} {VERSION}（在后台运行）")
+        menu = QMenu()
+        a_show = menu.addAction("显示主窗口")
+        a_show.triggered.connect(lambda: (win.showNormal(), win.raise_(), win.activateWindow()))
+        menu.addSeparator()
+        a_quit = menu.addAction("退出")
+        a_quit.triggered.connect(app.quit)
+        tray.setContextMenu(menu)
+        tray.activated.connect(
+            lambda reason: (win.showNormal(), win.raise_()) if reason == QSystemTrayIcon.Trigger else None)
+        tray.show()
+        win.tray_icon = tray          # 关窗时隐藏到托盘
+    except Exception:
+        tray = None
 
     def first_run() -> None:
         # 「开始使用」提醒：库里真的一个图片目录都没有时才提示，且可以勾选「下次不再显示」

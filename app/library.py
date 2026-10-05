@@ -1016,9 +1016,22 @@ class Library:
         还原规则统一在 tag_i18n.resolve()；这里只是建一次索引后批量套用（快照扫描用）。
         """
         from . import tag_i18n
+        from .config import RATING_TAG
+        rating_alias = {"全年龄": RATING_TAG["all_ages"], "r15": RATING_TAG["r15"],
+                        "r18": RATING_TAG["r18"], "r18g": RATING_TAG["r18g"],
+                        "rating:general": RATING_TAG["all_ages"], "rating:sensitive": RATING_TAG["r15"],
+                        "rating:questionable": RATING_TAG["r15"], "rating:explicit": RATING_TAG["r18"],
+                        "general": RATING_TAG["all_ages"], "sensitive": RATING_TAG["r15"],
+                        "questionable": RATING_TAG["r15"], "explicit": RATING_TAG["r18"]}
         idx = tag_i18n.zh_index(self.store)
         out: list[str] = []
         for tok in tokens or []:
+            key = (tok or "").strip().lower()
+            if key in rating_alias:                  # 分级标签固定用我们自己的名字
+                name = rating_alias[key]
+                if name not in out:
+                    out.append(name)
+                continue
             name = tag_i18n.resolve(tok, idx, fuzzy=False)   # 扫描回读只认精确匹配，保证速度
             if name and name not in out:
                 out.append(name)
