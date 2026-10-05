@@ -185,18 +185,44 @@ _UNDER = re.compile(r"[_\-]+")
 # 本地模型批量翻译出来的字典（tools/translate_tags.py 生成，随程序发布）
 MODEL_DICT: dict[str, str] = {}
 _DICT_PATH = Path(__file__).with_name("tag_zh_dict.json")
+
+_ILLEGAL_LABEL = re.compile(r'[\\/|<>:"*?\[\]]')
+_PROMPT_LEAK = re.compile(r"\bno[\s_]?think\b", re.I)
+
+
+def is_usable_zh(text: str) -> bool:
+    """中文名能不能直接拿去显示/当文件名标签：挡住 /no_think、no think 这类脏数据。
+
+    （批量翻译那批词表里混进了几条 LLM 提示词残留，POV / K-pop / 年份这类是正常的，不拦。）
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _ILLEGAL_LABEL.search(t) or t.startswith("_"):
+        return False
+    if _PROMPT_LEAK.search(t):
+        return False
+    if not re.search(r"[\w\u4e00-\u9fff]", t):      # 纯标点/空白也不可用
+        return False
+    return True
+
+
 try:
     if _DICT_PATH.exists():
         MODEL_DICT = {str(k).strip().lower(): str(v).strip()
                       for k, v in json.loads(_DICT_PATH.read_text(encoding="utf-8")).items()
-                      if str(v).strip()}
+                      if str(v).strip() and is_usable_zh(str(v))}
 except Exception:
     MODEL_DICT = {}
 
 
-def translate(name: str, zh_hint: str = "") -> str:
-    """返回中文显示名；查不到就返回原名。zh_hint 是用户在标签上手工填的中文名。"""
-    if zh_hint and zh_hint.strip():
+def label(name: str, zh_hint: str = "") -> str:
+    """标签的中文显示名 —— **全项目唯一实现**（界面显示、写文件名、下拉框、图谱节点都用它）。
+
+    优先级：手填/库里的中文名 > 内置词典 > 拆词组合翻译 > 英文原名；
+    脏数据（/no_think 这类）在任何一层都会被跳过，不会跑到文件名或界面上。
+    """
+    if zh_hint and zh_hint.strip() and is_usable_zh(zh_hint):
         return zh_hint.strip()
     if not name:
         return ""
@@ -204,7 +230,9 @@ def translate(name: str, zh_hint: str = "") -> str:
     if re.search(r"[\u4e00-\u9fff]", low):      # 本来就是中文
         return name
     if low in MODEL_DICT:                       # 模型翻译优先（覆盖长尾）
-        return MODEL_DICT[low]
+        hit = MODEL_DICT[low]
+        if is_usable_zh(hit):
+            return hit
     if low in WHOLE:
         return WHOLE[low]
     parts = [p for p in _UNDER.split(low) if p]
@@ -235,9 +263,14 @@ def translate(name: str, zh_hint: str = "") -> str:
     return name
 
 
+def translate(name: str, zh_hint: str = "") -> str:
+    """兼容旧调用：等同于 label()。"""
+    return label(name, zh_hint)
+
+
 def display(name: str, zh_hint: str = "") -> str:
     """审核界面用：中文（英文原名）。"""
-    zh = translate(name, zh_hint)
+    zh = label(name, zh_hint)
     return zh if zh == name else f"{zh}（{name}）"
 
 
@@ -280,11 +313,22 @@ def zh_to_name() -> dict[str, str]:
     return _ZH_INDEX
 
 
-def parse_input(text: str, store=None) -> str:
-    """把输入框里的文字规范成标签名。
+def zh_index(store=None) -> dict[str, str]:
+    """中文名 → 规范标签名：库里手填的优先，其次内置词典（同义词取更基础的那个）。"""
+    idx = dict(zh_to_name())
+    if store is not None:
+        for r in store.query("SELECT name, zh FROM tags WHERE IFNULL(zh,'')<>''"):
+            if is_usable_zh(r["zh"]):
+                idx[str(r["zh"])] = str(r["name"])
+    return idx
 
-    - "明日方舟（arknights）" → arknights（联想菜单插入的格式）
-    - "明日方舟" → 若库里有对应中文名的标签就返回它的英文名，否则原样返回
+
+def resolve(text: str, index: dict[str, str] | None = None, store=None) -> str:
+    """把输入框/文件名里的标签还原成规范标签名（唯一实现）。
+
+    - "服装 · 明日方舟（arknights）" → arknights（联想菜单插进来的格式）
+    - "明日方舟" → 库里有这个中文名的标签就还原成它的英文名，否则原样返回
+    - index 可传入预先建好的 zh_index()，扫描大目录时避免每个标签都重建一次
     """
     t = (text or "").strip()
     if not t:
@@ -295,11 +339,15 @@ def parse_input(text: str, store=None) -> str:
     m = _PAREN.match(t)
     if m:
         return m.group(2).strip() or m.group(1).strip()
-    if store is not None and re.search(r"[\u4e00-\u9fff]", t):
-        row = store.one("SELECT name FROM tags WHERE zh=?", (t,))
-        if row:
-            return row["name"]
-        hit = zh_to_name().get(t)
+    if re.search(r"[\u4e00-\u9fff]", t):
+        if index is None:
+            index = zh_index(store)
+        hit = index.get(t) if index else None
         if hit:
             return hit
     return t
+
+
+def parse_input(text: str, store=None) -> str:
+    """兼容旧调用：等同于 resolve()。"""
+    return resolve(text, store=store)

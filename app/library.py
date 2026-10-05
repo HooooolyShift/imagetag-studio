@@ -36,6 +36,7 @@ SOURCE_PRIORITY = {"manual": 0, "series": 1, "face": 2, "clip_region": 3, "probe
 CATEGORY_PRIORITY = {"character": 0, "real_person": 1, "series": 2, "clothing": 3, "count": 4,
                      "pose": 5, "action": 6, "scene": 7, "body": 8, "style": 9, "other": 10, "rating": 11}
 
+
 # 按标签类型选择 CLIP 提示词模板：同一句“{}”对服装/人物名效果差很多
 PROMPT_TEMPLATES: dict[str, list[str]] = {
     "character": ["{}", "the anime character {}", "a picture of {}", "{} (anime)"],
@@ -935,51 +936,56 @@ class Library:
         return [self.disk_label(n) for n in names]
 
     def disk_label(self, name: str, zh_hint: str = "") -> str:
-        """标签在磁盘上的显示名：**你在标签里手填的中文名优先**，其次内置词典，最后退回原名。
+        """标签在磁盘上的显示名（取中文名的唯一入口就是 tag_i18n.label）。
 
-        所以在「标签管理」里把中文改掉，再点一次写回文件名，新名字就会生效。
+        传进来的 zh_hint 就是库里/界面上手填的中文名 —— 改了中文名，重新写回文件名即生效。
         """
         from . import tag_i18n
         n = (name or "").strip()
         if not n:
             return ""
-        if re.search(r"[\u4e00-\u9fff]", n):            # 本身已经是中文（或手填的中文）
-            return n
-        if zh_hint and zh_hint.strip():
-            return zh_hint.strip()
-        cache = self.__dict__.setdefault("_zh_label_cache", {})
-        if n in cache:
-            return cache[n] or n
-        row = self.store.one("SELECT zh FROM tags WHERE name=?", (n,))
-        zh = (row["zh"] if row else "") or ""
-        if not zh.strip():
-            zh = tag_i18n.translate(n)
-            zh = zh if zh and zh != n else ""
-        cache[n] = zh
-        return zh.strip() or n
+        if not zh_hint:
+            row = self.store.one("SELECT zh FROM tags WHERE name=?", (n,))
+            zh_hint = (row["zh"] if row else "") or ""
+        return tag_i18n.label(n, zh_hint)
 
-    def _zh_index(self) -> dict[str, str]:
-        """中文名 → 规范标签名（库里填的备注优先，其次内置词典），供扫描回读用。"""
+    def clear_label_cache(self) -> None:
+        """兼容保留：中文名现在每次直接查库，改了立刻生效，无需清缓存。"""
+
+    def merge_notes_into_zh(self, progress=None) -> dict:
+        """把老数据里标签的「备注」并进「中文名」，并清掉明显是脏数据的中文名。
+
+        - 备注非空、中文名为空 → 中文名 = 备注（备注就是中文名，二合一）；
+        - 中文名本身是脏数据（如 /no_think、no think）→ 清空，让内置词典接手。
+        """
         from . import tag_i18n
-        idx: dict[str, str] = {}
-        for r in self.store.query("SELECT name, zh FROM tags WHERE zh IS NOT NULL AND zh<>''"):
-            idx.setdefault(str(r["zh"]), str(r["name"]))
-        for zh, canonical in tag_i18n.zh_to_name().items():
-            idx.setdefault(zh, canonical)
-        return idx
+        rows = self.store.query("SELECT id, name, zh, note FROM tags WHERE IFNULL(note,'')<>''")
+        n = cleaned = 0
+        for i, r in enumerate(rows):
+            zh = (r["zh"] or "").strip()
+            note = (r["note"] or "").strip()
+            if note and not zh:
+                self.store.update_tag(int(r["id"]), zh=note)
+                n += 1
+            if progress and i % 200 == 0:
+                progress(f"合并备注到中文名 {i + 1}/{len(rows)}", (i + 1) / max(1, len(rows)))
+        for r in self.store.query("SELECT id, zh FROM tags WHERE IFNULL(zh,'')<>''"):
+            if not tag_i18n.is_usable_zh(r["zh"]):
+                self.store.update_tag(int(r["id"]), zh="")
+                cleaned += 1
+        self.clear_label_cache()
+        return {"merged": n, "cleaned": cleaned, "total": len(rows)}
 
     def resolve_tag_names(self, tokens: Sequence[str]) -> list[str]:
-        """把文件名里读到的标签还原成库里的规范标签名（中文名 / 「中文（英文）」都认）。"""
+        """把文件名里读到的标签还原成库里的规范标签名（中文名 / 「中文（英文）」都认）。
+
+        还原规则统一在 tag_i18n.resolve()；这里只是建一次索引后批量套用（快照扫描用）。
+        """
         from . import tag_i18n
-        idx = self._zh_index()
+        idx = tag_i18n.zh_index(self.store)
         out: list[str] = []
         for tok in tokens or []:
-            t = (tok or "").strip()
-            if not t:
-                continue
-            name = tag_i18n.parse_input(t, None)        # 先剥掉「中文（英文）」外壳
-            if re.search(r"[\u4e00-\u9fff]", name):
-                name = idx.get(name, name)
+            name = tag_i18n.resolve(tok, idx)
             if name and name not in out:
                 out.append(name)
         return out

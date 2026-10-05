@@ -298,6 +298,7 @@ class TagPanel(QWidget):
         QTimer.singleShot(0, self.reload)
 
     def add_new_tag(self) -> None:
+        """给选中的图片加标签。类别直接取右边的下拉框，不再多弹一层对话框。"""
         from .. import tag_i18n
         name = tag_i18n.parse_input(self.new_tag.text(), self.store)
         if not name:
@@ -305,9 +306,16 @@ class TagPanel(QWidget):
         if not self.file_ids:
             QMessageBox.information(self, "提示", "先在中间选择图片，再添加标签。")
             return
-        cat = self.new_cat.ensure_current(self)
+        picked = self.new_cat.currentData()
         row = self.store.one("SELECT category FROM tags WHERE name=?", (name,))
-        if row is None:
+        if row is not None:
+            cat = row["category"]
+        elif picked:                       # 已经在下拉框选好类别 → 直接用它建标签
+            cat = self.new_cat.ensure_current(self)
+            self.store.save_tag(name, cat)
+            self.tagCreated.emit(name)
+        else:                              # 停在「全部（不限分类）」→ 不知道类型，才弹窗问
+            cat = self.new_cat.ensure_current(self)
             dlg = TagEditDialog(self, name, cat, title="新建标签（可指定类型）", store=self.store)
             if dlg.exec() != dlg.Accepted:
                 return

@@ -1104,6 +1104,12 @@ class Store:
     def node(self, node_id: int):
         return self.one("SELECT * FROM nodes WHERE id=?", (node_id,))
 
+    def parents_of_node(self, node_id: int) -> list[sqlite3.Row]:
+        """某个分类节点的直接父节点（用于搜索定位时一层层展开）。"""
+        return self.query(
+            "SELECT n.* FROM taxonomy_edges e JOIN nodes n ON n.id=e.parent_id "
+            "WHERE e.child_kind='node' AND e.child_id=? ORDER BY n.name", (int(node_id),))
+
     def rename_node(self, node_id: int, name: str) -> None:
         name = (name or "").strip()
         if name:

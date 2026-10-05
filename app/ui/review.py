@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QGroupBox, QHBoxLayout, QLabel,
@@ -92,7 +92,13 @@ class ReviewDialog(QDialog):
         self.queue_list.setViewMode(QListWidget.IconMode)
         self.queue_list.setResizeMode(QListWidget.Adjust)
         self.queue_list.currentRowChanged.connect(self.on_queue_changed)
-        self.queue_list.verticalScrollBar().valueChanged.connect(lambda _v: self._queue_thumbs())
+        # 缩略图按"当前可见区间"懒加载：滚动/窗口大小变化/队列长度变化都要重新算一次
+        self._thumb_timer = QTimer(self)
+        self._thumb_timer.setSingleShot(True)
+        self._thumb_timer.setInterval(80)          # 节流，拖动滚动条时不会请求风暴
+        self._thumb_timer.timeout.connect(self._queue_thumbs)
+        self.queue_list.verticalScrollBar().valueChanged.connect(self.schedule_queue_thumbs)
+        self.queue_list.verticalScrollBar().rangeChanged.connect(self.schedule_queue_thumbs)
         split.addWidget(self.queue_list)
 
         center = QWidget()
@@ -245,7 +251,8 @@ class ReviewDialog(QDialog):
         self.queue_list.blockSignals(False)
         self.title.setText(f"待审核：{self.store.pending_summary()['pending_tags']} 个标签 / "
                            f"{len(self.queue)} 张图片（缩略图后台生成中…）")
-        self._queue_thumbs()          # 缩略图交给后台线程池，不在界面线程里解原图
+        self.schedule_queue_thumbs()  # 缩略图交给后台线程池，不在界面线程里解原图
+        QTimer.singleShot(150, self.schedule_queue_thumbs)   # 等布局完成后再算一次可见区间
         summary = self.store.pending_summary()
         self.title.setText(f"待审核：{summary['pending_tags']} 个标签 / {summary['pending_files']} 张图片")
         if self.queue:
@@ -258,17 +265,48 @@ class ReviewDialog(QDialog):
             self.confirmed_list.clear()
             self.status.setText("没有待审核的标签了 🎉")
 
-    def _queue_thumbs(self) -> None:
-        """只给可见区域请求缩略图（以前是同步解 400 张原图，必然卡死）。"""
+    def schedule_queue_thumbs(self, *_args) -> None:
+        """节流入口：滚动/缩放/队列变化都走它，80ms 内的多次触发只算一次。"""
+        if hasattr(self, "_thumb_timer"):
+            self._thumb_timer.start()
+
+    def _visible_range(self) -> tuple[int, int]:
+        """当前可见条目区间（上下各留一行余量）。
+
+        以前用 indexAt(视口右下角) 算，图标网格下那个角经常落在空隙里 → 判定失败后
+        代码回退成"取前 60~80 个"，于是往下拉时真正可见的那批永远不请求缩略图。
+        这里改成按滚动条位置 + 网格尺寸算，队列再长也能对上。
+        """
         n = self.queue_list.count()
         if not n:
+            return (0, -1)
+        viewport = self.queue_list.viewport().rect()
+        grid = self.queue_list.gridSize()
+        gw = max(1, grid.width())
+        gh = max(1, grid.height())
+        cols = max(1, viewport.width() // gw)
+        bar = self.queue_list.verticalScrollBar()
+        vh = max(1, viewport.height())
+        first = max(0, (bar.value() // gh - 1) * cols)
+        last = min(n - 1, ((bar.value() + vh) // gh + 2) * cols)
+        mid = self.queue_list.indexAt(viewport.center())     # 交叉校验一次，防布局异常
+        if mid.isValid():
+            row = int(mid.row())
+            first = min(first, max(0, row - cols * 2))
+            last = max(last, min(n - 1, row + cols * 2))
+        return (first, max(first, last))
+
+    def _queue_thumbs(self) -> None:
+        """只给可见区域请求缩略图（以前是同步解 400 张原图，必然卡死）。"""
+        if not self.queue:
             return
-        rect = self.queue_list.viewport().rect()
-        top = self.queue_list.indexAt(rect.topLeft())
-        bottom = self.queue_list.indexAt(rect.bottomRight())
-        first = max(0, (top.row() if top.isValid() else 0) - 20)
-        last = min(n - 1, (bottom.row() if bottom.isValid() else min(n - 1, 60)) + 20)
+        n = self.queue_list.count()
+        first, last = self._visible_range()
+        if last < 0:
+            return
         for i in range(first, last + 1):
+            if i >= n:
+                break
             r = self.queue[i]
             fid = int(r["id"])
             it = self._q_items.get(fid)
@@ -758,6 +796,11 @@ class ReviewDialog(QDialog):
         self.status.setText(f"已删除「{name}」的框（标签本身还在）")
 
     # ------------------------------------------------------------ 快捷键
+    def resizeEvent(self, event) -> None:
+        """窗口变大/变小时可见条目数变了，重新算一次要请求哪些缩略图。"""
+        super().resizeEvent(event)
+        self.schedule_queue_thumbs()
+
     def keyPressEvent(self, event) -> None:
         key = event.key()
         if key == Qt.Key_A:

@@ -341,9 +341,9 @@ class TagManagerDialog(QDialog):
             top.addWidget(b)
         v.addLayout(top)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["标签", "中文名", "类型", "图片数", "自动识别",
-                                              "CLIP 提示词", "前置条件", "备注"])
-        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(["标签", "中文名（备注）", "类型", "图片数", "自动识别",
+                                              "CLIP 提示词", "前置条件"])
+        self.table.setColumnCount(7)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -438,7 +438,7 @@ class TagManagerDialog(QDialog):
             self.table.setItem(i, 4, chk)
             self.table.setItem(i, 5, QTableWidgetItem(t["prompt"] or ""))
             self.table.setItem(i, 6, QTableWidgetItem(t["requires"] or ""))
-            self.table.setItem(i, 7, QTableWidgetItem(t["note"] or ""))
+            # 「备注」已并入「中文名」，不再单独一列
             if grouped:
                 self._group_rows.setdefault(cat, []).append(i)
             i += 1
@@ -480,8 +480,8 @@ class TagManagerDialog(QDialog):
                 self.table.item(item.row(), 0).setText(
                     tag_i18n.display(str(row["name"]), item.text().strip()))
                 self._loading = False
-        elif item.column() in (5, 6, 7):
-            field = {5: "prompt", 6: "requires", 7: "note"}[item.column()]
+        elif item.column() in (5, 6):
+            field = {5: "prompt", 6: "requires"}[item.column()]
             self._set(tid, **{field: item.text()})
 
     def _set(self, tag_id: int, **kw) -> None:

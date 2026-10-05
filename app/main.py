@@ -66,6 +66,13 @@ def main() -> int:
         return 1
     store = Store()
     try:
+        from .library import Library
+        res_zh = Library(store, settings).merge_notes_into_zh()
+        if res_zh["merged"] or res_zh.get("cleaned"):
+            print(f"标签中文名整理：合并备注 {res_zh['merged']} 个，清理脏数据 {res_zh.get('cleaned', 0)} 个")
+    except Exception:
+        pass
+    try:
         other = store.one("SELECT COUNT(*) c FROM tags WHERE category IN ('','other')")["c"]
         if other:
             res = Library(store, settings).auto_organize_tags()

@@ -329,6 +329,7 @@ class TaxonomyDialog(QDialog):
         self.current: tuple[str, int] | None = None
         self._collapsed_now: set[int] = set()
         self._expanded_now: set[int] = set()
+        self._focus_tag: int | None = None      # 搜索命中的标签：即使超出可见上限也要画出来
         self.connect_source: NodeItem | None = None
         v = QVBoxLayout(self)
 
@@ -412,7 +413,9 @@ class TaxonomyDialog(QDialog):
         self.node_name.setPlaceholderText("显示名称")
         rv.addWidget(self.node_name)
         self.node_note = QLineEdit()
-        self.node_note.setPlaceholderText("备注")
+        self.node_note.setPlaceholderText("中文名 / 备注（手填优先，会用于文件名和界面显示）")
+        self.node_note.setToolTip("标签：这一栏就是它的中文名（写进文件名、界面显示都用它，留空则用内置词典）\n"
+                                  "分类节点：这一栏是分类的备注说明")
         rv.addWidget(self.node_note)
         b_apply = QPushButton("保存名称/备注")
         b_apply.clicked.connect(self.apply_detail)
@@ -681,11 +684,12 @@ class TaxonomyDialog(QDialog):
         y2 = 40
         shown_tags = 0
         for tid, t in tag_rows.items():
-            if tid not in linked_tags and not self.show_all.isChecked():
+            force = (self._focus_tag is not None and tid == self._focus_tag)
+            if not force and tid not in linked_tags and not self.show_all.isChecked():
                 continue
-            if ("tag", tid) in hidden:
+            if ("tag", tid) in hidden and not force:
                 continue
-            if shown_tags >= VISIBLE_TAG_CAP:
+            if shown_tags >= VISIBLE_TAG_CAP and not force:
                 continue
             default = (270.0, y) if tid in linked_tags else (560.0, y2)
             x, yy = saved.get(("tag", tid), default)
@@ -752,6 +756,8 @@ class TaxonomyDialog(QDialog):
         if data:
             self.current = (data[0], int(data[1]))
             self.refresh_detail()
+            if (data[0], int(data[1])) in self.canvas.items:      # 点树 → 缓动运镜过去
+                self.smooth_center(self.canvas.items[(data[0], int(data[1]))])
 
     def on_canvas_clicked(self, kind: str, nid: int) -> None:
         if self.b_connect.isChecked():
@@ -782,7 +788,7 @@ class TaxonomyDialog(QDialog):
             self.detail.setText(f"<b>标签</b>：{t['name']}<br>类型：{cats.label_of(self.store, t['category'])}"
                                 f"<br>图片数：{t['count']}<br>提示词：{t['prompt'] or '（用标签名）'}")
             self.node_name.setText(t["name"])
-            self.node_note.setText(t["note"] or "")
+            self.node_note.setText((t["zh"] or t["note"] or ""))     # 中文名/备注（二合一）
             for p in self.store.parents_of_tag(nid):
                 it = QListWidgetItem(p["name"])
                 it.setData(Qt.UserRole, int(p["id"]))
@@ -790,8 +796,11 @@ class TaxonomyDialog(QDialog):
         # 画布选中态
         for key, item in self.canvas.items.items():
             item.setSelected(key == (kind, nid))
-        if (kind, nid) in self.canvas.items:
-            self.canvas.centerOn(self.canvas.items[(kind, nid)].pos())
+        pan = getattr(self, "_pan_anim", None)
+        from PySide6.QtCore import QAbstractAnimation
+        animating = pan is not None and pan.state() == QAbstractAnimation.State.Running
+        if not animating and (kind, nid) in self.canvas.items:
+            self.canvas.centerOn(self.canvas.items[(kind, nid)].pos())   # 重绘时保持原位，不运镜
 
     def on_connect_requested(self, src, dst) -> None:
         """连线模式：父必须是分类节点（标签挂在分类下），子可以是分类或标签。"""
@@ -821,7 +830,9 @@ class TaxonomyDialog(QDialog):
                 res = self.library.rename_tag_global(nid, name)
                 if res.get("ok") and (res.get("renamed") or res.get("old") != res.get("new")):
                     self.detail.setText(self.detail.text() + f"<br><span style='color:#7ddc7d'>已同步 {res.get('renamed', 0)} 个文件名</span>")
-            self.store.update_tag(nid, note=note)
+            # 备注与中文名合并成一个：手填的优先，写进文件名与所有中文显示
+            self.store.update_tag(nid, zh=note, note=note)
+            self.library.clear_label_cache()
         self.changed.emit()
         self.rebuild()
 
@@ -979,7 +990,7 @@ class TaxonomyDialog(QDialog):
         self.detail.setText(("已折叠该节点下方的所有子节点" if not n["collapsed"] else "已展开该节点"))
 
     def goto_first_match(self) -> None:
-        """搜索标签 → 展开它所在的分类、在图上选中并居中（节点多时用这个定位最快）。"""
+        """搜索标签/分类 → 展开它的所有祖先、在图上选中并把视口跳过去。"""
         from .. import tag_i18n
         q = self.find_edit.text().strip().lower()
         if not q:
@@ -991,18 +1002,96 @@ class TaxonomyDialog(QDialog):
                 hit = t
                 break
         if hit is None:
-            self.detail.setText(f"没找到匹配「{q}」的标签")
+            nodes = [n for n in self.store.list_nodes() if q in (n["name"] or "").lower()]
+            if nodes:
+                nid = int(nodes[0]["id"])
+                self.expand_ancestors(nid)
+                self.current = ("node", nid)
+                self.rebuild()
+                self.jump_to(("node", nid))
+                self.detail.setText(f"已定位分类：{nodes[0]['name']}")
+                return
+            self.detail.setText(f"没找到匹配「{q}」的标签或分类")
             return
-        # 展开它的所有父分类（含被折叠的），否则看不见
-        for p in self.store.parents_of_tag(int(hit["id"])):
-            self.store.update_node(int(p["id"]), collapsed=0)
-        self.current = ("tag", int(hit["id"]))
+        tid = int(hit["id"])
+        self._focus_tag = tid                     # 即使超出可见上限也把它画出来
+        for p in self.store.parents_of_tag(tid):  # 沿 子→父 一路展开（含被折叠/自动折叠的）
+            self.expand_ancestors(int(p["id"]))
+        self.current = ("tag", tid)
         self.rebuild()
-        item = self.canvas.items.get(("tag", int(hit["id"])))
-        if item is not None:
-            self.canvas.centerOn(item)
-            item.setSelected(True)
-        self.detail.setText(f"已定位：{tag_i18n.display(hit['name'], hit['zh'] or '')}")
+        self.jump_to(("tag", tid))
+        self.detail.setText(f"已定位：{tag_i18n.display(hit['name'], hit['zh'] or '')}"
+                            + self._path_text(tid))
+
+    def expand_ancestors(self, node_id: int) -> None:
+        """把这个节点本身和它的所有祖先都展开（带 visited 防环）。"""
+        stack, visited = [int(node_id)], set()
+        while stack:
+            nid = stack.pop()
+            if nid in visited:
+                continue
+            visited.add(nid)
+            self.store.update_node(nid, collapsed=0)
+            self._collapsed_now.discard(nid)
+            self._expanded_now.add(nid)
+            for p in self.store.parents_of_node(nid):
+                stack.append(int(p["id"]))
+
+    def _path_text(self, tag_id: int) -> str:
+        """给定位结果补一句「在哪个分类下」，方便确认位置。"""
+        names = []
+        for p in self.store.parents_of_tag(int(tag_id)):
+            names.append(str(p["name"]))
+        return f"　（位于：{' / '.join(names)}）" if names else ""
+
+    def jump_to(self, key: tuple[str, int]) -> None:
+        """把画布视口跳到某个节点上（重建后立刻调用，带缓动）。"""
+        item = self.canvas.items.get(key)
+        if item is None:
+            return
+        for k, it in self.canvas.items.items():
+            it.setSelected(k == key)
+        self.smooth_center(item)
+
+    def smooth_center(self, item, duration: int = 520) -> None:
+        """带缓动的运镜：起步即最高速、一路减速滑到目标节点（不是瞬间跳过去）。
+
+        速度曲线用 OutQuart —— 没有加速段，一开始就是峰值速度，越接近目标越慢。
+        """
+        from PySide6.QtCore import QEasingCurve, QPointF, QTimer, QVariantAnimation
+        canvas = self.canvas
+        viewport = canvas.viewport()
+        if viewport is None or viewport.width() <= 0 or not canvas.isVisible():
+            canvas.centerOn(item)                     # 离屏/测试环境直接定位
+            return
+        end = item.mapToScene(item.boundingRect().center())
+
+        def _animate() -> None:
+            start = canvas.mapToScene(canvas.viewport().rect().center())
+            if abs(start.x() - end.x()) < 1.5 and abs(start.y() - end.y()) < 1.5:
+                canvas.centerOn(end)                  # 已经在目标位置，不用动
+                return
+            old = getattr(self, "_pan_anim", None)
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    pass
+            anim = QVariantAnimation(canvas)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setDuration(duration)
+            anim.setEasingCurve(QEasingCurve.OutQuart)
+
+            def step(t: float) -> None:
+                canvas.centerOn(QPointF(start.x() + (end.x() - start.x()) * t,
+                                        start.y() + (end.y() - start.y()) * t))
+            anim.valueChanged.connect(step)
+            anim.finished.connect(lambda: canvas.ensureVisible(item, 120, 120))
+            self._pan_anim = anim
+            anim.start()
+
+        QTimer.singleShot(0, _animate)                # 等布局/重建完成再开始运镜
 
     # ================= 右键菜单 =================
     def canvas_menu(self, pos) -> None:
