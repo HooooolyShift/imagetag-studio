@@ -18,23 +18,37 @@ GitHub 仓库放不下（单文件 100 MB 限制），所以按下面三种方�
 | 方式 | 适合谁 | 怎么做 | 体积/耗时 |
 | --- | --- | --- | --- |
 | **① 源码 + 自动安装脚本**（推荐） | 能联网 | `git clone` 后运行 `tools\setup_env.ps1`（自动建环境、从国内镜像装 torch 等依赖、下载模型） | 下载约 5 GB，15~30 分钟 |
-| **② Release 分卷**（无需网盘） | 完全离线、没网盘 | 到 Releases 下载 `payload_part01.zip` … 全部下载后双击 `合并并安装.bat`，自动合并并启动安装程序 | 下载 4.7 GB |
+| **② Release 分卷**（无需网盘） | 完全离线、没网盘 | 到 Releases 下载 `payload.zip.001`、`.002`、`.003`，放在同一目录后双击 `合并并安装.bat`，自动合并并启动安装程序（可对照同目录 `SHA256.txt` 校验） | 下载 4.7 GB |
 | **③ 网盘整包** | 国内网络 | README/Release 里给的网盘链接直接下 4.7 GB 完整包 | 下载 4.7 GB |
 
-三条路最后得到的东西完全一样，装好后都是离线运行。更新则只需 **更新包（61 MB）**，
+三条路最后得到的东西完全一样，装好后都是离线运行。更新则只需 **更新包（约 5 MB）**，
 覆盖程序文件即可，不用重新下模型。
+
+### 模型来源（都是开源模型，仓库里不重复托管）
+
+程序本身只带代码，模型按需从 HuggingFace（国内走 `hf-mirror.com`）下载，均为公开开源模型：
+
+| 用途 | 上游仓库 | 备注 |
+| --- | --- | --- |
+| 二次元自动打标（默认） | `SmilingWolf/wd-swinv2-tagger-v3` | WD14 系列，另有 `wd-eva02-large-tagger-v3`（更准更慢）、`wd-v1-4-convnext-tagger-v2`（更轻）可选 |
+| 自定义标签零样本 | `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` | 通过 open_clip 加载 |
+| 人脸检测 / 特征 | `immich-app/buffalo_l`（SCRFD + ArcFace） | 真人照片聚类 |
+
+各模型版权与许可归原作者所有，本项目只做本地推理调用，不修改、不重新分发模型权重
+（完整离线安装包里的模型同样来自上述仓库，供无网络环境使用）。
 
 ### 装到别的电脑（离线安装包）
 
-安装包在 **K:\ImageTagStudio_安装包**（约 7.2 GB），直接拷到任意 Windows 电脑即可离线安装：
+安装包在 **K:\ImageTagStudio\安装包**（4.7 GB，压缩成 `安装包.7z` 或 `分卷发布\` 里的分卷），
+直接拷到任意 Windows 电脑即可离线安装：
 
 ```
-K:\ImageTagStudio_安装包\
+K:\ImageTagStudio\安装包\
   图片标签工坊_安装程序.exe      安装程序（57 MB，图形界面）
-  说明书_图片标签工坊.pdf        带真实界面截图的说明书（15 页）
+  说明书_图片标签工坊.pdf        带真实界面截图的说明书
   安装说明.txt
   payload\
-    wheels\    53 个 wheel，2.94 GB —— 含 torch 2.5.1+cu121 / torchvision /
+    wheels\    53 个 wheel，2.87 GB —— 含 torch 2.5.1+cu121 / torchvision /
                onnxruntime-gpu / PySide6 / scikit-learn / opencv …全部依赖
     python\    嵌入式 Python 3.10（约 20 MB，装完由它离线装依赖）
     models\    本地模型（WD14 446 MB + 人脸 183 MB + CLIP 578 MB …共 1.74 GB）
