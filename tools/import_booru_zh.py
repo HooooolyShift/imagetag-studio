@@ -48,6 +48,7 @@ def fetch(name: str, refresh: bool = False) -> str:
 def load_booru(refresh: bool = False) -> dict[str, tuple[str, int, str]]:
     """tag → (中文, 类别码, 备注)。character/general/copyright 合并，先出现的优先。"""
     out: dict[str, tuple[str, int, str]] = {}
+    alias_pool: dict[str, tuple[str, int, str]] = {}
     for name in FILES:
         try:
             text = fetch(name, refresh)
@@ -64,6 +65,14 @@ def load_booru(refresh: bool = False) -> dict[str, tuple[str, int, str]]:
             except ValueError:
                 cat = 0
             out.setdefault(tag, (zh, cat, (row.get("notes") or "").strip()))
+            # 别名先存到旁边：等所有"正式名"都收完，再把没被占用的别名补进来
+            # （否则 fox 这种普通词会被《星际火狐》的角色别名抢走）
+            for alias in (row.get("aliases") or "").split("|"):
+                a = alias.strip().lower()
+                if a and a != tag:
+                    alias_pool.setdefault(a, (zh, cat, (row.get("notes") or "").strip()))
+    for a, v in alias_pool.items():
+        out.setdefault(a, v)
     return out
 
 

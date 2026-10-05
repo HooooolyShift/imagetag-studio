@@ -291,6 +291,32 @@ def parse_list(text: str) -> list[str]:
     return [x for x in t.split() if x]
 
 
+_PINYIN: dict[str, str] | None = None
+
+
+def pinyin(text: str) -> str:
+    """汉字 → 无声调拼音串（只用于搜索匹配，如「憂」→ you、「白裙子」→ baiqunzi）。"""
+    global _PINYIN
+    if _PINYIN is None:
+        try:
+            _PINYIN = json.loads(Path(__file__).with_name("pinyin_zh.json").read_text(encoding="utf-8"))
+        except Exception:
+            _PINYIN = {}
+    out = []
+    for ch in text or "":
+        if "\u4e00" <= ch <= "\u9fff":
+            out.append(_PINYIN.get(ch, ""))
+        else:
+            out.append(ch.lower() if ch.isalnum() else "")
+    return "".join(out)
+
+
+def pinyin_initials(text: str) -> str:
+    """拼音首字母（如「白裙子」→ bqz），方便输入几个字母就能搜到。"""
+    return "".join((p[0] if p else "") for p in
+                   (pinyin(ch) for ch in (text or "") if "\u4e00" <= ch <= "\u9fff"))
+
+
 _ZH_INDEX: dict[str, str] | None = None
 
 

@@ -408,7 +408,7 @@ class TagManagerDialog(QDialog):
                     if pid in have:
                         continue
                     row_p = self.store.one("SELECT * FROM tags WHERE id=?", (pid,))
-                    if row_p and row_p["name"] not in q and q not in (row_p["name"] or ""):
+                    if row_p is not None:
                         have.add(pid)
                         extra_rows.append((t["name"], row_p))
             if extra_rows:
@@ -417,6 +417,9 @@ class TagManagerDialog(QDialog):
                     idx = next((k for k, t in enumerate(merged) if t["name"] == after_name), len(merged) - 1)
                     merged.insert(idx + 1, row_p)
                 rows = merged
+                # 下面的排版是从 all_rows 重新生成的，所以这里必须一起补上，
+                # 否则"平行关联的另一个"会被丢掉（搜索结果里看不到低关联那个）
+                all_rows = list(all_rows) + [row_p for _n, row_p in extra_rows]
         # 所属作品：tag→tag 从属里的"作品"父级。
         # 作品和人物现在合成一个分类了，所以靠名字判定：父标签名出现在子标签的「_(名字)」后缀里
         # （amiya_(arknights) → 作品就是 arknights），比"有没有多个子项"更准，不会把服装父类误认成作品。

@@ -62,6 +62,25 @@ OTHER: dict[str, str] = {
     "kasane_teto": "重音特托", "looking_at_viewer": "看向观众", "blush": "脸红",
     "animal_ear_fluff": "兽耳绒毛", "torn_clothes": "衣服破损", "1girl": "一个女孩",
     "2girls": "两个女孩", "multiple_girls": "多个女孩", "1boy": "一个男孩",
+    # —— 未匹配清单里逐条看出来的错译（Danbooru 词表没有或对不上）——
+    "china_dress": "旗袍", "habit": "骑马装", "clitoris_piercing": "阴蒂穿孔",
+    "skirt_hold": "掀起裙子", "topless": "上半身赤裸", "lace-trimmed_legwear": "蕾丝边袜",
+    "looking_through_legs": "从腿间看", "tail_censor": "尾巴打码",
+    "child_on_child": "儿童之间", "basketball": "篮球", "formal": "正装",
+    "exercise": "运动", "gym": "健身房", "real_photo": "真实照片",
+    "1st_costume": "第一套服装", "female": "女性", "object": "物品",
+    "vtuber": "虚拟主播", "weibo_logo": "微博标志", "re:zero": "Re:从零开始的异世界生活",
+    "hair_censor": "头发打码", "identity_censor": "身份遮挡", "presenting": "翘起臀部",
+    "birthday": "生日", "cup_ramen": "杯面", "doughnut": "甜甜圈", "baozi": "包子",
+    "grinding": "磨蹭", "interface_headset": "接口耳机", "test_plugsuit": "测试用驾驶服",
+    "plugsuit": "驾驶服", "keyboard_(computer)": "电脑键盘", "mouse_(computer)": "电脑鼠标",
+    "nijigasaki_academy_school_uniform": "虹咲学园制服", "night_sky": "夜空",
+    "red_curtains": "红色帷幔", "on_grass": "在草地上", "round_image": "圆形构图",
+    "see-through": "透视", "see-through_swimsuit": "透视泳装", "superhero": "超级英雄",
+    "mechanical_eye": "机械眼", "mechanical_parts": "机械部件", "meme_attire": "梗图装扮",
+    "arm_around_waist": "搂腰", "arm_grab": "抓手臂", "ass_grab": "摸屁股",
+    "horn_grab": "抓角", "holding_hair": "抓头发", "ear_biting": "咬耳朵",
+    "no_headwear": "不戴头饰", "no_tail": "没有尾巴", "roots": "根",
 }
 
 SERIES_SUFFIX = {"_(arknights)": ARKNIGHTS, "_(sousou_no_frieren)": FRIEREN}

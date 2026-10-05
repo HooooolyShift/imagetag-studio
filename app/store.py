@@ -678,17 +678,23 @@ class Store:
         if not q:
             return rows
         import re as _re
-        if not _re.search(r"[\u4e00-\u9fff]", q):
-            return rows
         from . import tag_i18n
         seen = {int(r["id"]) for r in rows}
         extra = []
         low = q.lower()
+        has_cjk = bool(_re.search(r"[\u4e00-\u9fff]", q))
         for t in self.list_tags(category=category):
             if int(t["id"]) in seen:
                 continue
-            if low in tag_i18n.display(t["name"], t["zh"] or "").lower():
+            disp = tag_i18n.display(t["name"], t["zh"] or "")
+            if low in disp.lower():
                 extra.append(t)
+                continue
+            # 拼音搜索：输入 you 能搜到「憂」，输入 bqz 能搜到「白裙子」
+            if not has_cjk:
+                py = tag_i18n.pinyin(disp)
+                if py and (low in py or tag_i18n.pinyin_initials(disp).startswith(low)):
+                    extra.append(t)
         return rows + extra
 
     def save_tag(self, name: str, category: str = "other", prompt: str = "",

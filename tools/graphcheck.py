@@ -162,6 +162,7 @@ def main() -> int:
 
     # 8) 平行关联（同角色异格）：图谱里有连线，搜索时高关联在前、低关联也带出来
     try:
+        from app import tag_i18n
         pairs = store.query("SELECT parent_id, child_id, weight FROM taxonomy_edges WHERE relation='parallel'")
         ok9 = len(pairs) > 0
         print(f"[8] 平行关联边：{len(pairs)} 条 {'OK' if ok9 else '不一致'}")

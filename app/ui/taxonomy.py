@@ -77,7 +77,8 @@ def heat_color(count: int) -> QColor:
 
 class NodeItem(QGraphicsRectItem):
     def __init__(self, kind: str, nid: int, name: str, count: int = 0, on_move=None,
-                 w: float = NODE_W, h: float = NODE_H, level: int = 2, family: int = 0):
+                 w: float = NODE_W, h: float = NODE_H, level: int = 2, family: int = 0,
+                 cat_label: str = ""):
         super().__init__(0, 0, w, h)
         self.kind = kind            # 'node' | 'tag'
         self.nid = nid
@@ -87,6 +88,8 @@ class NodeItem(QGraphicsRectItem):
         self.w, self.h = float(w), float(h)
         self.level = max(1, int(level))
         self.family = int(family)
+        self.cat_label = cat_label            # 圈内第一行显示的类型名（服装/人物…）
+        self.setToolTip(f"{name}" + (f"（{count} 张）" if count else ""))
         self.edges: list[EdgeItem] = []
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable |
                       QGraphicsItem.ItemSendsGeometryChanges)
@@ -120,10 +123,9 @@ class NodeItem(QGraphicsRectItem):
         return super().itemChange(change, value)
 
     def boundingRect(self) -> QRectF:
-        # 名字画在圆的右边、热度模式下数量画在名字下面，这些都在边界框之外 ——
-        # 不把它们算进来，Qt 会直接把文字裁掉（之前"节点不显示名字"就是这个原因）
+        # 文字全部画在圆内，边界框就是圆本身（留一点余量给描边）
         d = min(self.w, self.h)
-        return QRectF(-3, -3, d + 3 + 220, d + 6)
+        return QRectF(-3, -3, d + 6, d + 6)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.Antialiasing)
@@ -148,31 +150,41 @@ class NodeItem(QGraphicsRectItem):
                     pen.setStyle(Qt.DotLine)                # 没图的标签虚线，一眼区分
                 painter.setPen(pen)
         painter.drawEllipse(r)
+        # 圈内三行：类型（上） / 名字（中） / 数量（下，仅热度视图）
+        if getattr(self, "text_hidden", False):
+            return                       # 缩得太小时只画圆，省掉几千段文字
         f = QFont(painter.font())
-        f.setPointSizeF(9.5 if self.kind == "node" else 8.0)
-        f.setBold(self.kind == "node")
+        kind_txt = "分类" if self.kind == "node" else getattr(self, "cat_label", "")
+        if kind_txt:
+            fk = QFont(f)
+            fk.setPointSizeF(7.0)
+            fk.setBold(False)
+            painter.setFont(fk)
+            painter.setPen(QColor("#aab6c8") if self.kind == "node" else QColor("#9fb0c6"))
+            painter.drawText(QRectF(0, d * 0.06, d, d * 0.22), Qt.AlignHCenter | Qt.AlignTop,
+                             painter.fontMetrics().elidedText(kind_txt, Qt.ElideRight, int(d - 12)))
+        f.setPointSizeF(9.4 if self.kind == "node" else 8.2)
+        f.setBold(self.kind == "node" or bool(self.count))
         painter.setFont(f)
-        # 圆里显示数量（或"分类"），名字写在圆的右边 —— 圆太小塞不下一整串字
-        inner = str(self.count) if (self.kind == "tag" and self.count) else ("类" if self.kind == "node" else "")
-        if inner:
-            painter.setPen(QColor("#eef2f8") if (self.kind == "node" or self.count) else QColor("#b9bcc5"))
-            painter.drawText(r, Qt.AlignCenter, painter.fontMetrics().elidedText(inner, Qt.ElideRight, int(d - 10)))
-        painter.setPen(QColor("#dfe4ec") if self.kind == "node" or self.count else QColor("#9aa1ad"))
-        label = self.name
-        if getattr(self, "heat_mode", False) and self.kind == "tag":
-            # 热度视图：名字下面再显示图片数量
-            painter.drawText(QRectF(d + 7, 0, 210, d * 0.58), Qt.AlignBottom | Qt.AlignLeft,
-                             painter.fontMetrics().elidedText(label, Qt.ElideRight, 200))
-            f2 = QFont(painter.font())
-            f2.setPointSizeF(8.0)
+        painter.setPen(QColor("#eef2f8") if (self.kind == "node" or self.count) else QColor("#b9bcc5"))
+        fm = painter.fontMetrics()
+        # 名字按圆的宽度折行（最多两行），放不下就省略号 —— 完整名字在悬停提示里
+        per_line = max(2, int((d - 14) / max(6.0, fm.horizontalAdvance("汉"))))
+        lines = [self.name[i:i + per_line] for i in range(0, len(self.name), per_line)][:2] or [""]
+        if len(self.name) > per_line * 2:
+            lines[-1] = lines[-1][:-1] + "…"
+        heat = getattr(self, "heat_mode", False) and self.kind == "tag"
+        top = d * (0.30 if not kind_txt else 0.30)
+        height = d * (0.40 if heat else 0.52)
+        painter.drawText(QRectF(0, top, d, height), Qt.AlignHCenter | Qt.AlignVCenter, "\n".join(lines))
+        if heat:
+            f2 = QFont(f)
+            f2.setPointSizeF(7.4)
             f2.setBold(True)
             painter.setFont(f2)
             painter.setPen(QColor("#ffd479"))
-            painter.drawText(QRectF(d + 7, d * 0.55, 210, d * 0.45), Qt.AlignTop | Qt.AlignLeft,
+            painter.drawText(QRectF(0, d * 0.72, d, d * 0.22), Qt.AlignHCenter | Qt.AlignTop,
                              f"{self.count} 张")
-        else:
-            painter.drawText(QRectF(d + 7, 0, 210, d), Qt.AlignVCenter | Qt.AlignLeft,
-                             painter.fontMetrics().elidedText(label, Qt.ElideRight, 200))
 
 
 class EdgeItem(QGraphicsPathItem):
@@ -301,6 +313,8 @@ class GraphCanvas(QGraphicsView):
         self.connect_mode = False
         self.connect_from: NodeItem | None = None
         self._pending_save = False
+        self.wedges: list = []            # 每块分类扇区的范围（画边界用）
+        self.show_bounds = True           # 是否画出分类之间的边界
 
     # ---------- 缩放 / 平移 ----------
     def wheelEvent(self, event) -> None:
@@ -313,6 +327,7 @@ class GraphCanvas(QGraphicsView):
             return
         self._zoom = new_zoom
         self.scale(factor, factor)
+        self._schedule_text_visibility()
         event.accept()
 
     def fit_to_view(self) -> None:
@@ -323,10 +338,34 @@ class GraphCanvas(QGraphicsView):
         self.resetTransform()
         self.fitInView(rect.adjusted(-40, -40, 40, 40), Qt.KeepAspectRatio)
         self._zoom = float(self.transform().m11())
+        self._apply_text_visibility()
 
     def reset_zoom(self) -> None:
         self.resetTransform()
         self._zoom = 1.0
+        self._apply_text_visibility()
+
+    def _schedule_text_visibility(self) -> None:
+        """缩放变化时节流刷新"圈内文字是否显示"。"""
+        if not hasattr(self, "_text_timer"):
+            from PySide6.QtCore import QTimer
+            self._text_timer = QTimer(self)
+            self._text_timer.setSingleShot(True)
+            self._text_timer.setInterval(60)
+            self._text_timer.timeout.connect(self._apply_text_visibility)
+        self._text_timer.start()
+
+    def _apply_text_visibility(self) -> None:
+        """缩得太小时不画圈内文字：几千个节点的文字同屏是潜在的卡顿源。"""
+        zoom = float(self.transform().m11())
+        show = zoom >= 0.55                      # 阈值：超过 55% 才显示文字
+        changed = show != getattr(self, "_text_visible", None)
+        self._text_visible = show
+        if not changed:
+            return
+        for it in self.items.values():
+            it.text_hidden = not show
+            it.update()
 
     def set_heat_mode(self, on: bool) -> None:
         """切换热度视图：节点颜色改成"图片数"的热度色，并在左下角画图例。"""
@@ -335,6 +374,39 @@ class GraphCanvas(QGraphicsView):
             it.heat_mode = bool(on)
             it.update()
         self.viewport().update()
+
+    def drawBackground(self, painter, rect) -> None:
+        """画分类边界：每块分类扇区铺一层很淡的底色 + 一条描边。
+
+        边界用"该分类真实占到的范围"算，所以是邻簇互相挤压之后的形状，
+        不是标准扇形 —— 既看得出分组，又不会把空隙重新画出来。
+        """
+        super().drawBackground(painter, rect)
+        if not getattr(self, "show_bounds", True) or not self.wedges:
+            return
+        import math
+        from PySide6.QtGui import QPainterPath, QPen
+        from PySide6.QtCore import QRectF
+        heat = bool(getattr(self, "heat_mode", False))
+        painter.save()
+        painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+        for ang_mid, span, radius, family in self.wedges:
+            if radius < 80.0 or span <= 1e-4:
+                continue
+            base = QColor(FAMILY_COLORS[int(family) % len(FAMILY_COLORS)])
+            path = QPainterPath()
+            path.moveTo(0.0, 0.0)
+            box = QRectF(-radius, -radius, radius * 2.0, radius * 2.0)
+            # Qt 的弧角是"逆时针为正、y 轴向上"，场景坐标 y 轴向下，所以取负角
+            path.arcTo(box, -math.degrees(ang_mid + span / 2.0), math.degrees(span))
+            path.closeSubpath()
+            fill = QColor(base)
+            fill.setAlpha(12 if not heat else 8)
+            pen = QPen(QColor(base.red(), base.green(), base.blue(), 105), 2.4)
+            painter.setPen(pen)
+            painter.setBrush(fill)
+            painter.drawPath(path)
+        painter.restore()
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -376,9 +448,9 @@ class GraphCanvas(QGraphicsView):
 
     def add_node(self, kind: str, nid: int, name: str, count: int, x: float, y: float,
                  w: float = NODE_W, h: float = NODE_H, level: int = 2,
-                 family: int = 0) -> NodeItem:
+                 family: int = 0, cat_label: str = "") -> NodeItem:
         item = NodeItem(kind, nid, name, count, on_move=self._on_move, w=w, h=h, level=level,
-                        family=family)
+                        family=family, cat_label=cat_label)
         item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         item.setPos(x, y)
         self.scene_.addItem(item)
@@ -406,91 +478,126 @@ class GraphCanvas(QGraphicsView):
         self._pending_save = False
 
     def radial_layout(self) -> None:
-        """**多中心放射布局**：每个分类/作品/父标签都是一个中心，孩子绕着它排开。
+        """**多中心放射布局 v3**：每个分类占一块"扇区"，扇区拼在一起填满整个圆。
 
-        - 中心之间按子树规模分配角度，均匀铺在几层同心圆上（所以看起来是"多个中心各自向外放射"）；
-        - 同时挂在多个中心下的标签（交织节点）放到各中心的加权中点，再用 networkx 的弹簧迭代
-          把它们互相靠近 —— 就是图谱里那些"跨区域"的节点会被拉到中间地带；
-        - 纯叶子标签（只有一个父级）沿着父级的小圆弧排开，不会挤在一条直线上。
+        思路：整体是一个大圆，按各分类的节点面积切成若干扇区（像切蛋糕），每个扇区里
+        用"环带"一圈圈往外铺满。这样：
+
+        - 分类之间是紧挨着的，不会像一堆圆饼那样留下大片空隙；
+        - 形状不强制是圆，扇区之间自然互相挤压变形，谁也不会漂到很远；
+        - 父节点（分类/作品/父标签）落在自己那团子节点的重心上，父子距离短；
+        - 子节点从圆心方向一路铺到外沿，密度均匀，没有"核心球 + 外圈稀疏"的分层感。
+
+        太小的分类（不足 50 个节点）会合并成一块"杂项扇区"，否则它们会被挤成一根细线。
+        参数 `graph_ring_radius` 现在表示"疏密"：900 = 默认，越大节点之间越松。
         """
         import math
+
         keys = list(self.items.keys())
         if not keys:
             return
+        # 1) 父子关系（平行关联不参与布局）
         parents: dict[tuple[str, int], list[tuple[str, int]]] = {}
         children: dict[tuple[str, int], list[tuple[str, int]]] = {}
         for e in self.edges:
             if e.relation == "parallel":
-                continue                      # 平行关联不参与层级布局
+                continue
             sk, dk = (e.src.kind, e.src.nid), (e.dst.kind, e.dst.nid)
+            if sk not in self.items or dk not in self.items:
+                continue
             parents.setdefault(dk, []).append(sk)
             children.setdefault(sk, []).append(dk)
 
-        # 层级：从"没有父级的中心"往下 BFS（多父取最浅的那层 = 最高层级）
-        level: dict[tuple[str, int], int] = {}
-        roots = [k for k in keys if not parents.get(k)]
-        queue = [(k, 1) for k in roots]
-        while queue:
-            k, lv = queue.pop(0)
-            if k in level and level[k] <= lv:
-                continue
-            level[k] = lv
-            for ch in children.get(k, []):
-                queue.append((ch, lv + 1))
-        for k in keys:
-            level.setdefault(k, 2)
+        spacing = float(getattr(self.settings_ref, "graph_ring_radius", 900.0) or 900.0) / 900.0
+        spacing = max(0.5, min(1.8, spacing))
+        gap = 12.0 * spacing                    # 节点之间留的空隙
 
-        pos: dict[tuple[str, int], list[float]] = {}
-        RING = float(getattr(self.settings_ref, "graph_ring_radius", 900.0) or 900.0)   # 第一层中心圆半径
-        # 1) 顶层中心（分类节点）均分整圈
-        top = [k for k in roots] or [k for k in keys if level.get(k) == 1] or keys[:1]
-        top.sort(key=lambda k: (self.items[k].name or ""))
-        def subtree_size(k, depth=0) -> int:
-            if depth > 6:
-                return 1
-            return 1 + sum(subtree_size(c, depth + 1) for c in children.get(k, []))
-        sizes = [max(1, subtree_size(k)) for k in top]
-        total = sum(sizes)
-        angle = 0.0
-        for k, size in zip(top, sizes):
-            span = 2 * math.pi * size / total
-            mid = angle + span / 2
-            pos[k] = [RING * math.cos(mid), RING * math.sin(mid)]
-            self._place_children(k, mid, span, RING, pos, children, level)
-            angle += span
-        # 2) 交织节点（多父）：放到各父节点的加权中点
-        moved = 0
+        # 2) 子树半径：叶子=自己的半径；父节点=把子节点的圆盘塞到自己周围之后需要的半径
+        #    （等面积折算成一个大圆：rho = √(自己² + Σ子²)）
+        rho: dict[tuple[str, int], float] = {}
+        busy: set[tuple[str, int]] = set()
+
+        def calc_rho(k) -> float:
+            got = rho.get(k)
+            if got is not None:
+                return got
+            it = self.items[k]
+            base = max(it.w, it.h) / 2.0 + gap / 2.0
+            if k in busy:                   # 有人把节点连成圈：按叶子处理，防止死循环
+                return base
+            busy.add(k)
+            acc = base * base
+            for c in children.get(k, []):
+                cc = calc_rho(c)
+                acc += cc * cc
+            busy.discard(k)
+            rho[k] = math.sqrt(acc)
+            return rho[k]
+
         for k in keys:
-            ps = [p for p in parents.get(k, []) if p in pos]
-            if len(ps) >= 2:
-                xs = sum(pos[p][0] for p in ps) / len(ps)
-                ys = sum(pos[p][1] for p in ps) / len(ps)
-                pos[k] = [xs * 0.85, ys * 0.85]      # 往中心收一点，落在两中心之间
-                moved += 1
-        # 3) 还没落位的（父级没排到的）散在最外圈
-        rest = [k for k in keys if k not in pos]
-        for i, k in enumerate(rest):
-            a = 2 * math.pi * i / max(1, len(rest))
-            pos[k] = [(RING + 900) * math.cos(a), (RING + 900) * math.sin(a)]
-        # 4) networkx 弹簧迭代：把有连线的节点再拉近一点（只在中心层跑，快）
-        try:
-            import networkx as nx
-            core = [k for k in keys if children.get(k) or len(parents.get(k, [])) >= 2][:400]
-            if len(core) >= 2:
-                G = nx.Graph()
-                G.add_nodes_from(core)
-                core_set = set(core)
-                for e in self.edges:
-                    a, b = (e.src.kind, e.src.nid), (e.dst.kind, e.dst.nid)
-                    if a in core_set and b in core_set:
-                        G.add_edge(a, b)
-                seed = {k: (pos[k][0] / RING, pos[k][1] / RING) for k in core}
-                refined = nx.spring_layout(G, pos=seed, iterations=20, k=1.4 / math.sqrt(len(core)),
-                                           seed=7)
-                for k, (x, y) in refined.items():
-                    pos[k] = [x * RING, y * RING]
-        except Exception:
-            pass
+            calc_rho(k)
+
+        # 3) 顶层簇 = 没有父节点的分类节点（根节点"全部标签"不画，所以就是那些最高级分类）
+        roots = [k for k in keys if not parents.get(k)]
+        if not roots:
+            roots = [k for k in keys if self.items[k].kind == "node"] or keys[:1]
+
+        # 4) 分组：按面积给每个分类分一块扇区（像切蛋糕）；扇区太窄的分类（节点太少，
+        #    宽度撑不起一个节点）合并成一块「其他小类」扇区，免得被挤成一根细长尖条
+        member_of: dict[tuple[str, int], tuple[str, int]] = {}
+        big: list[tuple[str, int]] = []
+        small: list[tuple[str, int]] = []
+        for r in roots:
+            members = self._subtree_keys(r, children) + [r]
+            for k in members:
+                member_of.setdefault(k, r)
+            (big if len(members) >= 170 else small).append(r)
+        groups: list[tuple[tuple[str, int] | None, list[tuple[str, int]]]] = \
+            [(r, [r]) for r in big]
+        if small:
+            groups.append((None, sorted(small, key=lambda k: -rho[k] ** 2)))
+        area = [max(1.0, sum(rho[m] ** 2 for m in members)) for _rep, members in groups]
+        total_area = sum(area) or 1.0
+
+        # 5) 环带填满每块扇区：从圆心附近一路均匀铺到外沿，扇区之间紧挨着、互相挤压
+        pos: dict[tuple[str, int], list[float]] = {}
+        self.wedges = []
+        angle = -math.pi / 2.0                                   # 从正上方开始，顺时针铺
+        for i in sorted(range(len(groups)), key=lambda n: -area[n]):
+            _rep, members = groups[i]
+            span = 2.0 * math.pi * area[i] / total_area
+            seen_before = set(pos)
+            atoms: list[tuple[tuple[str, int], float]] = []
+            for m in members:                                    # 同一分类的节点在扇区里连成一段
+                kids = [c for c in children.get(m, []) if c in self.items]
+                atoms.extend((c, rho[c]) for c in kids or [m])
+            for k, x, y in self._fill_ring(0.0, 0.0, 0.0, atoms, gap,
+                                           angle + span / 2.0, span):
+                if k in pos:
+                    continue
+                pos[k] = [x, y]
+                self._place_subtree(k, pos, children, rho, gap, span)
+            for m in members:                                    # 分类本体落在自己那团节点的重心
+                mine = [pos[k] for k, o in member_of.items() if o == m and k in pos]
+                if mine:
+                    pos.setdefault(m, [sum(p[0] for p in mine) / len(mine),
+                                       sum(p[1] for p in mine) / len(mine)])
+            # 记下这块扇区的外沿，用来画分类边界（形状是"被邻簇挤过"的真实轮廓）
+            far = 0.0
+            for k in pos:
+                if k in seen_before:
+                    continue
+                p = pos[k]
+                far = max(far, math.hypot(p[0], p[1]) + max(self.items[k].w, self.items[k].h) / 2.0)
+            if far > 1.0:
+                self.wedges.append((angle + span / 2.0, span,
+                                    far + 26.0, int(self.items[members[0]].family)))
+            angle += span
+        for k in keys:                                           # 兜底：万一有连不上的散点
+            pos.setdefault(k, [0.0, 0.0])
+
+        # 6) 收尾：分类大圆和个别擦边的节点再分开一点（构造时基本不重叠，这里只是兜底）
+        self._separate_overlaps(pos, iterations=40, gap=6.0)
         # 5) 落位（节点中心 → 左上角坐标）；增删过 tag/分类时带过渡动画
         targets = {k: (pos.get(k, [0.0, 0.0])[0] - it.w / 2, pos.get(k, [0.0, 0.0])[1] - it.h / 2)
                    for k, it in self.items.items()}
@@ -546,33 +653,127 @@ class GraphCanvas(QGraphicsView):
         self._move_anim = anim
         anim.start()
 
-    def _place_children(self, parent_key, mid_angle: float, span: float, radius: float,
-                        pos: dict, children: dict, level: dict, depth: int = 0) -> None:
-        """把某个中心的孩子铺在它外面的扇形里：一层摆不下就往外再套一层（像扇子一样展开）。
+    def _place_subtree(self, root, pos: dict, children: dict, rho: dict, gap: float,
+                       span: float) -> None:
+        """root 已经落位了，把它的子孙一圈圈排在它周围。
 
-        这样既不会挤成一团，也不会为了摆开而把图撑到几万像素。
+        方向顺着"从圆心往外"的方向、宽度和本分类的扇区一致 —— 所以整棵树都待在自己那块
+        扇区里，不会甩到隔壁分类的地盘上，父节点也始终待在自己孩子的中间。
         """
         import math
-        kids = children.get(parent_key, [])
-        if not kids or depth > 4:
+        stack = [(root, 0)]
+        while stack:
+            k, depth = stack.pop()
+            if depth > 16:
+                continue
+            kids = [c for c in children.get(k, []) if c in self.items and c not in pos]
+            if not kids:
+                continue
+            cx, cy = pos[k]
+            out_ang = math.atan2(cy, cx) if (abs(cx) + abs(cy)) > 1e-9 else 0.0
+            for c, px, py in self._fill_ring(cx, cy, rho[k] + gap,
+                                             [(c, rho[c]) for c in kids], gap, out_ang, span):
+                pos[c] = [px, py]
+                stack.append((c, depth + 1))
+
+    @staticmethod
+    def _fill_ring(cx: float, cy: float, base_r: float, atoms: list, gap: float,
+                   ang_mid: float, span: float) -> list:
+        """把一批"子圆盘"铺满以 (cx,cy) 为中心、开口 ang_mid、张角 span 的一块扇区。
+
+        一圈一圈往外铺：环内按各子圆盘需要的弧长分配角度（铺满整块扇区），环与环之间按
+        "上一环外沿 + 本环最大圆盘"往外挪。密度处处均匀、互不重叠；扇区窄的时候会自动
+        从外一点起铺，空出来的只是一条细缝。span = 2π 时就是绕着父节点一圈铺开。
+        """
+        import math
+        items = sorted(atoms, key=lambda a: -a[1])
+        out: list = []
+        idx, ring = 0, 0
+        outer = base_r
+        span = max(min(span, 2.0 * math.pi), 1e-6)
+        while idx < len(items) and ring < 900:
+            ring_max = items[idx][1]
+            need_min = 2.0 * ring_max + gap
+            radius = max(outer + ring_max + gap, need_min / span)   # 内圈太窄时自动往外挪
+            cap = span * radius
+            group, used, j = [], 0.0, idx
+            while j < len(items):
+                need = 2.0 * items[j][1] + gap
+                if group and used + need > cap:
+                    break
+                group.append((items[j][0], items[j][1], need))
+                used += need
+                j += 1
+            ang = ang_mid - span / 2.0
+            for key, _r, need in group:
+                frac = need / max(used, 1e-6)
+                mid = ang + span * frac / 2.0
+                out.append((key, cx + radius * math.cos(mid), cy + radius * math.sin(mid)))
+                ang += span * frac
+            outer = radius + max(r for _k, r, _n in group)
+            idx, ring = j, ring + 1
+        return out
+
+    def _subtree_keys(self, root, children: dict) -> list:
+        """root 自己 + 它的所有子孙（带环保护，多父节点整体平移时用）。"""
+        out, seen = [], {root}
+        stack = list(children.get(root, []))
+        while stack:
+            x = stack.pop()
+            if x in seen or x not in self.items:
+                continue
+            seen.add(x)
+            out.append(x)
+            stack.extend(children.get(x, []))
+        return out
+
+    def _separate_overlaps(self, pos: dict, iterations: int = 60, gap: float = 16.0) -> None:
+        """保证圆之间不重叠：按网格找邻居，把挨得太近的节点互相推开（几轮就够）。
+
+        用的是"每个节点自身的直径"，所以分类的大圆、标签的小圆都能各按各的尺寸排开。
+        """
+        items = [(k, pos[k]) for k in pos if k in self.items]
+        if len(items) < 2:
             return
-        kids = sorted(kids, key=lambda k: (-len(children.get(k, [])), str(self.items[k].name or "")))
-        widest = max(self.items[k].w for k in kids) + 14
-        tallest = max(self.items[k].h for k in kids) + 16
-        px, py = pos[parent_key]
-        base_r = max(radius * (0.55 if depth == 0 else 0.5), 380.0)
-        layer, placed = 0, 0
-        while placed < len(kids) and layer < 60:
-            r = min(9000.0, base_r + layer * tallest)
-            cap = max(1, int(span * r / widest))          # 这一圈放得下几个
-            take = kids[placed:placed + cap]
-            m = len(take)
-            for i, k in enumerate(take):
-                a = mid_angle if m == 1 else mid_angle - span / 2 + span * (i + 0.5) / m
-                pos[k] = [px + r * math.cos(a), py + r * math.sin(a)]
-                self._place_children(k, a, max(0.18, span / max(2, m)), r, pos, children, level, depth + 1)
-            placed += m
-            layer += 1
+        radii = {k: max(it.w, it.h) / 2.0 + gap / 2 for k, it in self.items.items()}
+        cell = max(radii.values()) * 2 + 8 if radii else 100.0
+        for _ in range(iterations):
+            moved_any = False
+            grid: dict[tuple[int, int], list[tuple]] = {}
+            for k, p in items:
+                grid.setdefault((int(p[0] // cell), int(p[1] // cell)), []).append((k, p))
+            for (cx, cy), bucket in grid.items():
+                near = []
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        near.extend(grid.get((cx + dx, cy + dy), ()))
+                for i, (k1, p1) in enumerate(bucket):
+                    r1 = radii.get(k1, 34.0)
+                    for k2, p2 in near:
+                        if k2 <= k1:
+                            continue
+                        r2 = radii.get(k2, 34.0)
+                        dx, dy = p1[0] - p2[0], p1[1] - p2[1]
+                        dist = (dx * dx + dy * dy) ** 0.5
+                        need = r1 + r2
+                        if dist >= need or dist <= 0.01:
+                            if dist <= 0.01:              # 完全重合：随便推开一点
+                                p1[0] += 1.0
+                            continue
+                        push = (need - dist) / 2.0
+                        ux, uy = dx / dist, dy / dist
+                        if push < 1.0:            # 卡在微小重叠时给点扰动，打破对称僵局
+                            ux += 0.05 * ((hash(k1) % 7) - 3)
+                            uy += 0.05 * ((hash(k2) % 7) - 3)
+                            n = max(1e-6, (ux * ux + uy * uy) ** 0.5)
+                            ux, uy = ux / n, uy / n
+                        p1[0] += ux * push
+                        p1[1] += uy * push
+                        p2[0] -= ux * push
+                        p2[1] -= uy * push
+                        moved_any = True
+            if not moved_any:                 # 已经互不重叠，提前收工
+                return
 
     def _legacy_layout(self) -> None:
         """旧版直线层级排版（留着兜底）。"""
@@ -802,6 +1003,12 @@ class TaxonomyDialog(QDialog):
         self.show_all = QCheckBox("显示未分类标签")
         self.show_all.toggled.connect(self.rebuild)
         bar.addWidget(self.show_all)
+        self.show_bounds = QCheckBox("显示分类边界")
+        self.show_bounds.setChecked(True)
+        self.show_bounds.setToolTip("在每个分类外围画一层淡色轮廓：看得出分组边界，\n"
+                                    "但边界是各分类挤压后的真实形状，不会留出空隙")
+        self.show_bounds.toggled.connect(self.on_bounds_toggled)
+        bar.addWidget(self.show_bounds)
         bar.addStretch(1)
         b_close = QPushButton("关闭")
         b_close.clicked.connect(self.accept)
@@ -1066,6 +1273,12 @@ class TaxonomyDialog(QDialog):
             self.detail.setText("热度视图：节点颜色 = 该标签下的图片数量（左下角有图例）" if on
                                 else "已切回按层级配色")
 
+    def on_bounds_toggled(self, on: bool) -> None:
+        """显示/隐藏分类边界（工具栏勾选框）。"""
+        if hasattr(self, "canvas"):
+            self.canvas.show_bounds = bool(on)
+            self.canvas.viewport().update()
+
     def _reset_auto_collapse_once(self) -> None:
         """升级后一次性清掉"上一版自动折叠"留下的标记（用户之后手动折叠的仍会被记住）。
 
@@ -1102,6 +1315,13 @@ class TaxonomyDialog(QDialog):
             if e["child_kind"] == "tag":
                 linked_tags[int(e["child_id"])] = linked_tags.get(int(e["child_id"]), 0) + 1
         tag_rows = {int(t["id"]): t for t in self.store.list_tags()}
+        # 一次性把"标签→子标签"和"标签表"准备好：以前每画一个标签都要单独查一次库，
+        # 4000+ 标签就是几千次 SQL，进去就卡住（本次卡死的根因）
+        tag_kids: dict[int, list[int]] = {}
+        for e in self.store.edges():
+            if e["parent_kind"] == "tag" and e["child_kind"] == "tag" and e["relation"] == "sub_of":
+                tag_kids.setdefault(int(e["parent_id"]), []).append(int(e["child_id"]))
+        self._tag_kids, self._tag_rows = tag_kids, tag_rows
 
         saved = self.store.positions()
         # 性能：标签很多时，默认折叠"子节点很多"的分类（打开就是轻量的 13 个分类节点），
@@ -1208,7 +1428,7 @@ class TaxonomyDialog(QDialog):
             if key[0] == "node":
                 return (118.0, 118.0)          # 分类：大圆
             tid = int(key[1])
-            if self.store.tag_children(tid):
+            if tag_kids.get(tid):
                 return (92.0, 92.0)            # 作品/父标签：中圆
             return (68.0, 68.0)                # 普通标签：小圆
 
@@ -1252,9 +1472,11 @@ class TaxonomyDialog(QDialog):
             shown_tags += 1
             from .. import tag_i18n
             w, h = size_of(("tag", tid))
+            from .. import categories as _c2
+            cat_lbl = _c2.label_of(self.store, str(t["category"])) if t["category"] else ""
             self.canvas.add_node("tag", tid, tag_i18n.label(t["name"], t["zh"] or ""),
                                  int(t["count"]), x, yy, w=w, h=h, level=level_of.get(("tag", tid), 2),
-                                 family=family_of_key(("tag", tid)))
+                                 family=family_of_key(("tag", tid)), cat_label=cat_lbl)
         for e in self.store.edges():
             if (e["child_kind"], int(e["child_id"])) not in self.canvas.items:
                 continue
@@ -1277,6 +1499,8 @@ class TaxonomyDialog(QDialog):
     def rebuild_tree(self) -> None:
         self.tree.clear()
         nodes = {int(n["id"]): n for n in self.store.list_nodes()}
+        tag_kids = getattr(self, "_tag_kids", {}) or {}
+        tag_rows = getattr(self, "_tag_rows", {}) or {}
         child_nodes: dict[int, list[int]] = {}
         for e in self.store.edges():
             if e["child_kind"] == "node":
@@ -1299,7 +1523,7 @@ class TaxonomyDialog(QDialog):
                 if ch["kind"] == "node":
                     continue
                 from .. import tag_i18n as _i18n
-                row = self.store.one("SELECT name,zh FROM tags WHERE id=?", (int(ch["cid"]),))
+                row = tag_rows.get(int(ch["cid"]))
                 label_txt = (_i18n.display(row["name"], row["zh"] or "") if row
                              else (ch["name"] or f"(已失效标签 #{ch['cid']})"))
                 if not label_txt:
@@ -1322,17 +1546,16 @@ class TaxonomyDialog(QDialog):
             from .. import tag_i18n
             if depth > 3:
                 return
-            for ch in self.store.tag_children(int(tag_id)):
-                cid = int(ch["id"])
+            for cid in tag_kids.get(int(tag_id), []):
                 if cid in path:                      # 只防环，不阻止"多父重复显示"
                     continue
-                name = str(ch["name"])
-                row = self.store.one("SELECT zh, count, category FROM tags WHERE id=?", (cid,))
+                row = tag_rows.get(cid)
+                name = str(row["name"]) if row else f"(已失效标签 #{cid})"
                 label_txt = tag_i18n.display(name, (row["zh"] if row else "") or "")
                 sub = QTreeWidgetItem([label_txt + (f"  ({row['count']})" if row and row["count"] else "")])
                 sub.setData(0, Qt.UserRole, ("tag", cid))
                 # 作品标签：它下面挂着人物（tag→tag 从属），加粗显示便于区分
-                if self.store.tag_children(cid):
+                if tag_kids.get(cid):
                     f = sub.font(0)
                     f.setBold(True)
                     sub.setFont(0, f)
@@ -1680,11 +1903,30 @@ class TaxonomyDialog(QDialog):
         if not q:
             return
         hit = None
-        for t in self.store.list_tags():
-            zh = (t["zh"] or tag_i18n.translate(t["name"])).lower()
-            if q in t["name"].lower() or q in zh:
+        tags = self.store.list_tags()
+        # ① 完全同名 > ② 中文名完全一致 > ③ 子串 > ④ 拼音（否则搜 chain 会先命中 chainsaw_man）
+        for t in tags:
+            if t["name"].lower() == q:
                 hit = t
                 break
+        if hit is None:
+            for t in tags:
+                if (t["zh"] or "").strip().lower() == q:
+                    hit = t
+                    break
+        if hit is None:
+            for t in tags:
+                zh = (t["zh"] or tag_i18n.translate(t["name"])).lower()
+                if q in t["name"].lower() or q in zh:
+                    hit = t
+                    break
+        if hit is None:
+            for t in tags:
+                disp = tag_i18n.display(t["name"], t["zh"] or "")
+                py = tag_i18n.pinyin(disp)
+                if py and (q in py or tag_i18n.pinyin_initials(disp).startswith(q)):
+                    hit = t
+                    break
         if hit is None:
             nodes = [n for n in self.store.list_nodes() if q in (n["name"] or "").lower()]
             if nodes:
