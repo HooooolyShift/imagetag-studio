@@ -350,6 +350,19 @@ class ReviewDialog(QDialog):
             self.table.setRowHeight(i, 30)
         self.status.setText(f"第 {self.index + 1}/{len(self.queue)} 张 · 待审 {len(rows)} 个标签"
                             + ("　（双击标签可设中文名）" if rows else ""))
+        if not rows:
+            # 队列里也会列出"没有待审标签但还没定级"的图（兜底，避免漏审）——这里必须说清楚
+            cur = self.store.one("SELECT rating FROM files WHERE id=?", (fid,)) if fid else None
+            if cur is not None and not (cur["rating"] or ""):
+                self.status.setText(
+                    f"第 {self.index + 1}/{len(self.queue)} 张 · 这张图**没有待审标签**，"
+                    "它出现在队列里是因为还没有「年龄分级」——请在上面的分级单选里选一档，"
+                    "然后点右下角「审核完毕」；右边的「已生效标签」可以看到它现有的标签。")
+            else:
+                self.status.setText(
+                    f"第 {self.index + 1}/{len(self.queue)} 张 · 这张图的 AI 标签已经审完了"
+                    "（没有新的待审标签）——直接点「跳过」或「下一张」继续。"
+                    "已生效的标签列在右侧「已生效标签」里。")
 
     def reload_confirmed(self) -> None:
         from .. import tag_i18n
