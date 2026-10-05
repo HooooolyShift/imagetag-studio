@@ -702,6 +702,108 @@ class Library:
             self.update_region_probes()
         return n
 
+    # ================================================== 批量删除标签 / 学习包
+    def delete_tags_bulk(self, names: Sequence[str], file_ids: Sequence[int] | None = None,
+                         also_filename: bool = False, progress=None) -> dict:
+        """批量删除标签（默认只删索引）。also_filename=True 时顺带把文件名里的标签也去掉。"""
+        names = [n for n in names if n]
+        if not names:
+            return {"tags": 0, "files": 0, "renamed": 0}
+        if file_ids:
+            ids = [int(i) for i in file_ids]
+        else:
+            ph = ",".join("?" * len(names))
+            ids = [int(r["file_id"]) for r in self.store.query(
+                f"SELECT DISTINCT file_id FROM file_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN ({ph}))",
+                list(names))]
+        for fid in ids:
+            self.store.remove_file_tags(fid, names)
+        for n in names:
+            tid = self.store.tag_id(n)
+            if tid:
+                self.store.delete_tag(tid)      # 连图谱连线一起清理
+        self.store.refresh_counts()
+        renamed = 0
+        if also_filename and self.settings.tag_storage == "filename" and ids:
+            res = self.apply_disk_names(ids, progress)
+            renamed = res.get("renamed", 0)
+        return {"tags": len(names), "files": len(ids), "renamed": renamed}
+
+    # -------------------------------------------------- 学习包（跨库/跨实例合并反馈）
+    def export_learning_pack(self, path: Path | str, with_probes: bool = True,
+                             progress=None) -> dict:
+        """导出「学习包」：汉化词典 + 标签类型 + 体系图（分类/从属连线） + 每个标签的自训练探针。
+
+        重点是探针（特征中心/逻辑回归）：这样 A 库审核训练出来的判断，B 库导入后直接可用。
+        """
+        import base64
+        out: dict = {"version": 1, "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                     "clip_model": self.settings.clip_model,
+                     "categories": [dict(c) for c in self.store.categories()],
+                     "nodes": [dict(n) for n in self.store.list_nodes()],
+                     "edges": [dict(e) for e in self.store.edges()],
+                     "tags": [{"name": t["name"], "category": t["category"], "zh": t["zh"],
+                               "prompt": t["prompt"], "requires": t["requires"], "auto": t["auto"]}
+                              for t in self.store.list_tags()],
+                     "probes": []}
+        if with_probes:
+            for p in self.store.query("SELECT tag_id, kind, data, n_pos, n_neg FROM tag_probe"):
+                row = self.store.one("SELECT name FROM tags WHERE id=?", (int(p["tag_id"]),))
+                if not row:
+                    continue
+                out["probes"].append({"tag": row["name"], "kind": p["kind"],
+                                      "data": base64.b64encode(p["data"] or b"").decode("ascii"),
+                                      "n_pos": int(p["n_pos"] or 0), "n_neg": int(p["n_neg"] or 0)})
+        Path(path).write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        return {"file": str(path), "tags": len(out["tags"]), "probes": len(out["probes"]),
+                "edges": len(out["edges"])}
+
+    def import_learning_pack(self, path: Path | str, progress=None) -> dict:
+        """导入学习包并**合并**（不覆盖本地已有数据）：补标签中文名/类型、补体系连线、补探针。"""
+        import base64
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        n_tag = n_edge = n_probe = 0
+        for c in data.get("categories", []):
+            if not self.store.one("SELECT 1 FROM categories WHERE key=?", (c["key"],)):
+                self.store.add_category(c["key"], c["label"], c.get("templates") or ["{}"])
+        for t in data.get("tags", []):
+            tid = self.store.ensure_tag(t["name"], t.get("category") or "other",
+                                       t.get("prompt") or None, int(t.get("auto", 1)))
+            cur = self.store.one("SELECT zh,category FROM tags WHERE id=?", (tid,))
+            if t.get("zh") and not (cur and cur["zh"]):
+                self.store.update_tag(tid, zh=t["zh"])
+                n_tag += 1
+            if t.get("requires"):
+                self.store.update_tag(tid, requires=t["requires"])
+        name2id = {t["name"]: int(t["id"]) for t in self.store.list_tags()}
+        for e in data.get("edges", []):
+            try:
+                if e.get("parent_kind") == "tag" and e.get("child_kind") == "tag":
+                    pid, cid = e.get("parent_id"), e.get("child_id")
+                    pn = next((nm for nm, i in name2id.items() if i == pid), None)
+                    cn = next((nm for nm, i in name2id.items() if i == cid), None)
+                    if pn and cn:
+                        self.store.link_tag_sub(name2id[pn], name2id[cn])
+                        n_edge += 1
+            except Exception:
+                continue
+        for p in data.get("probes", []):
+            tid = name2id.get(p["tag"])
+            if not tid:
+                tid = self.store.ensure_tag(p["tag"], "other")
+                name2id[p["tag"]] = tid
+            old = self.store.get_probe(tid, p["kind"])
+            if old and int(old["n_pos"] or 0) >= int(p.get("n_pos") or 0):
+                continue                     # 本地样本更多，保留本地的
+            try:
+                blob = base64.b64decode(p["data"])
+            except Exception:
+                continue
+            self.store.set_probe(tid, p["kind"], blob, int(p.get("n_pos") or 0), int(p.get("n_neg") or 0))
+            n_probe += 1
+        self.store.refresh_counts()
+        return {"tags_zh": n_tag, "sub_edges": n_edge, "probes": n_probe}
+
     def export_regions_yolo(self, out_dir: Path | str) -> dict:
         """把框选标注导出成 YOLO 数据集（images/ labels/ classes.txt），可直接拿去训练检测器。"""
         out = Path(out_dir)

@@ -96,7 +96,9 @@ class EdgeItem(QGraphicsPathItem):
         self.edge_id = edge_id
         self.relation = relation
         self.setZValue(1)
-        self.setPen(QPen(EDGE_COLOR, 1.6))
+        # 从属边（tag→tag）用青色，和"分类边"区分开
+        self.edge_color = QColor("#3fc1c9") if relation == "sub_of" else EDGE_COLOR
+        self.setPen(QPen(self.edge_color, 2.0 if relation == "sub_of" else 1.6))
         src.edges.append(self)
         dst.edges.append(self)
         self.update_path()
@@ -123,7 +125,7 @@ class EdgeItem(QGraphicsPathItem):
         pts = [end,
                QPointF(end.x() - size * math.cos(ang - 0.42), end.y() - size * math.sin(ang - 0.42)),
                QPointF(end.x() - size * math.cos(ang + 0.42), end.y() - size * math.sin(ang + 0.42))]
-        painter.setBrush(QBrush(EDGE_COLOR))
+        painter.setBrush(QBrush(self.edge_color))
         painter.setPen(Qt.NoPen)
         painter.drawPolygon(QPolygonF(pts))
 

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSlider,
     QSplitter, QTabWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QDialog, QDialogButtonBox, QInputDialog,
 )
 
 from .. import imaging, naming
@@ -441,6 +442,12 @@ class MainWindow(QMainWindow):
                 (None, None, None),
                 ("按规则生成标签从属关系", self.build_hierarchy_ui,
                  "根据「颜色+基础类」等规则自动建立 tag→tag 从属（白裙子→裙子），之后图片界面只显示更具体的标签"),
+                ("批量删除标签…", self.bulk_delete_tags_ui,
+                 "按标签名批量删除（默认只删索引，可勾选同时从文件名里去掉）"),
+                ("导出学习包…", self.export_pack_ui,
+                 "把汉化词典、分类体系、从属关系和自训练探针导出，供另一个库/另一台机器导入"),
+                ("导入学习包…", self.import_pack_ui,
+                 "导入别人（或你自己另一台机器）的学习包并合并——A 库训练出的判断 B 库直接可用"),
                 ("清理失效目录/文件", self.cleanup_missing_ui,
                  "删掉的文件夹/库不再留在界面里：失效的库记录删除，已不存在的文件标记为缺失")):
             if text is None:
@@ -1299,6 +1306,74 @@ class MainWindow(QMainWindow):
             self.refresh_files()
 
         self.run_task("生成标签从属关系", job, on_done=done)
+
+    def bulk_delete_tags_ui(self) -> None:
+        """批量删除标签（默认只删索引；可勾选同时从文件名里去掉）。"""
+        from PySide6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(
+            self, "批量删除标签",
+            "要删除的标签名（多个用空格分隔）：\n\n只删库里的标签与其连线，图片文件不动；\n"
+            "勾选下面两项可以同时把它们从文件名里去掉。")
+        if not ok or not text.strip():
+            return
+        names = [n for n in text.replace(",", " ").split() if n]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("删除选项")
+        lay = QVBoxLayout(dlg)
+        cb_scope = QCheckBox("只处理当前筛选出的图片（不勾=整个库）")
+        cb_scope.setChecked(bool(self.selected_ids()))
+        cb_name = QCheckBox("同时从文件名里去掉这些标签（会重命名文件）")
+        lay.addWidget(cb_scope)
+        lay.addWidget(cb_name)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        ids = None
+        if cb_scope.isChecked():
+            ids = self.expand_ids(self.selected_ids()) or [
+                self.model.items[i].file_id for i in range(self.model.rowCount())]
+
+        def job(progress, cancel, item):
+            return self.library.delete_tags_bulk(names, ids, cb_name.isChecked(), progress)
+
+        def done(res):
+            QMessageBox.information(self, "批量删除完成",
+                                    f"删除标签 {res['tags']} 个，涉及图片 {res['files']} 张，"
+                                    f"重命名文件 {res['renamed']} 个")
+            self.refresh_tags()
+            self.refresh_files()
+
+        self.run_task("批量删除标签", job, on_done=done)
+
+    def export_pack_ui(self) -> None:
+        p, _ = QFileDialog.getSaveFileName(self, "导出学习包", "ImageTagStudio_学习包.json",
+                                           "JSON (*.json)")
+        if not p:
+            return
+        res = self.library.export_learning_pack(p)
+        QMessageBox.information(self, "导出完成",
+                                f"标签 {res['tags']} 个 / 体系连线 {res['edges']} 条 / "
+                                f"自训练探针 {res['probes']} 个\n\n{res['file']}\n\n"
+                                "把这个文件拷到另一台机器/另一个库，用「导入学习包」合并即可。")
+
+    def import_pack_ui(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(self, "导入学习包", "", "JSON (*.json)")
+        if not p:
+            return
+        if QMessageBox.question(self, "导入学习包",
+                                "导入会**合并**（不覆盖本地已有的中文名/探针）：\n"
+                                "· 补上别人审核训练出的标签特征中心与分类器\n"
+                                "· 补上汉化名、从属关系、类型\n\n继续？") != QMessageBox.Yes:
+            return
+        res = self.library.import_learning_pack(p)
+        QMessageBox.information(self, "导入完成",
+                                f"补中文名 {res['tags_zh']} 个 / 从属关系 {res['sub_edges']} 条 / "
+                                f"探针 {res['probes']} 个")
+        self.refresh_tags()
+        self.refresh_files()
 
     def dir_menu(self, pos) -> None:
         """库/文件夹树右键菜单。"""
