@@ -23,7 +23,19 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 DEST = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("K:\\ImageTagStudio_更新包")
 PKG = Path("K:\\ImageTagStudio_安装包")
-VERSION = "1.1"
+def _app_version() -> str:            # 版本号跟着程序走，别手写两份
+    try:
+        import re
+        text = (HERE / "app" / "config.py").read_text(encoding="utf-8")
+        m = re.search(r'^VERSION\s*=\s*"([^"]+)"', text, re.M)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+VERSION = _app_version()
 
 UPDATE_CMD = r"""@echo off
 chcp 65001 >nul
