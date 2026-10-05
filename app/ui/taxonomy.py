@@ -412,6 +412,7 @@ class TaxonomyDialog(QDialog):
 
     # ================= 构建视图 =================
     def rebuild(self) -> None:
+        self.store.prune_dangling_edges()          # 先清悬空连线，否则渲染会崩
         if self.store.one("SELECT COUNT(*) c FROM nodes")["c"] == 0:
             self.library.sync_taxonomy()
         # 图谱里还有没连线的标签时，自动补一次「按分类连线」，避免打开是散的
@@ -503,7 +504,10 @@ class TaxonomyDialog(QDialog):
                     continue
                 from .. import tag_i18n as _i18n
                 row = self.store.one("SELECT name,zh FROM tags WHERE id=?", (int(ch["cid"]),))
-                label_txt = _i18n.display(row["name"], row["zh"] or "") if row else ch["name"]
+                label_txt = (_i18n.display(row["name"], row["zh"] or "") if row
+                             else (ch["name"] or f"(已失效标签 #{ch['cid']})"))
+                if not label_txt:
+                    continue
                 sub = QTreeWidgetItem([label_txt + (f"  ({ch['count']})" if ch["count"] else "")])
                 sub.setData(0, Qt.UserRole, ("tag", int(ch["cid"])))
                 it.addChild(sub)

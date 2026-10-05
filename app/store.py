@@ -673,7 +673,18 @@ class Store:
     def delete_tag(self, tag_id: int, drop_links: bool = True) -> None:
         if drop_links:
             self.execute("DELETE FROM file_tags WHERE tag_id=?", (tag_id,))
+            # 连带删掉图谱里指向它的连线，避免悬空边（悬空边会让图谱页面报错）
+            self.execute("DELETE FROM taxonomy_edges WHERE child_kind='tag' AND child_id=?", (tag_id,))
         self.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+
+    def prune_dangling_edges(self) -> int:
+        """清理悬空连线：指向已删除的标签/分类节点的边全部删掉。"""
+        cur = self.execute(
+            "DELETE FROM taxonomy_edges WHERE "
+            "(child_kind='tag'  AND child_id NOT IN (SELECT id FROM tags)) OR "
+            "(child_kind='node' AND child_id NOT IN (SELECT id FROM nodes)) OR "
+            "(parent_kind='node' AND parent_id NOT IN (SELECT id FROM nodes))")
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     def refresh_counts(self) -> None:
         self.execute(
