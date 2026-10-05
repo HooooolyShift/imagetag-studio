@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -210,8 +211,9 @@ class Library:
                                            name=p.name, rel=rel)
                 updated += 1
             if name_tags:
-                self.store.add_file_tags(fid, [(t, "filename", 1.0) for t in name_tags]
-                                         + [(t, "filename_parent", 1.0) for t in self.infer_parent_tags(name_tags)])
+                resolved = self.resolve_tag_names(name_tags)      # 中文名 → 库里的规范标签名
+                self.store.add_file_tags(fid, [(t, "filename", 1.0) for t in resolved]
+                                         + [(t, "filename_parent", 1.0) for t in self.infer_parent_tags(resolved)])
             if i % 25 == 0:
                 self.store.conn().commit()
                 if progress:
@@ -926,11 +928,82 @@ class Library:
 
     # ---------------------------------------------------------- 标签写回磁盘
     def dir_tags(self, tags: Sequence[str]) -> list[str]:
-        """系列文件夹名里真正要写的标签：按设置只留最具体的（父子不叠加）。"""
+        """系列文件夹名里真正要写的标签：父子只留最具体的，并转成中文名。"""
         names = [t for t in (tags or []) if t]
         if getattr(self.settings, "tag_most_specific_on_disk", True):
-            return self.most_specific_tags(names, self.store.tag_child_map())
-        return names
+            names = self.most_specific_tags(names, self.store.tag_child_map())
+        return [self.disk_label(n) for n in names]
+
+    def disk_label(self, name: str, zh_hint: str = "") -> str:
+        """标签在磁盘上的显示名：**你在标签里手填的中文名优先**，其次内置词典，最后退回原名。
+
+        所以在「标签管理」里把中文改掉，再点一次写回文件名，新名字就会生效。
+        """
+        from . import tag_i18n
+        n = (name or "").strip()
+        if not n:
+            return ""
+        if re.search(r"[\u4e00-\u9fff]", n):            # 本身已经是中文（或手填的中文）
+            return n
+        if zh_hint and zh_hint.strip():
+            return zh_hint.strip()
+        cache = self.__dict__.setdefault("_zh_label_cache", {})
+        if n in cache:
+            return cache[n] or n
+        row = self.store.one("SELECT zh FROM tags WHERE name=?", (n,))
+        zh = (row["zh"] if row else "") or ""
+        if not zh.strip():
+            zh = tag_i18n.translate(n)
+            zh = zh if zh and zh != n else ""
+        cache[n] = zh
+        return zh.strip() or n
+
+    def _zh_index(self) -> dict[str, str]:
+        """中文名 → 规范标签名（库里填的备注优先，其次内置词典），供扫描回读用。"""
+        from . import tag_i18n
+        idx: dict[str, str] = {}
+        for r in self.store.query("SELECT name, zh FROM tags WHERE zh IS NOT NULL AND zh<>''"):
+            idx.setdefault(str(r["zh"]), str(r["name"]))
+        for zh, canonical in tag_i18n.zh_to_name().items():
+            idx.setdefault(zh, canonical)
+        return idx
+
+    def resolve_tag_names(self, tokens: Sequence[str]) -> list[str]:
+        """把文件名里读到的标签还原成库里的规范标签名（中文名 / 「中文（英文）」都认）。"""
+        from . import tag_i18n
+        idx = self._zh_index()
+        out: list[str] = []
+        for tok in tokens or []:
+            t = (tok or "").strip()
+            if not t:
+                continue
+            name = tag_i18n.parse_input(t, None)        # 先剥掉「中文（英文）」外壳
+            if re.search(r"[\u4e00-\u9fff]", name):
+                name = idx.get(name, name)
+            if name and name not in out:
+                out.append(name)
+        return out
+
+    def rating_label(self, file_id: int) -> str:
+        """这张图的分级标签名（写在文件名首位）；没定级就返回空。"""
+        from .config import RATING_TAG
+        for t in self.store.tags_for_file(file_id):
+            if t["category"] == "rating":
+                return self.disk_label(str(t["name"]))
+        row = self.store.one("SELECT rating FROM files WHERE id=?", (file_id,))
+        level = (row["rating"] if row else "") or ""
+        return RATING_TAG.get(level, "")
+
+    def series_rating_label(self, series_id: int) -> str:
+        """整个系列的分级（取页面上出现最多的那个）；没有就返回空。"""
+        counter: dict[str, int] = {}
+        for r in self.store.series_files(series_id):
+            label = self.rating_label(int(r["id"]))
+            if label:
+                counter[label] = counter.get(label, 0) + 1
+        if not counter:
+            return ""
+        return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
     def _series_tag_union(self, series_id: int) -> list[str]:
         best: dict[str, tuple[int, int]] = {}
@@ -979,7 +1052,7 @@ class Library:
         return out
 
     def disk_tags_for_file(self, file_id: int, max_tags: int | None = None) -> list[str]:
-        """挑出真正要写进文件名的标签：手动的优先，过滤噪声与分级标签，限制数量。
+        """挑出真正要写进文件名的标签（中文名，分级排第一）。
 
         若设置了 tag_most_specific_on_disk（默认开），父子标签只保留最具体的那个
         （例如同时有「裙子」和「白裙子」时文件名里只写「白裙子」）。
@@ -987,6 +1060,7 @@ class Library:
         """
         max_tags = max_tags or self.settings.disk_max_tags
         rows = self.store.tags_for_file(file_id)
+        rating = self.rating_label(file_id)
         scored: list[tuple[int, int, str]] = []
         for t in rows:
             if t["name"].lower() in DISK_TAG_STOPLIST or t["category"] == "rating":
@@ -999,7 +1073,11 @@ class Library:
         names = [name for _, _, name in scored]
         if getattr(self.settings, "tag_most_specific_on_disk", True):
             names = self.most_specific_tags(names, self.store.tag_child_map())
-        return names[:max_tags]
+        zh_by_name = {str(t["name"]): (t["zh"] or "") for t in rows}
+        labels = [self.disk_label(n, zh_by_name.get(n, "")) for n in names]
+        if rating:                       # 首位固定是分级（全年龄 / R15 / R18 / R18G）
+            labels = [rating] + [x for x in labels if x != rating]
+        return labels[:max_tags]
 
     def apply_disk_names(self, file_ids: Sequence[int],
                          progress: Callable[[str, float], None] | None = None) -> dict:
@@ -1107,6 +1185,9 @@ class Library:
                 tags.append(t)
         # 文件夹名同样"只写最具体的标签"，但 series.tags 里仍保留完整标签集（搜索/反馈不受影响）
         dir_tags = self.dir_tags(tags)
+        rating = self.series_rating_label(series_id)
+        if rating:
+            dir_tags = [rating] + [x for x in dir_tags if x != rating]
         new_name = naming.build_series_dirname(s["name"] or old_dir.name, dir_tags,
                                                max_tags=self.settings.series_folder_max_tags)
         if old_dir.name == new_name:

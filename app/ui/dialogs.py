@@ -341,17 +341,19 @@ class TagManagerDialog(QDialog):
             top.addWidget(b)
         v.addLayout(top)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["标签", "类型", "图片数", "自动识别", "CLIP 提示词", "前置条件", "备注"])
-        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["标签", "中文名", "类型", "图片数", "自动识别",
+                                              "CLIP 提示词", "前置条件", "备注"])
+        self.table.setColumnCount(8)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(0, 190)
         self.table.setColumnWidth(1, 130)
-        self.table.setColumnWidth(2, 60)
-        self.table.setColumnWidth(3, 70)
-        self.table.setColumnWidth(4, 320)
-        self.table.setColumnWidth(5, 170)
+        self.table.setColumnWidth(2, 120)
+        self.table.setColumnWidth(3, 55)
+        self.table.setColumnWidth(4, 65)
+        self.table.setColumnWidth(5, 300)
+        self.table.setColumnWidth(6, 150)
         self.table.itemChanged.connect(self._item_changed)
         self.table.cellClicked.connect(self._on_group_click)
         self.table.setSortingEnabled(False)
@@ -419,20 +421,24 @@ class TagManagerDialog(QDialog):
             it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
             it_name.setData(Qt.UserRole, int(t["id"]))
             self.table.setItem(i, 0, it_name)
+            it_zh = QTableWidgetItem(t["zh"] or "")
+            it_zh.setToolTip("这一列就是写进文件名的中文名（留空则用内置词典的翻译）；改完点「写回文件名」生效")
+            it_zh.setData(Qt.UserRole, int(t["id"]))
+            self.table.setItem(i, 1, it_zh)
             cat_item = QTableWidgetItem(cat)
             cat_item.setData(Qt.UserRole, t["category"])
             cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(i, 1, cat_item)
+            self.table.setItem(i, 2, cat_item)
             it_cnt = QTableWidgetItem(str(t["count"]))
             it_cnt.setFlags(it_cnt.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(i, 2, it_cnt)
+            self.table.setItem(i, 3, it_cnt)
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             chk.setCheckState(Qt.Checked if t["auto"] else Qt.Unchecked)
-            self.table.setItem(i, 3, chk)
-            self.table.setItem(i, 4, QTableWidgetItem(t["prompt"] or ""))
-            self.table.setItem(i, 5, QTableWidgetItem(t["requires"] or ""))
-            self.table.setItem(i, 6, QTableWidgetItem(t["note"] or ""))
+            self.table.setItem(i, 4, chk)
+            self.table.setItem(i, 5, QTableWidgetItem(t["prompt"] or ""))
+            self.table.setItem(i, 6, QTableWidgetItem(t["requires"] or ""))
+            self.table.setItem(i, 7, QTableWidgetItem(t["note"] or ""))
             if grouped:
                 self._group_rows.setdefault(cat, []).append(i)
             i += 1
@@ -463,10 +469,19 @@ class TagManagerDialog(QDialog):
         tid = self._row_tag_id(item.row())
         if not tid:
             return
-        if item.column() == 3:
+        if item.column() == 4:
             self._set(tid, auto=1 if item.checkState() == Qt.Checked else 0)
-        elif item.column() in (4, 5, 6):
-            field = {4: "prompt", 5: "requires", 6: "note"}[item.column()]
+        elif item.column() == 1:                     # 中文名：改完顺手刷新第一列的显示
+            self._set(tid, zh=item.text().strip())
+            from .. import tag_i18n
+            row = self.store.one("SELECT name FROM tags WHERE id=?", (tid,))
+            if row:
+                self._loading = True
+                self.table.item(item.row(), 0).setText(
+                    tag_i18n.display(str(row["name"]), item.text().strip()))
+                self._loading = False
+        elif item.column() in (5, 6, 7):
+            field = {5: "prompt", 6: "requires", 7: "note"}[item.column()]
             self._set(tid, **{field: item.text()})
 
     def _set(self, tag_id: int, **kw) -> None:

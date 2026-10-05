@@ -258,6 +258,28 @@ def parse_list(text: str) -> list[str]:
     return [x for x in t.split() if x]
 
 
+_ZH_INDEX: dict[str, str] | None = None
+
+
+def zh_to_name() -> dict[str, str]:
+    """内置词典的中文名 → 规范标签名（懒加载，避免每次扫描都遍历 1 万条）。
+
+    一个中文名可能对应多个英文 key（如「泳装」→ swimsuit / holding_swimsuit / print_bikini），
+    这里挑更"基础"的那个：下划线少的优先，其次更短的，最后按字母序。
+    """
+    global _ZH_INDEX
+    if _ZH_INDEX is None:
+        idx: dict[str, str] = {}
+        for name, zh in MODEL_DICT.items():
+            if not zh:
+                continue
+            old = idx.get(zh)
+            if old is None or (name.count("_"), len(name), name) < (old.count("_"), len(old), old):
+                idx[zh] = name
+        _ZH_INDEX = idx
+    return _ZH_INDEX
+
+
 def parse_input(text: str, store=None) -> str:
     """把输入框里的文字规范成标签名。
 
@@ -277,7 +299,7 @@ def parse_input(text: str, store=None) -> str:
         row = store.one("SELECT name FROM tags WHERE zh=?", (t,))
         if row:
             return row["name"]
-        for name, zh in MODEL_DICT.items():
-            if zh == t:
-                return name
+        hit = zh_to_name().get(t)
+        if hit:
+            return hit
     return t

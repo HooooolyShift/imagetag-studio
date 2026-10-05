@@ -500,7 +500,7 @@ class Store:
     ALL_STATUS = ("confirmed", "pending", "rejected")
 
     def tags_for_file(self, file_id: int, statuses: Sequence[str] | None = ("confirmed",)) -> list[sqlite3.Row]:
-        sql = ("SELECT t.id,t.name,t.category,ft.source,ft.score,ft.status,ft.updated_at "
+        sql = ("SELECT t.id,t.name,t.zh,t.category,ft.source,ft.score,ft.status,ft.updated_at "
                "FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=?")
         args: list[Any] = [file_id]
         if statuses:
@@ -515,7 +515,7 @@ class Store:
         if not ids:
             return out
         ph = ",".join("?" * len(ids))
-        sql = (f"SELECT ft.file_id,t.id,t.name,t.category,ft.source,ft.score,ft.status FROM file_tags ft "
+        sql = (f"SELECT ft.file_id,t.id,t.name,t.zh,t.category,ft.source,ft.score,ft.status FROM file_tags ft "
                f"JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id IN ({ph})")
         args = list(ids)
         if statuses:
@@ -634,8 +634,8 @@ class Store:
         args: list[Any] = []
         where = []
         if search:
-            where.append("t.name LIKE ?")
-            args.append(f"%{search}%")
+            where.append("(t.name LIKE ? OR IFNULL(t.zh,'') LIKE ?)")   # 中文名也能搜
+            args.extend([f"%{search}%", f"%{search}%"])
         if category:
             where.append("COALESCE(NULLIF(t.category,''),'other') = ?")
             args.append(category)

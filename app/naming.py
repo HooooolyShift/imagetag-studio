@@ -26,7 +26,8 @@ def sanitize_tag(tag: str) -> str:
     for ch in t:
         out.append("_" if ch in ILLEGAL else ch)
     t = re.sub(r"\s+", " ", "".join(out)).strip(" .")
-    t = t.replace(" ", "_") if " " in t and len(t) <= 20 else t
+    # 标签里不能留空格：文件名里的标签用空格分隔，留空格会导致回读时被拆成两个标签
+    t = t.replace(" ", "_")
     return t[:MAX_TAG_LEN]
 
 

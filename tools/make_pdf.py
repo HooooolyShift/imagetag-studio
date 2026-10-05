@@ -315,8 +315,11 @@ def build_pdf(out: Path, shots: dict[str, Path], hw: dict, rec: dict) -> None:
 
     S.append(P("写回文件名的命名规则", st["h2"]))
     S.append(bullets([
-        "默认<b>只用标签命名</b>：<code>[初音未来 泳装].png</code>；需要保留原文件名时，"
+        "默认<b>只用标签命名</b>、并且<b>只用中文名</b>：<code>[全年龄 初音未来 泳装].png</code>；"
+        "需要保留原文件名时，"
         "到「设置 → 常规」勾选「写回文件名时保留原文件名」，就变成 <code>IMG_1234 [初音未来 泳装].png</code>",
+        "第一位固定是<b>分级</b>（全年龄 / R15 / R18 / R18G），文件管理器里按名字排序就能先按分级分开",
+        "中文名在「标签管理」的「中文名」列里改：改完再点一次「写回文件名」，新名字立刻生效",
         "父子标签只写最具体的那个：同时有「裙子」和「白裙子」时，文件名里只写「白裙子」"
         "（设置里可关掉；系列文件夹名同理）",
         "库里仍然保留全部标签：检索时选父标签会自动带出所有子标签，审核结论与模型学习也照常使用全部标签，"
@@ -397,9 +400,9 @@ def build_pdf(out: Path, shots: dict[str, Path], hw: dict, rec: dict) -> None:
         "安装目录：程序、内置 Python、模型（models/）、性能档案（perf_profile.json）、卸载.cmd",
         "数据目录：<code>%LOCALAPPDATA%\\ImageTagStudio</code> —— library.db（索引）、thumbs/（缩略图）、settings.json",
         "图库目录：<code>&lt;盘符&gt;:\\ImageTags</code> —— 正式存放图片；查重/删除的文件进 <code>.removed</code>",
-        "标签写回文件名约定：默认 <code>[tag1 tag2].jpg</code>（只用标签命名；可在设置里改成保留原名的 "
-        "<code>&lt;原名&gt; [tag1 tag2].jpg</code>）；系列为 <code>&lt;系列名&gt; [标签]\\001.jpg</code>；"
-        "父子标签只写最具体的那个（库里仍有全部标签）",
+        "标签写回文件名约定：默认 <code>[全年龄 中文标签 …].jpg</code>（只用标签命名、只写中文、分级在最前；"
+        "可在设置里改成保留原名的 <code>&lt;原名&gt; [全年龄 中文标签 …].jpg</code>）；"
+        "系列为 <code>&lt;系列名&gt; [全年龄 标签]/001.jpg</code>；父子标签只写最具体的那个（库里仍有全部标签）",
     ], st["bullet"]))
     S.append(P("附录 B　快捷键与技巧", st["h1"]))
     S.append(bullets([
