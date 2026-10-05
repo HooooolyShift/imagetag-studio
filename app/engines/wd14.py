@@ -71,6 +71,67 @@ _STYLE2 = ("style", "art", "painting", "sketch", "lineart", "monochrome", "greys
 _VIEW = ("from_above", "from_below", "from_behind", "from_side", "looking_at_viewer", "looking_back",
          "looking_away", "looking_down", "looking_up", "eye_contact", "facing_viewer", "profile")
 
+# —— 补充规则（v1.4）：原来这四类全靠"其它"，几千个标签归不进去 ——
+_INTERACTION = (
+    "gag", "gagged", "ball_gag", "wiffle_gag", "gag_harness", "bit_gag", "ring_gag", "tape_gag",
+    "sex", "penetration", "vaginal", "anal", "anal_object_insertion", "vaginal_object_insertion",
+    "object_insertion", "urethral", "cum", "cumshot", "cum_on", "ejaculation", "orgasm", "creampie",
+    "masturbation", "fingering", "handjob", "fellatio", "cunnilingus", "paizuri", "footjob",
+    "irrumatio", "bukkake", "gokkun", "gangbang", "threesome", "group_sex", "orgy", "netorare",
+    "sex_from_behind", "missionary", "doggystyle", "cowgirl_position", "mating_press",
+    "suspended_congress", "spreader_bar", "cuffs", "shackles", "handcuffs", "bound", "bound_arms",
+    "bound_legs", "bondage", "restrained", "shibari", "rope", "chain", "leash", "blindfold",
+    "nipple_stimulation", "nipple_pull", "breast_sucking", "breast_press", "groping", "grabbing",
+    "rape", "molestation", "tentacles", "vibrator", "dildo", "sex_toy", "onahole", "condom",
+    "pussy_juice", "precum", "lactation", "pregnant", "incest", "futanari", "ahegao", "ear_sex",
+    "kiss", "kissing", "hug", "hugging", "carrying", "princess_carry", "lap_pillow", "headpat",
+)
+_BODY_DETAIL = (
+    "saliva", "drooling", "spit", "sweat", "sweatdrop", "tears", "tear", "crying", "trembling",
+    "blush", "blushing", "freckles", "mole", "mole_under_eye", "scar", "tattoo", "piercing",
+    "abs", "muscular", "veins", "skin", "fang", "teeth", "tongue", "lips", "symbol-shaped_pupils",
+    "heart-shaped_pupils", "star-shaped_pupils", "sidelocks", "twin_drills", "drill_hair",
+    "disembodied_limb", "covered_nipples", "covered_crotch", "bar_censor", "pubic_hair",
+    "tail", "wings", "horns", "halo", "animal_ears", "cat_ears", "dog_ears", "fox_ears",
+    "rabbit_ears", "elf", "pointy_ears", "animal_ear_fluff", "fang_out", "hair_between_eyes",
+)
+_TEXT_UI = (
+    "speech_bubble", "thought_bubble", "dialogue_box", "text", "watermark", "signature", "logo",
+    "artist_name", "username", "twitter_username", "commentary", "border", "frame", "letterboxed",
+    "dated", "bad_id", "bad_twitter_id", "translated", "web_address", "url", "qr_code", "barcode",
+    "interface", "screenshot", "chart", "graph", "manga_page", "2koma",
+    "4koma", "comic", "panel", "caption",
+)
+_OBJECT2 = (
+    "sword", "katana", "gun", "pistol", "rifle", "knife", "dagger", "spear", "axe", "hammer",
+    "weapon", "shield", "armor", "wand", "staff", "bow_(weapon)", "arrow", "arrow_(projectile)",
+    "phone", "smartphone", "cellphone", "camera", "headphones", "microphone", "guitar", "piano",
+    "violin", "drum", "book", "notebook", "bag", "backpack", "handbag", "umbrella", "cup",
+    "teacup", "glass", "bottle", "wine_glass", "can", "food", "cake", "ice_cream", "candy",
+    "lollipop", "fruit", "apple", "plushie", "doll", "teddy_bear", "balloon", "clock", "watch",
+    "calendar", "candle", "basket", "bucket", "towel", "pillow", "blanket", "fan", "parasol",
+    "balloon", "kite", "toy", "controller", "game_controller", "syringe", "bottle", "jar",
+)
+_VIEW2 = (
+    "from_above", "from_below", "from_behind", "from_side", "from_outside", "from_front",
+    "looking_at_viewer", "looking_back", "looking_away", "looking_down", "looking_up", "eye_contact",
+    "facing_viewer", "profile", "portrait", "close-up", "closeup", "upper_body", "lower_body",
+    "full_body", "cowboy_shot", "wide_shot", "dutch_angle", "foreshortening", "perspective",
+    "pov", "depth_of_field", "blurry", "motion_blur", "cropped", "cropped_torso", "out_of_frame",
+    "head_out_of_frame", "feet_out_of_frame", "zoom_layer", "vanishing_point",
+)
+_SPECIES = (      # 兽娘/种族特征：归到「人物/角色」（描述角色身份）
+    "cat_girl", "fox_girl", "wolf_girl", "dog_girl", "rabbit_girl", "bunny_girl", "dragon_girl",
+    "demon_girl", "angel_girl", "elf_girl", "orc", "slime_girl", "monster_girl", "spider_girl",
+    "cow_girl", "horse_girl", "sheep_girl", "mouse_girl", "bird_girl", "snake_girl", "shark_girl",
+    "cat_boy", "fox_boy", "wolf_boy", "rabbit_boy", "dragon_boy", "demon_boy", "angel_boy",
+    "otoko_no_ko", "shota", "loli", "kemonomimi", "kemonomimi_mode", "animal_humanoid",
+)
+_INTERACTION2 = (
+    "improvised_gag", "milking_machine", "femdom", "futa_with_female", "futa_with_male",
+    "dickgirl", "suspension", "amputee", "mouth_gag", "cleave_gag", "bondage_up",
+)
+
 
 def guess_category(name: str, wd_category: int) -> str:
     if wd_category == 4:
@@ -78,20 +139,39 @@ def guess_category(name: str, wd_category: int) -> str:
     if wd_category == 9:
         return "rating"
     low = name.lower()
+    import re as _re
+
+    def hit(tok: str) -> bool:
+        """按"词"匹配而不是任意子串：否则 arknights 里的 night 会被当场景、
+        unbuttoned 里的 button 会被当界面控件。"""
+        return _re.search(rf"(?:^|[_\-(]){_re.escape(tok)}(?:$|[_\-\)])", low) is not None
+
     # 先整词匹配，再按关键词包含关系兜底（white_apron、long_hair 这类组合词）
     for seq, cat in ((_COUNT, "count"), (_CLOTHING, "clothing"), (_POSE, "pose"),
                      (_BODY, "body"), (_SCENE, "scene"), (_STYLE, "style")):
         if low in seq:
             return cat
     for seq, cat in ((_CLOTHING, "clothing"), (_POSE, "pose"), (_COUNT, "count")):
-        if any(tok in low for tok in seq if len(tok) > 3):
+        if any(hit(tok) for tok in seq if len(tok) > 3):
+            return cat
+    # 精确命中新增的五类（性行为/身体细节/文本界面/道具/视角）
+    for seq, cat in ((_INTERACTION, "interaction"), (_TEXT_UI, "text_ui"), (_OBJECT2, "object"),
+                     (_BODY_DETAIL, "body_detail"), (_VIEW2, "view"), (_SPECIES, "character"),
+                     (_INTERACTION2, "interaction")):
+        if low in seq:
             return cat
     # 更宽的构词匹配（这两组顺序有讲究：服装/身体优先于场景，避免"bath"被当场景等误判）
-    if any(tok in low for tok in _VIEW):
+    if any(hit(tok) for tok in _VIEW):
         return "pose"
+    # 组合词兜底：white_apron 这类，靠关键词包含判断
+    for seq, cat in ((_INTERACTION, "interaction"), (_TEXT_UI, "text_ui"), (_OBJECT2, "object"),
+                     (_BODY_DETAIL, "body_detail"), (_VIEW2, "view"), (_SPECIES, "character"),
+                     (_INTERACTION2, "interaction")):
+        if any(hit(tok) for tok in seq if len(tok) >= 4):
+            return cat
     for seq, cat in ((_CLOTHING2, "clothing"), (_BODY_PARTS, "body"), (_ACTION, "action"),
                      (_POSE, "pose"), (_STYLE2, "style"), (_SCENE2, "scene")):
-        if any(tok in low for tok in seq if len(tok) >= 3):
+        if any(hit(tok) for tok in seq if len(tok) >= 3):
             return cat
     return "other"
 

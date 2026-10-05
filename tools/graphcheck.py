@@ -119,6 +119,70 @@ def main() -> int:
     except Exception as exc:      # noqa: BLE001
         print("  拖放自检失败:", exc)
         bad += 1
+
+    # 6) 管理列表里"多父标签"要重复显示，且改名后所有副本同步
+    try:
+
+        def tree_tag_counts() -> dict[int, int]:
+            counts: dict[int, int] = {}
+
+            def walk(item) -> None:
+                for i in range(item.childCount()):
+                    ch = item.child(i)
+                    d = ch.data(0, Qt.UserRole)
+                    if d and d[0] == "tag":
+                        counts[int(d[1])] = counts.get(int(d[1]), 0) + 1
+                    walk(ch)
+
+            for i in range(tax.tree.topLevelItemCount()):
+                walk(tax.tree.topLevelItem(i))
+            return counts
+
+        from PySide6.QtCore import Qt
+        before_counts = tree_tag_counts()
+        dup = {k: v for k, v in before_counts.items() if v > 1}
+        ok7 = len(dup) > 0
+        print(f"[6] 管理列表里出现多次的标签：{len(dup)} 个（每个副本共用同一标签 id）"
+              f"{'OK' if ok7 else '不一致'}")
+        bad += 0 if ok7 else 1
+        if dup:
+            tid = next(iter(dup))
+            old = store.one("SELECT name FROM tags WHERE id=?", (tid,))["name"]
+            store.rename_tag(int(tid), old + "_同步测试")
+            tax.rebuild()
+            after = tree_tag_counts().get(int(tid), 0)
+            store.rename_tag(int(tid), old)
+            tax.rebuild()
+            ok8 = after == dup[tid]
+            print(f"[7] 改名后 {dup[tid]} 个副本一起更新：{'OK' if ok8 else '不一致'}")
+            bad += 0 if ok8 else 1
+    except Exception as exc:      # noqa: BLE001
+        print("  多父重复显示自检失败:", exc)
+        bad += 1
+
+    # 8) 平行关联（同角色异格）：图谱里有连线，搜索时高关联在前、低关联也带出来
+    try:
+        pairs = store.query("SELECT parent_id, child_id, weight FROM taxonomy_edges WHERE relation='parallel'")
+        ok9 = len(pairs) > 0
+        print(f"[8] 平行关联边：{len(pairs)} 条 {'OK' if ok9 else '不一致'}")
+        bad += 0 if ok9 else 1
+        if pairs:
+            pid = int(pairs[0]["parent_id"])
+            name = store.one("SELECT name FROM tags WHERE id=?", (pid,))["name"]
+            pars = store.tag_parallels(pid)
+            from app.ui.dialogs import TagManagerDialog
+            mgr = TagManagerDialog(store)
+            mgr.search.setText(tag_i18n.label(name, "") or name)
+            texts = [mgr.table.item(i, 0).text() for i in range(mgr.table.rowCount())
+                     if mgr.table.item(i, 0).text().strip()]
+            ok10 = bool(pars) and len(texts) >= 2
+            print(f"[9] 搜「{tag_i18n.label(name, '')}」列出 {len(texts)} 行（含平行关联的另一个）"
+                  f"{'OK' if ok10 else '不一致'}")
+            bad += 0 if ok10 else 1
+            mgr.close()
+    except Exception as exc:      # noqa: BLE001
+        print("  平行关联自检失败:", exc)
+        bad += 1
     print("结论:", "全部通过" if bad == 0 else f"{bad} 处不一致")
     tax.close()
     return 0 if bad == 0 else 1

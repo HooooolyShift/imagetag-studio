@@ -341,19 +341,20 @@ class TagManagerDialog(QDialog):
             top.addWidget(b)
         v.addLayout(top)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["标签", "中文名（备注）", "类型", "图片数", "自动识别",
-                                              "CLIP 提示词", "前置条件"])
-        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["标签", "中文名（备注）", "类型", "所属作品", "图片数",
+                                              "自动识别", "CLIP 提示词", "前置条件"])
+        self.table.setColumnCount(8)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(0, 190)
         self.table.setColumnWidth(1, 130)
         self.table.setColumnWidth(2, 120)
-        self.table.setColumnWidth(3, 55)
-        self.table.setColumnWidth(4, 65)
-        self.table.setColumnWidth(5, 300)
-        self.table.setColumnWidth(6, 150)
+        self.table.setColumnWidth(3, 140)
+        self.table.setColumnWidth(4, 55)
+        self.table.setColumnWidth(5, 65)
+        self.table.setColumnWidth(6, 280)
+        self.table.setColumnWidth(7, 130)
         self.table.itemChanged.connect(self._item_changed)
         self.table.cellClicked.connect(self._on_group_click)
         self.table.setSortingEnabled(False)
@@ -380,7 +381,7 @@ class TagManagerDialog(QDialog):
         """
         LIMIT = 400
         self._loading = True
-        all_rows = self.store.list_tags(self.search.text().strip())
+        all_rows = self.store.search_tags(self.search.text().strip())      # 中文（含词典译名）也能搜
         rows = all_rows[:LIMIT]
         self._limit_note.setText(
             (f"标签共 {len(all_rows)} 个，为流畅只列出前 {LIMIT} 个 —— 用上方搜索框找具体标签"
@@ -396,14 +397,92 @@ class TagManagerDialog(QDialog):
             return _c.label_of(self.store, t["category"])
 
         grouped = self.cb_group.isChecked()
-        order = rows
+        # 搜索时把"平行关联"的低关联那一个也带出来（先显示命中的，再跟一条带标记的）
+        q = self.search.text().strip()
+        if q:
+            have = {int(t["id"]) for t in rows}
+            extra_rows: list = []
+            for t in rows:
+                for p in self.store.tag_parallels(int(t["id"])):
+                    pid = int(p["id"])
+                    if pid in have:
+                        continue
+                    row_p = self.store.one("SELECT * FROM tags WHERE id=?", (pid,))
+                    if row_p and row_p["name"] not in q and q not in (row_p["name"] or ""):
+                        have.add(pid)
+                        extra_rows.append((t["name"], row_p))
+            if extra_rows:
+                merged = list(rows)
+                for after_name, row_p in extra_rows:
+                    idx = next((k for k, t in enumerate(merged) if t["name"] == after_name), len(merged) - 1)
+                    merged.insert(idx + 1, row_p)
+                rows = merged
+        # 所属作品：tag→tag 从属里的"作品"父级。
+        # 作品和人物现在合成一个分类了，所以靠名字判定：父标签名出现在子标签的「_(名字)」后缀里
+        # （amiya_(arknights) → 作品就是 arknights），比"有没有多个子项"更准，不会把服装父类误认成作品。
+        parent_map = self.store.tag_parent_map()
+        works_of = {}
+        for child, parents in parent_map.items():
+            hit = [p for p in parents
+                   if f"_({p})" in str(child) or f"（{p}）" in str(child)]
+            if hit:
+                works_of[child] = hit
+        works_of = {k: v for k, v in works_of.items() if v}
+        # 作品的"特殊显示"：作品行做小标题，它名下的人物缩进排在下面。
+        # 注意要在 **截断到 400 行之前** 排好，否则作品/人物会被切掉
+        #   arknights → 它的人物 → 下一部作品 → … → 其余标签
+        work_children: dict[str, list] = {}
+        for t in all_rows:
+            w = works_of.get(t["name"])
+            if w:
+                work_children.setdefault(w[0], []).append(t)
+        all_names = {t["name"] for t in all_rows}
+        work_heads = [w for w in work_children if w in all_names]
+        display: list[tuple] = []
         if grouped:
-            order = sorted(rows, key=lambda t: (cat_text(t), t["name"]))
-        self.table.setRowCount(len(order) + (len({cat_text(t) for t in order}) if grouped else 0))
+            for t in sorted(all_rows, key=lambda t: (cat_text(t), t["name"])):
+                display.append(("tag", t, 0, cat_text(t)))
+        else:
+            shown_ids: set[int] = set()
+            for w in work_heads:
+                display.append(("work", w, 0, None))
+                for t in work_children[w]:
+                    if int(t["id"]) in shown_ids:
+                        continue
+                    shown_ids.add(int(t["id"]))
+                    display.append(("tag", t, 1, w))
+            for t in all_rows:
+                # 只跳过"已经作为作品子项渲染过"的；作品本身不在结果里时，它的人物照样要显示
+                if int(t["id"]) in shown_ids or t["name"] in work_heads:
+                    continue
+                display.append(("tag", t, 0, None))
+        total_display = len(display)
+        display = display[:LIMIT]
+        self.table.setRowCount(len(display))
         i = 0
         last_cat = None
         self._group_rows: dict[str, list[int]] = {}
-        for t in order:
+
+        def put_work_head(row: int, work: str) -> int:
+            """作品行：粗体小标题（点它可折叠下面的人物）。"""
+            head_txt = f"▼ {work}　·　{len(work_children.get(work, []))} 个人物（点这行折叠/展开）"
+            head = QTableWidgetItem(head_txt)
+            head.setData(Qt.UserRole, ("work", work))
+            head.setBackground(QColor("#2f3a52"))
+            f = head.font()
+            f.setBold(True)
+            head.setFont(f)
+            for c in range(self.table.columnCount()):
+                self.table.setItem(row, c, head if c == 0 else QTableWidgetItem(""))
+            self.table.setSpan(row, 0, 1, self.table.columnCount())
+            self._group_rows.setdefault("work:" + work, [])
+            return row + 1
+
+        for kind, payload, indent, group_key in display:
+            if kind == "work":
+                i = put_work_head(i, payload)
+                continue
+            t = payload
             cat = cat_text(t)
             if grouped and cat != last_cat:
                 last_cat = cat
@@ -415,36 +494,13 @@ class TagManagerDialog(QDialog):
                 self.table.setSpan(i, 0, 1, self.table.columnCount())
                 self._group_rows.setdefault(cat, [])
                 i += 1
-            from .. import tag_i18n
-            it_name = QTableWidgetItem(tag_i18n.display(t["name"], t["zh"] or ""))
-            it_name.setToolTip(f"{t['name']}（双击行或用「编辑选中」改类型/提示词）")
-            it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
-            it_name.setData(Qt.UserRole, int(t["id"]))
-            self.table.setItem(i, 0, it_name)
-            it_zh = QTableWidgetItem(t["zh"] or "")
-            it_zh.setToolTip("这一列就是写进文件名的中文名（留空则用内置词典的翻译）；改完点「写回文件名」生效")
-            it_zh.setData(Qt.UserRole, int(t["id"]))
-            self.table.setItem(i, 1, it_zh)
-            cat_item = QTableWidgetItem(cat)
-            cat_item.setData(Qt.UserRole, t["category"])
-            cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(i, 2, cat_item)
-            it_cnt = QTableWidgetItem(str(t["count"]))
-            it_cnt.setFlags(it_cnt.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(i, 3, it_cnt)
-            chk = QTableWidgetItem()
-            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            chk.setCheckState(Qt.Checked if t["auto"] else Qt.Unchecked)
-            self.table.setItem(i, 4, chk)
-            self.table.setItem(i, 5, QTableWidgetItem(t["prompt"] or ""))
-            self.table.setItem(i, 6, QTableWidgetItem(t["requires"] or ""))
-            # 「备注」已并入「中文名」，不再单独一列
-            if grouped:
-                self._group_rows.setdefault(cat, []).append(i)
-            i += 1
+            i = self.put_tag_row(i, t, cat, works_of.get(t["name"], []), indent=indent,
+                                 group_key=(cat if grouped else ("work:" + group_key if group_key else None)))
         self._loading = False
         self.info.setText(f"共 {len(all_rows)} 个标签"
-                          + ("（按分类分组，可折叠）" if grouped else ""))
+                          + ("（按分类分组，可折叠）" if grouped
+                             else f"（按作品分组：{len(work_heads)} 部作品）")
+                          )
 
     def _on_group_click(self, row: int, _col: int) -> None:
         """点分组标题行 → 折叠/展开该分类下的标签。"""
@@ -457,7 +513,46 @@ class TagManagerDialog(QDialog):
         hide = any(not self.table.isRowHidden(r) for r in shown)
         for r in shown:
             self.table.setRowHidden(r, hide)
-        item.setText(("▶ " if hide else "▼ ") + f"{cat}（点这行折叠/展开）")
+        if cat.startswith("work:"):
+            item.setText(("▶ " if hide else "▼ ") +
+                         item.text().split("（点这行折叠/展开）")[0].split("▼ ")[-1].split("▶ ")[-1]
+                         + "（点这行折叠/展开）")
+        else:
+            item.setText(("▶ " if hide else "▼ ") + f"{cat}（点这行折叠/展开）")
+
+    def put_tag_row(self, row: int, t, cat: str, works: list[str], indent: int = 0,
+                    group_key: str | None = None) -> int:
+        """渲染一行标签（indent=1 表示它是某个作品下的人物，向右缩进）。"""
+        from .. import tag_i18n
+        it_name = QTableWidgetItem(("　　└ " if indent else "") + tag_i18n.display(t["name"], t["zh"] or ""))
+        it_name.setToolTip(f"{t['name']}（双击行或用「编辑选中」改类型/提示词）")
+        it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
+        it_name.setData(Qt.UserRole, int(t["id"]))
+        self.table.setItem(row, 0, it_name)
+        it_zh = QTableWidgetItem(t["zh"] or "")
+        it_zh.setToolTip("这一列就是写进文件名的中文名（留空则用内置词典的翻译）；改完点「写回文件名」生效")
+        it_zh.setData(Qt.UserRole, int(t["id"]))
+        self.table.setItem(row, 1, it_zh)
+        cat_item = QTableWidgetItem(cat)
+        cat_item.setData(Qt.UserRole, t["category"])
+        cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsEditable)
+        self.table.setItem(row, 2, cat_item)
+        it_work = QTableWidgetItem(" / ".join(works))
+        it_work.setToolTip("这个标签挂在哪个作品下（图谱里是 作品 → 人物 的从属连线）")
+        it_work.setFlags(it_work.flags() & ~Qt.ItemIsEditable)
+        self.table.setItem(row, 3, it_work)
+        it_cnt = QTableWidgetItem(str(t["count"]))
+        it_cnt.setFlags(it_cnt.flags() & ~Qt.ItemIsEditable)
+        self.table.setItem(row, 4, it_cnt)
+        chk = QTableWidgetItem()
+        chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        chk.setCheckState(Qt.Checked if t["auto"] else Qt.Unchecked)
+        self.table.setItem(row, 5, chk)
+        self.table.setItem(row, 6, QTableWidgetItem(t["prompt"] or ""))
+        self.table.setItem(row, 7, QTableWidgetItem(t["requires"] or ""))
+        if group_key:
+            self._group_rows.setdefault(group_key, []).append(row)
+        return row + 1
 
     def _row_tag_id(self, row: int) -> int | None:
         item = self.table.item(row, 0)
@@ -469,7 +564,7 @@ class TagManagerDialog(QDialog):
         tid = self._row_tag_id(item.row())
         if not tid:
             return
-        if item.column() == 4:
+        if item.column() == 5:
             self._set(tid, auto=1 if item.checkState() == Qt.Checked else 0)
         elif item.column() == 1:                     # 中文名：改完顺手刷新第一列的显示
             self._set(tid, zh=item.text().strip())
@@ -480,8 +575,8 @@ class TagManagerDialog(QDialog):
                 self.table.item(item.row(), 0).setText(
                     tag_i18n.display(str(row["name"]), item.text().strip()))
                 self._loading = False
-        elif item.column() in (5, 6):
-            field = {5: "prompt", 6: "requires"}[item.column()]
+        elif item.column() in (6, 7):
+            field = {6: "prompt", 7: "requires"}[item.column()]
             self._set(tid, **{field: item.text()})
 
     def _set(self, tag_id: int, **kw) -> None:

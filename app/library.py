@@ -2021,7 +2021,8 @@ class Library:
         for t in self.store.list_tags():
             tid, cat = int(t["id"]), t["category"]
             for e in self.store.query(
-                    "SELECT id,parent_id FROM taxonomy_edges WHERE child_kind='tag' AND child_id=?", (tid,)):
+                    "SELECT id,parent_id FROM taxonomy_edges WHERE child_kind='tag' AND child_id=? "
+                    "AND relation<>'parallel'", (tid,)):
                 k = node_key.get(int(e["parent_id"]))
                 if k and k != cat:
                     self.store.unlink_edge(int(e["id"]))

@@ -36,15 +36,50 @@ EDGE_COLOR = QColor("#5a6270")
 NODE_W = 168.0
 NODE_H = 38.0
 
+# 按层级渐变的配色（层级越深颜色越"暖"），分类节点另有自己的颜色
+LEVEL_COLORS = [
+    ("#24384f", "#4a7fc1"),      # 1 顶级分类
+    ("#1f3a44", "#3fc1c9"),      # 2 直接子项
+    ("#233f36", "#5fd07a"),      # 3
+    ("#3f3b22", "#d8c05a"),      # 4
+    ("#452f22", "#e08a4a"),      # 5
+    ("#3f2438", "#c46bd0"),      # 6+
+]
+
+# 热度色阶（按图片数，对数刻度）：0 → 1 → 5 → 20 → 100 → 400 → 1000+
+HEAT_STOPS = [(0, "#3a3f47"), (1, "#2f6fb0"), (5, "#3fa8c9"), (20, "#5fd07a"),
+              (100, "#d8c05a"), (400, "#e08a4a"), (1000, "#d05050")]
+
+
+def heat_color(count: int) -> QColor:
+    """图片数 → 热度颜色（对数插值，0/小值深灰蓝，越多越红）。"""
+    import math
+    c = max(0, int(count or 0))
+    pts = [(math.log10(max(1, k)) if k else 0.0, v) for k, v in HEAT_STOPS]
+    x = math.log10(c) if c > 0 else 0.0
+    if x <= pts[0][0]:
+        return QColor(pts[0][1])
+    for (x0, c0), (x1, c1) in zip(pts, pts[1:]):
+        if x <= x1:
+            t = (x - x0) / max(1e-6, x1 - x0)
+            a, b = QColor(c0), QColor(c1)
+            return QColor(int(a.red() + (b.red() - a.red()) * t),
+                          int(a.green() + (b.green() - a.green()) * t),
+                          int(a.blue() + (b.blue() - a.blue()) * t))
+    return QColor(pts[-1][1])
+
 
 class NodeItem(QGraphicsRectItem):
-    def __init__(self, kind: str, nid: int, name: str, count: int = 0, on_move=None):
-        super().__init__(0, 0, NODE_W, NODE_H)
+    def __init__(self, kind: str, nid: int, name: str, count: int = 0, on_move=None,
+                 w: float = NODE_W, h: float = NODE_H, level: int = 2):
+        super().__init__(0, 0, w, h)
         self.kind = kind            # 'node' | 'tag'
         self.nid = nid
         self.name = name
         self.count = count
         self.on_move = on_move
+        self.w, self.h = float(w), float(h)
+        self.level = max(1, int(level))
         self.edges: list[EdgeItem] = []
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable |
                       QGraphicsItem.ItemSendsGeometryChanges)
@@ -52,7 +87,7 @@ class NodeItem(QGraphicsRectItem):
         self.setAcceptHoverEvents(True)
 
     def center(self) -> QPointF:
-        return self.scenePos() + QPointF(NODE_W / 2, NODE_H / 2)
+        return self.scenePos() + QPointF(self.w / 2, self.h / 2)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -63,29 +98,43 @@ class NodeItem(QGraphicsRectItem):
         return super().itemChange(change, value)
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-2, -2, NODE_W + 4, NODE_H + 4)
+        return QRectF(-2, -2, self.w + 4, self.h + 4)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(0, 0, NODE_W, NODE_H)
-        path = QPainterPath()
-        path.addRoundedRect(r, 7, 7)
+        d = min(self.w, self.h)
+        r = QRectF(0, 0, d, d)
+        fill, border = LEVEL_COLORS[min(self.level, len(LEVEL_COLORS)) - 1]
         if self.kind == "node":
-            painter.setBrush(QBrush(GROUP_FILL))
-            painter.setPen(QPen(SEL_BORDER if self.isSelected() else GROUP_BORDER, 2))
+            painter.setBrush(QBrush(GROUP_FILL))            # 分类：大圆、独立配色
+            painter.setPen(QPen(SEL_BORDER if self.isSelected() else GROUP_BORDER, 3.0))
         else:
-            used = self.count > 0
-            painter.setBrush(QBrush(TAG_FILL_USED if used else TAG_FILL))
-            painter.setPen(QPen(SEL_BORDER if self.isSelected() else (TAG_BORDER_USED if used else TAG_BORDER), 2))
-        painter.drawPath(path)
+            if getattr(self, "heat_mode", False):           # 热度视图：颜色 = 图片数
+                hc = heat_color(self.count)
+                painter.setBrush(QBrush(hc))
+                pen = QPen(SEL_BORDER if self.isSelected() else hc.darker(150), 2.0)
+                pen.setStyle(Qt.SolidLine)
+                painter.setPen(pen)
+            else:
+                painter.setBrush(QBrush(QColor(fill)))
+                pen = QPen(SEL_BORDER if self.isSelected() else QColor(border), 2.0)
+                if self.count == 0:
+                    pen.setStyle(Qt.DotLine)                # 没图的标签虚线，一眼区分
+                painter.setPen(pen)
+        painter.drawEllipse(r)
         f = QFont(painter.font())
-        f.setPointSizeF(9.0)
+        f.setPointSizeF(9.5 if self.kind == "node" else 8.0)
         f.setBold(self.kind == "node")
         painter.setFont(f)
-        painter.setPen(QColor("#e8eaf0") if self.kind == "node" or self.count else QColor("#b9bcc5"))
-        text = self.name + (f"  ({self.count})" if self.kind == "tag" and self.count else "")
-        painter.drawText(r.adjusted(8, 0, -8, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                         painter.fontMetrics().elidedText(text, Qt.ElideRight, int(NODE_W - 14)))
+        # 圆里显示数量（或"分类"），名字写在圆的右边 —— 圆太小塞不下一整串字
+        inner = str(self.count) if (self.kind == "tag" and self.count) else ("类" if self.kind == "node" else "")
+        if inner:
+            painter.setPen(QColor("#eef2f8") if (self.kind == "node" or self.count) else QColor("#b9bcc5"))
+            painter.drawText(r, Qt.AlignCenter, painter.fontMetrics().elidedText(inner, Qt.ElideRight, int(d - 10)))
+        painter.setPen(QColor("#dfe4ec") if self.kind == "node" or self.count else QColor("#9aa1ad"))
+        label = self.name
+        painter.drawText(QRectF(d + 7, 0, 210, d), Qt.AlignVCenter | Qt.AlignLeft,
+                         painter.fontMetrics().elidedText(label, Qt.ElideRight, 200))
 
 
 class EdgeItem(QGraphicsPathItem):
@@ -97,8 +146,18 @@ class EdgeItem(QGraphicsPathItem):
         self.relation = relation
         self.setZValue(1)
         # 从属边（tag→tag）用青色，和"分类边"区分开
-        self.edge_color = QColor("#3fc1c9") if relation == "sub_of" else EDGE_COLOR
-        self.setPen(QPen(self.edge_color, 2.0 if relation == "sub_of" else 1.6))
+        # 平行关联（同角色的异格/换装）用紫色虚线，一眼区分
+        if relation == "sub_of":
+            self.edge_color = QColor("#3fc1c9")
+            self.setPen(QPen(self.edge_color, 2.0))
+        elif relation == "parallel":
+            self.edge_color = QColor("#b57cff")
+            pen = QPen(self.edge_color, 1.8)
+            pen.setStyle(Qt.DashLine)
+            self.setPen(pen)
+        else:
+            self.edge_color = EDGE_COLOR
+            self.setPen(QPen(self.edge_color, 1.6))
         src.edges.append(self)
         dst.edges.append(self)
         self.update_path()
@@ -190,12 +249,84 @@ class GraphCanvas(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
         self.setDragMode(QGraphicsView.RubberBandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)      # 缩放时鼠标指向哪就缩哪
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._zoom = 1.0
+        self._panning = False
+        self._pan_start = None
         self.setBackgroundBrush(QBrush(QColor("#16171b")))
         self.items: dict[tuple[str, int], NodeItem] = {}
         self.edges: list[EdgeItem] = []
         self.connect_mode = False
         self.connect_from: NodeItem | None = None
         self._pending_save = False
+
+    # ---------- 缩放 / 平移 ----------
+    def wheelEvent(self, event) -> None:
+        """滚轮缩放（0.1x ~ 5x），以鼠标位置为锚点。"""
+        if event.angleDelta().y() == 0:
+            return
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        new_zoom = self._zoom * factor
+        if new_zoom < 0.1 or new_zoom > 5.0:
+            return
+        self._zoom = new_zoom
+        self.scale(factor, factor)
+        event.accept()
+
+    def fit_to_view(self) -> None:
+        """适应窗口：把内容缩放到整屏可见。"""
+        rect = self.scene_.itemsBoundingRect()
+        if rect.isEmpty():
+            return
+        self.resetTransform()
+        self.fitInView(rect.adjusted(-40, -40, 40, 40), Qt.KeepAspectRatio)
+        self._zoom = float(self.transform().m11())
+
+    def reset_zoom(self) -> None:
+        self.resetTransform()
+        self._zoom = 1.0
+
+    def set_heat_mode(self, on: bool) -> None:
+        """切换热度视图：节点颜色改成"图片数"的热度色，并在左下角画图例。"""
+        self.heat_mode = bool(on)
+        for it in self.items.values():
+            it.heat_mode = bool(on)
+            it.update()
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not getattr(self, "heat_mode", False):
+            return
+        from PySide6.QtGui import QPainter
+        from PySide6.QtCore import QRectF
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h, x, y = 232, 96, 16, self.viewport().height() - 112
+        p.setBrush(QBrush(QColor(20, 22, 28, 225)))
+        p.setPen(QPen(QColor("#3a3e47"), 1))
+        p.drawRoundedRect(QRectF(x, y, w, h), 8, 8)
+        p.setPen(QColor("#c9d3e0"))
+        f = QFont(p.font())
+        f.setPointSizeF(8.5)
+        p.setFont(f)
+        p.drawText(int(x) + 12, int(y) + 22, "热度视图：按图片数")
+        bar = QRectF(x + 12, y + 34, w - 24, 14)
+        import math
+        steps = 60
+        for i in range(steps):                      # 渐变条
+            cnt = int(round(10 ** (3.0 * i / steps))) if i else 0
+            p.setPen(heat_color(cnt))
+            p.drawLine(int(bar.left() + bar.width() * i / steps), int(bar.top()),
+                       int(bar.left() + bar.width() * i / steps), int(bar.bottom()))
+        p.setPen(QColor("#8f96a3"))
+        for frac, label in ((0.0, "0"), (0.33, "10"), (0.66, "100"), (1.0, "1000+")):
+            p.drawText(int(bar.left() + bar.width() * frac) - 8, int(y) + 66, label)
+        p.drawText(int(x) + 12, int(y) + 84, "越红 = 图越多；灰 = 还没有图")
+        p.end()
 
     # ---------- 构建 ----------
     def clear(self) -> None:
@@ -204,8 +335,9 @@ class GraphCanvas(QGraphicsView):
         self.edges.clear()
         self.connect_from = None
 
-    def add_node(self, kind: str, nid: int, name: str, count: int, x: float, y: float) -> NodeItem:
-        item = NodeItem(kind, nid, name, count, on_move=self._on_move)
+    def add_node(self, kind: str, nid: int, name: str, count: int, x: float, y: float,
+                 w: float = NODE_W, h: float = NODE_H, level: int = 2) -> NodeItem:
+        item = NodeItem(kind, nid, name, count, on_move=self._on_move, w=w, h=h, level=level)
         item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         item.setPos(x, y)
         self.scene_.addItem(item)
@@ -232,8 +364,171 @@ class GraphCanvas(QGraphicsView):
             store.set_pos(kind, nid, item.pos().x(), item.pos().y())
         self._pending_save = False
 
-    def auto_layout(self) -> None:
-        """按层级自动排版（多父节点取最深的一层）。"""
+    def radial_layout(self) -> None:
+        """**多中心放射布局**：每个分类/作品/父标签都是一个中心，孩子绕着它排开。
+
+        - 中心之间按子树规模分配角度，均匀铺在几层同心圆上（所以看起来是"多个中心各自向外放射"）；
+        - 同时挂在多个中心下的标签（交织节点）放到各中心的加权中点，再用 networkx 的弹簧迭代
+          把它们互相靠近 —— 就是图谱里那些"跨区域"的节点会被拉到中间地带；
+        - 纯叶子标签（只有一个父级）沿着父级的小圆弧排开，不会挤在一条直线上。
+        """
+        import math
+        keys = list(self.items.keys())
+        if not keys:
+            return
+        parents: dict[tuple[str, int], list[tuple[str, int]]] = {}
+        children: dict[tuple[str, int], list[tuple[str, int]]] = {}
+        for e in self.edges:
+            if e.relation == "parallel":
+                continue                      # 平行关联不参与层级布局
+            sk, dk = (e.src.kind, e.src.nid), (e.dst.kind, e.dst.nid)
+            parents.setdefault(dk, []).append(sk)
+            children.setdefault(sk, []).append(dk)
+
+        # 层级：从"没有父级的中心"往下 BFS（多父取最浅的那层 = 最高层级）
+        level: dict[tuple[str, int], int] = {}
+        roots = [k for k in keys if not parents.get(k)]
+        queue = [(k, 1) for k in roots]
+        while queue:
+            k, lv = queue.pop(0)
+            if k in level and level[k] <= lv:
+                continue
+            level[k] = lv
+            for ch in children.get(k, []):
+                queue.append((ch, lv + 1))
+        for k in keys:
+            level.setdefault(k, 2)
+
+        pos: dict[tuple[str, int], list[float]] = {}
+        RING = 900.0                      # 第一层中心所在的圆
+        # 1) 顶层中心（分类节点）均分整圈
+        top = [k for k in roots] or [k for k in keys if level.get(k) == 1] or keys[:1]
+        top.sort(key=lambda k: (self.items[k].name or ""))
+        def subtree_size(k, depth=0) -> int:
+            if depth > 6:
+                return 1
+            return 1 + sum(subtree_size(c, depth + 1) for c in children.get(k, []))
+        sizes = [max(1, subtree_size(k)) for k in top]
+        total = sum(sizes)
+        angle = 0.0
+        for k, size in zip(top, sizes):
+            span = 2 * math.pi * size / total
+            mid = angle + span / 2
+            pos[k] = [RING * math.cos(mid), RING * math.sin(mid)]
+            self._place_children(k, mid, span, RING, pos, children, level)
+            angle += span
+        # 2) 交织节点（多父）：放到各父节点的加权中点
+        moved = 0
+        for k in keys:
+            ps = [p for p in parents.get(k, []) if p in pos]
+            if len(ps) >= 2:
+                xs = sum(pos[p][0] for p in ps) / len(ps)
+                ys = sum(pos[p][1] for p in ps) / len(ps)
+                pos[k] = [xs * 0.85, ys * 0.85]      # 往中心收一点，落在两中心之间
+                moved += 1
+        # 3) 还没落位的（父级没排到的）散在最外圈
+        rest = [k for k in keys if k not in pos]
+        for i, k in enumerate(rest):
+            a = 2 * math.pi * i / max(1, len(rest))
+            pos[k] = [(RING + 900) * math.cos(a), (RING + 900) * math.sin(a)]
+        # 4) networkx 弹簧迭代：把有连线的节点再拉近一点（只在中心层跑，快）
+        try:
+            import networkx as nx
+            core = [k for k in keys if children.get(k) or len(parents.get(k, [])) >= 2][:400]
+            if len(core) >= 2:
+                G = nx.Graph()
+                G.add_nodes_from(core)
+                core_set = set(core)
+                for e in self.edges:
+                    a, b = (e.src.kind, e.src.nid), (e.dst.kind, e.dst.nid)
+                    if a in core_set and b in core_set:
+                        G.add_edge(a, b)
+                seed = {k: (pos[k][0] / RING, pos[k][1] / RING) for k in core}
+                refined = nx.spring_layout(G, pos=seed, iterations=20, k=1.4 / math.sqrt(len(core)),
+                                           seed=7)
+                for k, (x, y) in refined.items():
+                    pos[k] = [x * RING, y * RING]
+        except Exception:
+            pass
+        # 5) 落位（节点中心 → 左上角坐标）；增删过 tag/分类时带过渡动画
+        targets = {k: (pos.get(k, [0.0, 0.0])[0] - it.w / 2, pos.get(k, [0.0, 0.0])[1] - it.h / 2)
+                   for k, it in self.items.items()}
+        self.apply_positions(targets, animate=True)
+        self._pending_save = True
+        self.scene_.setSceneRect(self.scene_.itemsBoundingRect().adjusted(-160, -160, 160, 160))
+
+    def apply_positions(self, targets: dict, animate: bool = True) -> None:
+        """把节点移到目标坐标；视口内、位移较大的那批走缓动动画，其余直接到位。"""
+        moved = {k: (it.pos().x(), it.pos().y(), tx, ty)
+                 for k, (tx, ty) in targets.items()
+                 if (it := self.items.get(k)) is not None
+                 and abs(it.pos().x() - tx) + abs(it.pos().y() - ty) > 3}
+        if not moved or not animate:
+            for k, (_x0, _y0, tx, ty) in moved.items():
+                self.items[k].setPos(tx, ty)
+            return
+        view = self.mapToScene(self.viewport().rect()).boundingRect().adjusted(-200, -200, 200, 200)
+        onscreen = [k for k in moved if self.items[k].sceneBoundingRect().intersects(view)]
+        instant = [k for k in moved if k not in set(onscreen)]
+        for k in instant:
+            _x0, _y0, tx, ty = moved[k]
+            self.items[k].setPos(tx, ty)
+        if not onscreen or len(onscreen) > 900:      # 太多就直接到位，别卡
+            for k in onscreen:
+                _x0, _y0, tx, ty = moved[k]
+                self.items[k].setPos(tx, ty)
+            return
+        from PySide6.QtCore import QEasingCurve, QVariantAnimation
+        old = getattr(self, "_move_anim", None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(340)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def step(t: float) -> None:
+            for k in onscreen:
+                x0, y0, tx, ty = moved[k]
+                self.items[k].setPos(x0 + (tx - x0) * t, y0 + (ty - y0) * t)
+        anim.valueChanged.connect(step)
+        self._move_anim = anim
+        anim.start()
+
+    def _place_children(self, parent_key, mid_angle: float, span: float, radius: float,
+                        pos: dict, children: dict, level: dict, depth: int = 0) -> None:
+        """把某个中心的孩子铺在它外面的扇形里：一层摆不下就往外再套一层（像扇子一样展开）。
+
+        这样既不会挤成一团，也不会为了摆开而把图撑到几万像素。
+        """
+        import math
+        kids = children.get(parent_key, [])
+        if not kids or depth > 4:
+            return
+        kids = sorted(kids, key=lambda k: (-len(children.get(k, [])), str(self.items[k].name or "")))
+        widest = max(self.items[k].w for k in kids) + 14
+        tallest = max(self.items[k].h for k in kids) + 16
+        px, py = pos[parent_key]
+        base_r = max(radius * (0.55 if depth == 0 else 0.5), 380.0)
+        layer, placed = 0, 0
+        while placed < len(kids) and layer < 60:
+            r = min(9000.0, base_r + layer * tallest)
+            cap = max(1, int(span * r / widest))          # 这一圈放得下几个
+            take = kids[placed:placed + cap]
+            m = len(take)
+            for i, k in enumerate(take):
+                a = mid_angle if m == 1 else mid_angle - span / 2 + span * (i + 0.5) / m
+                pos[k] = [px + r * math.cos(a), py + r * math.sin(a)]
+                self._place_children(k, a, max(0.18, span / max(2, m)), r, pos, children, level, depth + 1)
+            placed += m
+            layer += 1
+
+    def _legacy_layout(self) -> None:
+        """旧版直线层级排版（留着兜底）。"""
         depths: dict[tuple[str, int], int] = {}
         parents: dict[tuple[str, int], list[tuple[str, int]]] = {}
         for e in self.edges:
@@ -282,9 +577,34 @@ class GraphCanvas(QGraphicsView):
                         it.setSelected(False)
                     self.connect_from = None
                 return
+        # 中键、或空白处左键 = 拖动平移（Ctrl+左键仍是框选）
+        if event.button() == Qt.MiddleButton or (
+                event.button() == Qt.LeftButton and not (event.modifiers() & Qt.ControlModifier)
+                and self.itemAt(event.pos()) is None):
+            self._panning = True
+            self._pan_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event) -> None:
+        if self._panning and self._pan_start is not None:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:
+        if self._panning:
+            self._panning = False
+            self._pan_start = None
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
         item = self.itemAt(event.pos())
         while item is not None and not isinstance(item, (NodeItem, EdgeItem)):
@@ -393,9 +713,19 @@ class TaxonomyDialog(QDialog):
         self.b_connect.setCheckable(True)
         self.b_connect.toggled.connect(self.toggle_connect)
         bar.addWidget(self.b_connect)
-        b_layout = QPushButton("自动排列")
-        b_layout.clicked.connect(self.do_layout)
-        bar.addWidget(b_layout)
+        b_fit = QPushButton("适应窗口")
+        b_fit.setToolTip("把整张图缩放到看得见（滚轮缩放、空白处拖拽平移、Ctrl+拖拽框选）")
+        b_fit.clicked.connect(lambda: self.canvas.fit_to_view())
+        bar.addWidget(b_fit)
+        b_zoom1 = QPushButton("100%")
+        b_zoom1.setToolTip("缩放回到 1:1")
+        b_zoom1.clicked.connect(lambda: self.canvas.reset_zoom())
+        bar.addWidget(b_zoom1)
+        self.b_heat = QPushButton("热度视图")
+        self.b_heat.setCheckable(True)
+        self.b_heat.setToolTip("切换成热度视图：节点颜色 = 该标签下的图片数量（带图例）；\n再点一下回到按层级配色")
+        self.b_heat.toggled.connect(self.on_heat_toggled)
+        bar.addWidget(self.b_heat)
         b_link = QPushButton("按分类自动连线")
         b_link.setToolTip("把库里所有标签按它们的「类型」连到对应分类节点上（已连过的不会重复），"
                           "这样图谱从一开始就是连通的")
@@ -447,7 +777,6 @@ class TaxonomyDialog(QDialog):
 
         self.canvas = GraphCanvas()
         self.canvas.nodeClicked.connect(self.on_canvas_clicked)
-        self.canvas.moved.connect(lambda: self.canvas.save_positions(self.store))
         self.canvas.linkRequested.connect(self.on_connect_requested)
         self.canvas.setContextMenuPolicy(Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self.canvas_menu)
@@ -665,6 +994,13 @@ class TaxonomyDialog(QDialog):
         self.detail.setText("已删除标签及其连线")
 
     # ================= 构建视图 =================
+    def on_heat_toggled(self, on: bool) -> None:
+        """切换热度视图（工具栏按钮）。"""
+        if hasattr(self, "canvas"):
+            self.canvas.set_heat_mode(bool(on))
+            self.detail.setText("热度视图：节点颜色 = 该标签下的图片数量（左下角有图例）" if on
+                                else "已切回按层级配色")
+
     def _reset_auto_collapse_once(self) -> None:
         """升级后一次性清掉"上一版自动折叠"留下的标记（用户之后手动折叠的仍会被记住）。
 
@@ -777,7 +1113,34 @@ class TaxonomyDialog(QDialog):
                 hidden.add(key)
                 if ch["kind"] == "node":
                     stack.append(int(ch["cid"]))
-        # 位置：优先用保存过的坐标，否则先按“分类一列、标签一列”排布（之后可自动排列或手拖）
+        # 层级（用于配色）：从分类节点往下 BFS，多归属取最浅的一层 = 最高层级
+        level_of: dict[tuple[str, int], int] = {}
+        tag_parent_names = self.store.tag_parent_map()
+        for nid in nodes:
+            if ("node", int(nid)) not in hidden and int(nid) not in root_ids:
+                level_of[("node", int(nid))] = 1
+        changed = True
+        while changed:                     # 迭代传播：父层级 +1
+            changed = False
+            for e in self.store.edges():
+                pk = (str(e["parent_kind"]), int(e["parent_id"]))
+                ck = (str(e["child_kind"]), int(e["child_id"]))
+                if pk in level_of:
+                    lv = level_of[pk] + 1
+                    if ck not in level_of or lv < level_of[ck]:
+                        level_of[ck] = lv
+                        changed = True
+#        for _k in list(level_of): ...
+        # 节点尺寸：分类最大、作品次之、普通标签更小（用框大小区分"分类"和"节点"）
+        def size_of(key) -> tuple[float, float]:
+            if key[0] == "node":
+                return (118.0, 118.0)          # 分类：大圆
+            tid = int(key[1])
+            if self.store.tag_children(tid):
+                return (92.0, 92.0)            # 作品/父标签：中圆
+            return (68.0, 68.0)                # 普通标签：小圆
+
+        # 位置：优先用保存过的坐标；没存过的先给个临时位，稍后统一跑放射布局
         y = 40
         # 根节点（"全部标签"）不画：它的子分类直接悬浮在最上层
         root_ids = {int(r["id"]) for r in self.store.node_roots()}
@@ -786,18 +1149,11 @@ class TaxonomyDialog(QDialog):
                 continue
             x, yy = saved.get(("node", nid), (40.0, y))
             y += NODE_H + 18
-            self.canvas.add_node("node", nid, n["name"], 0, x, yy)
-        y = 40
-        # 标签排布：纵向每列放 per_col 个，放满换下一列 —— 4000 个标签排成网格，
-        # 而不是拉成一列两万像素高（否则滚动条滑一下就是几百屏）
-        drawable = [tid for tid in draw_order
-                    if (tid in linked_tags or self.show_all.isChecked())
-                    and ("tag", tid) not in hidden]
-        import math
-        per_col = max(30, int(math.ceil(math.sqrt(max(1, len(drawable)) * 1.5))))
-        col_w, row_h = 190.0, NODE_H + 14
+            w, h = size_of(("node", int(nid)))
+            self.canvas.add_node("node", nid, n["name"], 0, x, yy, w=w, h=h,
+                                 level=level_of.get(("node", int(nid)), 1))
+        # 标签位置稍后统一由「多中心放射布局」算，这里只登记节点
         shown_tags = 0
-        col = row = 0
         for tid in draw_order:
             t = tag_rows.get(tid)
             if t is None:
@@ -811,16 +1167,12 @@ class TaxonomyDialog(QDialog):
             if shown_tags >= VISIBLE_TAG_CAP and not force:
                 hidden_tag_count += 1
                 continue
-            default = (270.0 + col * col_w, 40.0 + row * row_h)
-            x, yy = saved.get(("tag", tid), default)
-            row += 1
-            if row >= per_col:
-                row = 0
-                col += 1
+            x, yy = saved.get(("tag", tid), (0.0, 0.0))
             shown_tags += 1
             from .. import tag_i18n
+            w, h = size_of(("tag", tid))
             self.canvas.add_node("tag", tid, tag_i18n.label(t["name"], t["zh"] or ""),
-                                 int(t["count"]), x, yy)
+                                 int(t["count"]), x, yy, w=w, h=h, level=level_of.get(("tag", tid), 2))
         for e in self.store.edges():
             if (e["child_kind"], int(e["child_id"])) not in self.canvas.items:
                 continue
@@ -828,6 +1180,9 @@ class TaxonomyDialog(QDialog):
                 continue                       # 从根节点出来的连线也不画
             self.canvas.add_edge(e["parent_kind"], int(e["parent_id"]), e["child_kind"], int(e["child_id"]),
                                  int(e["id"]), e["relation"])
+        # 多中心放射布局：分类/作品各自是一个中心，孩子绕着它排；交织节点落在中心之间。
+        # 用户拖过的坐标（layout 表里有记录的）算数，盖在自动布局上面。
+        self.canvas.radial_layout()
         self.canvas.scene_.setSceneRect(self.canvas.scene_.itemsBoundingRect().adjusted(-80, -80, 120, 120))
         self.rebuild_tree()
         self.refresh_detail()
@@ -870,37 +1225,70 @@ class TaxonomyDialog(QDialog):
                 sub = QTreeWidgetItem([label_txt + (f"  ({ch['count']})" if ch["count"] else "")])
                 sub.setData(0, Qt.UserRole, ("tag", int(ch["cid"])))
                 it.addChild(sub)
-                add_tag_children(int(ch["cid"]), sub, 0)      # 人物挂到作品下面（tag→tag 从属）
+                add_tag_children(int(ch["cid"]), sub, 0, {int(ch["cid"])})   # 人物挂到作品下面（tag→tag 从属）
             for cid in child_nodes.get(node_id, []):
                 add_node(cid, it, depth + 1)
 
-        def add_tag_children(tag_id: int, parent_item: QTreeWidgetItem, depth: int) -> None:
-            """把 tag→tag 从属关系（作品 → 人物）也铺进树里，形成"文件夹里有子项"的层级。"""
+        def add_tag_children(tag_id: int, parent_item: QTreeWidgetItem, depth: int,
+                             path: set[int]) -> None:
+            """把 tag→tag 从属关系（作品 → 人物、裙子 → 白裙子）铺进树里。
+
+            一个标签可能同时属于多个父节点（既在「人物/角色」分类下，又在某部作品下），
+            这种情况**每个父节点下都重复显示一份**；只有"自己出现在自己的子孙里"才跳过（防环）。
+            所有副本共用同一个标签 id，所以改名/改类型/删除都会一起同步。
+            """
             from .. import tag_i18n
             if depth > 3:
                 return
             for ch in self.store.tag_children(int(tag_id)):
                 cid = int(ch["id"])
-                if cid in visited_tags:
+                if cid in path:                      # 只防环，不阻止"多父重复显示"
                     continue
-                visited_tags.add(cid)
                 name = str(ch["name"])
                 row = self.store.one("SELECT zh, count, category FROM tags WHERE id=?", (cid,))
                 label_txt = tag_i18n.display(name, (row["zh"] if row else "") or "")
                 sub = QTreeWidgetItem([label_txt + (f"  ({row['count']})" if row and row["count"] else "")])
                 sub.setData(0, Qt.UserRole, ("tag", cid))
-                if row and row["category"] == "series":
+                # 作品标签：它下面挂着人物（tag→tag 从属），加粗显示便于区分
+                if self.store.tag_children(cid):
                     f = sub.font(0)
                     f.setBold(True)
                     sub.setFont(0, f)
                 parent_item.addChild(sub)
-                add_tag_children(cid, sub, depth + 1)
+                add_tag_children(cid, sub, depth + 1, path | {cid})
 
-        visited_tags: set[int] = set()
         for root in self.store.node_roots():
-            add_node(int(root["id"]), None)
-        self.tree.expandToDepth(2)
+            # 根节点（"全部标签"）不显示：顶层分类直接排在树的最上面，少一层缩进
+            for cid in child_nodes.get(int(root["id"]), []):
+                add_node(cid, None)
+        self.tree.setRootIsDecorated(True)      # 有子项的都带小三角，可折叠
+        self.tree.setIndentation(16)
+        self.tree.expandToDepth(1)              # 默认展开到"分类 → 标签"，子标签（变体）折叠着
+        self.expand_to_current()
 
+    def expand_to_current(self) -> None:
+        """把当前选中项在树里的路径展开（搜索定位后直接看到它）。"""
+        if not self.current:
+            return
+        kind, nid = self.current
+        want = (kind, int(nid))
+
+        def walk(item: QTreeWidgetItem) -> bool:
+            if tuple(item.data(0, Qt.UserRole) or ()) == want:
+                p = item.parent()
+                while p is not None:
+                    p.setExpanded(True)
+                    p = p.parent()
+                self.tree.setCurrentItem(item)
+                return True
+            for i in range(item.childCount()):
+                if walk(item.child(i)):
+                    return True
+            return False
+
+        for i in range(self.tree.topLevelItemCount()):
+            if walk(self.tree.topLevelItem(i)):
+                return
     # ================= 选择 / 详情 =================
     def on_tree_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         data = item.data(0, Qt.UserRole)
@@ -1167,17 +1555,11 @@ class TaxonomyDialog(QDialog):
             QMessageBox.information(self, "连线模式", "依次点击「父节点」和「子节点」即可建立连线；\n"
                                                       "标签也可以被连线（例如：某个标签属于某个体位分类）。")
 
-    def do_layout(self) -> None:
-        self.canvas.auto_layout()
-        self.canvas.save_positions(self.store)
-        self.canvas.scene_.setSceneRect(self.canvas.scene_.itemsBoundingRect().adjusted(-80, -80, 120, 120))
-
     def auto_link_by_category(self) -> None:
         """按标签的「类型」把标签连到同名分类节点上（幂等，可反复点）。"""
         n = self.library.sync_taxonomy()
         self.changed.emit()
         self.rebuild()
-        self.do_layout()
         self.detail.setText(f"已按分类自动连线：补建分类节点 {n} 个；所有标签都已挂到对应分类下")
 
     def set_all_collapsed(self, flag: bool) -> None:
@@ -1240,8 +1622,15 @@ class TaxonomyDialog(QDialog):
         self.current = ("tag", tid)
         self.rebuild()
         self.jump_to(("tag", tid))
+        # 平行关联（同一角色的异格/换装）：先显示命中的这个，再把关联度低的也列出来
+        parallels = self.store.tag_parallels(tid)
+        extra = ""
+        if parallels:
+            items = [f"{tag_i18n.display(str(p['name']), p['zh'] or '')}"
+                     f"（关联度 {float(p['weight'] or 1):.1f}）" for p in parallels]
+            extra = "<br><span style='color:#b57cff'>平行关联：</span>" + "、".join(items)
         self.detail.setText(f"已定位：{tag_i18n.display(hit['name'], hit['zh'] or '')}"
-                            + self._path_text(tid))
+                            + self._path_text(tid) + extra)
 
     def expand_ancestors(self, node_id: int) -> None:
         """把这个节点本身和它的所有祖先都展开（带 visited 防环）。"""
@@ -1380,7 +1769,6 @@ class TaxonomyDialog(QDialog):
             self.delete_selected()
 
     def closeEvent(self, event) -> None:
-        self.canvas.save_positions(self.store)
         event.accept()
 
 

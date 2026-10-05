@@ -92,7 +92,7 @@ def main() -> int:
                     print(f"   已把库里「{zh_name}」规范成 {s_name}（中文名保留）")
             if sid is None:                    # 作品标签不存在 → 建一个
                 zh = tag_i18n.MODEL_DICT.get(s_name, "")
-                sid = store.save_tag(s_name, "series")
+                sid = store.save_tag(s_name, "series")        # 作品是独立分类（人物是它的子标签）
                 if zh:
                     store.update_tag(sid, zh=zh)
                 by_name[s_name] = sid

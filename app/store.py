@@ -231,6 +231,7 @@ class Store:
             "tags": [("requires", "TEXT"), ("zh", "TEXT")],
             "file_tags": [("status", "TEXT NOT NULL DEFAULT 'confirmed'")],
             "roots": [("is_library", "INTEGER NOT NULL DEFAULT 0"), ("drive", "TEXT")],
+            "taxonomy_edges": [("weight", "REAL DEFAULT 1.0")],
         }
         for table, cols in wanted.items():
             have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
@@ -649,6 +650,30 @@ class Store:
         rows = self.query(sql, args)
         return [r for r in rows if (not only_used or r["count"] > 0)]
 
+    def search_tags(self, search: str = "", category: str | None = None) -> list[sqlite3.Row]:
+        """标签搜索（中文/英文都能搜）：除了库里的 name/zh，还会拿内置词典的译名匹配。
+
+        库里很多标签没存 zh（中文名来自内置词典），只查 SQL 会漏掉，比如搜「斯卡蒂」
+        明明有 skadi_(arknights) 却搜不到。
+        """
+        q = (search or "").strip()
+        rows = self.list_tags(q, category=category)
+        if not q:
+            return rows
+        import re as _re
+        if not _re.search(r"[\u4e00-\u9fff]", q):
+            return rows
+        from . import tag_i18n
+        seen = {int(r["id"]) for r in rows}
+        extra = []
+        low = q.lower()
+        for t in self.list_tags(category=category):
+            if int(t["id"]) in seen:
+                continue
+            if low in tag_i18n.display(t["name"], t["zh"] or "").lower():
+                extra.append(t)
+        return rows + extra
+
     def save_tag(self, name: str, category: str = "other", prompt: str = "",
                  auto: int = 1, requires: str = "") -> int:
         """建标签（已存在则更新类型/提示词/前置条件）——所有「新建标签」界面共用的唯一入口。"""
@@ -753,20 +778,45 @@ class Store:
             "INSERT OR IGNORE INTO taxonomy_edges(parent_kind,parent_id,child_kind,child_id,relation,created_at) "
             "VALUES('tag',?, 'tag',?, 'sub_of', ?)", (int(parent_tag_id), int(child_tag_id), time.time()))
 
+    def link_tag_parallel(self, tag_a: int, tag_b: int, weight: float = 1.0) -> None:
+        """平行关联：同一个角色的不同形态（能天使 ↔ 新约能天使、斯卡蒂 ↔ 浊心斯卡蒂）。
+
+        无向关系，存一条边（小 id 当父）；weight 是关联度，搜索时大的优先显示。
+        """
+        a, b = sorted((int(tag_a), int(tag_b)))
+        if a == b:
+            return
+        self.execute(
+            "INSERT OR REPLACE INTO taxonomy_edges(parent_kind,parent_id,child_kind,child_id,relation,"
+            "created_at,weight) VALUES('tag',?, 'tag',?, 'parallel', ?, ?)",
+            (a, b, time.time(), float(weight)))
+
+    def tag_parallels(self, tag_id: int) -> list[sqlite3.Row]:
+        """某个标签的平行关联（两个方向都算），按关联度从高到低。"""
+        return self.query(
+            "SELECT t.id, t.name, t.zh, e.weight FROM taxonomy_edges e JOIN tags t ON t.id = "
+            "CASE WHEN e.parent_id=? THEN e.child_id ELSE e.parent_id END "
+            "WHERE e.parent_kind='tag' AND e.child_kind='tag' AND e.relation='parallel' "
+            "AND (e.parent_id=? OR e.child_id=?) ORDER BY e.weight DESC", (int(tag_id), int(tag_id), int(tag_id)))
+
     def unlink_tag_sub(self, parent_tag_id: int, child_tag_id: int) -> None:
         self.execute("DELETE FROM taxonomy_edges WHERE parent_kind='tag' AND parent_id=? AND child_kind='tag' "
                      "AND child_id=?", (int(parent_tag_id), int(child_tag_id)))
 
     def tag_children(self, parent_tag_id: int) -> list[sqlite3.Row]:
+        """**从属**子标签（不含平行关联）。"""
         return self.query(
             "SELECT t.id, t.name FROM taxonomy_edges e JOIN tags t ON t.id=e.child_id "
-            "WHERE e.parent_kind='tag' AND e.parent_id=? AND e.child_kind='tag' ORDER BY t.name",
+            "WHERE e.parent_kind='tag' AND e.parent_id=? AND e.child_kind='tag' "
+            "AND e.relation='sub_of' ORDER BY t.name",
             (int(parent_tag_id),))
 
     def tag_parents(self, child_tag_id: int) -> list[sqlite3.Row]:
+        """**从属**父标签（不含平行关联）。"""
         return self.query(
             "SELECT t.id, t.name FROM taxonomy_edges e JOIN tags t ON t.id=e.parent_id "
-            "WHERE e.parent_kind='tag' AND e.child_id=? AND e.child_kind='tag' ORDER BY t.name",
+            "WHERE e.parent_kind='tag' AND e.child_id=? AND e.child_kind='tag' "
+            "AND e.relation='sub_of' ORDER BY t.name",
             (int(child_tag_id),))
 
     def tag_child_map(self) -> dict[str, set[str]]:
@@ -775,7 +825,7 @@ class Store:
         for r in self.query(
                 "SELECT p.name AS pname, c.name AS cname FROM taxonomy_edges e "
                 "JOIN tags p ON p.id=e.parent_id JOIN tags c ON c.id=e.child_id "
-                "WHERE e.parent_kind='tag' AND e.child_kind='tag'"):
+                "WHERE e.parent_kind='tag' AND e.child_kind='tag' AND e.relation='sub_of'"):
             out.setdefault(r["pname"], set()).add(r["cname"])
         return out
 
@@ -785,7 +835,7 @@ class Store:
         for r in self.query(
                 "SELECT p.name AS pname, c.name AS cname FROM taxonomy_edges e "
                 "JOIN tags p ON p.id=e.parent_id JOIN tags c ON c.id=e.child_id "
-                "WHERE e.parent_kind='tag' AND e.child_kind='tag'"):
+                "WHERE e.parent_kind='tag' AND e.child_kind='tag' AND e.relation='sub_of'"):
             out.setdefault(r["cname"], set()).add(r["pname"])
         return out
 
