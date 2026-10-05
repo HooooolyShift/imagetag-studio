@@ -265,6 +265,11 @@ class Store:
     def query(self, sql: str, args: Sequence[Any] = ()) -> list[sqlite3.Row]:
         return self.conn().execute(sql, args).fetchall()
 
+    def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> None:
+        c = self.conn()
+        c.executemany(sql, seq)
+        c.commit()
+
     def one(self, sql: str, args: Sequence[Any] = ()) -> sqlite3.Row | None:
         return self.conn().execute(sql, args).fetchone()
 
@@ -620,7 +625,9 @@ class Store:
             f"UPDATE files SET manual=(SELECT COUNT(*) FROM file_tags ft WHERE ft.file_id=files.id AND ft.source='manual')>0 "
             f"WHERE id IN ({ph})", list(file_ids))
 
-    def list_tags(self, search: str = "", only_used: bool = False) -> list[sqlite3.Row]:
+    def list_tags(self, search: str = "", only_used: bool = False,
+                  category: str | None = None) -> list[sqlite3.Row]:
+        """标签表。category 传类型 key 时只返回该类型下的标签（所有界面的分类过滤都走这里）。"""
         sql = ("SELECT t.*, (SELECT COUNT(*) FROM file_tags ft JOIN files f ON f.id=ft.file_id "
                " WHERE ft.tag_id=t.id AND f.missing=0) AS count FROM tags t")
         args: list[Any] = []
@@ -628,11 +635,32 @@ class Store:
         if search:
             where.append("t.name LIKE ?")
             args.append(f"%{search}%")
+        if category:
+            where.append("COALESCE(NULLIF(t.category,''),'other') = ?")
+            args.append(category)
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY t.category, count DESC, t.name"
         rows = self.query(sql, args)
         return [r for r in rows if (not only_used or r["count"] > 0)]
+
+    def save_tag(self, name: str, category: str = "other", prompt: str = "",
+                 auto: int = 1, requires: str = "") -> int:
+        """建标签（已存在则更新类型/提示词/前置条件）——所有「新建标签」界面共用的唯一入口。"""
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("标签名不能为空")
+        tid = self.ensure_tag(name, category, prompt or None, auto)
+        self.update_tag(tid, category=category, prompt=prompt or "", auto=auto, requires=requires or "")
+        return tid
+
+    def mark_reviewed(self, file_ids) -> int:
+        """把若干张图片标记成已审核（各界面审完共用）。"""
+        ids = [int(i) for i in (file_ids or [])]
+        if not ids:
+            return 0
+        self.executemany("UPDATE files SET reviewed=1 WHERE id=?", [(i,) for i in ids])
+        return len(ids)
 
     def update_tag(self, tag_id: int, **fields) -> None:
         allowed = ("name", "category", "prompt", "note", "enabled", "auto", "requires", "zh")

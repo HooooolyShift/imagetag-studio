@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGraphicsItem,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QGraphicsItem,
     QGraphicsPathItem, QGraphicsScene, QGraphicsRectItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -20,10 +20,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
-from ..config import CATEGORY_ORDER, TAG_CATEGORIES
 from .. import categories as cats
-from .common import label
-from .dialogs import TagEditDialog, category_combo
+from .common import label, ok_cancel
+from .dialogs import category_combo
 
 GROUP_FILL = QColor("#2b3d52")
 GROUP_BORDER = QColor("#4a7fc1")
@@ -272,10 +271,7 @@ class LinkTagsDialog(QDialog):
         info = QLabel("提示：一个标签可以同时挂在多个分类下，重复关联不会被拦截。")
         info.setWordWrap(True)
         v.addWidget(info)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        v.addWidget(bb)
+        ok_cancel(self, v)
         self.reload()
 
     def reload(self) -> None:
@@ -302,17 +298,16 @@ class NewTagForNodeDialog(QDialog):
         form = QFormLayout(self)
         self.name = QLineEdit(prefill)
         form.addRow("标签名", self.name)
-        from .common import attach_tag_completer
+        from .common import attach_tag_completer, bind_category_filter
         attach_tag_completer(self.name, store)
-        self.cat = category_combo(store)
+        self.cat = category_combo(store, "", include_all=True)
         form.addRow("类型", self.cat)
+        # 分类 ↔ 标签名联想联动：选「全部」列全部标签，选具体类型只看该类
+        bind_category_filter(self.cat, self.name, store)
         self.prompt = QLineEdit()
         self.prompt.setPlaceholderText("留空即可；填 hatsune_miku 这类英文可让 WD14 直接命中")
         form.addRow("提示词", self.prompt)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        form.addRow(bb)
+        ok_cancel(self, form)
 
     def values(self) -> dict:
         return {"name": self.name.text().strip(), "category": self.cat.ensure_current(self),
@@ -446,6 +441,19 @@ class TaxonomyDialog(QDialog):
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#8f96a3;")
         v.addWidget(tip)
+        # 分类过滤：默认「全部（不限分类）」= 全量；选具体类型则只列该类型下的标签
+        from .. import categories as _cats0
+        row_cat = QHBoxLayout()
+        row_cat.addWidget(QLabel("分类"))
+        self.tag_cat_filter = QComboBox()
+        self.tag_cat_filter.addItem("全部（不限分类）", "")
+        for c in _cats0.ordered(self.store):
+            self.tag_cat_filter.addItem(f"{c['label']} ({c['key']})"
+                                       + (f"  〔{c['count']}〕" if c["count"] else ""), c["key"])
+        self.tag_cat_filter.setToolTip("选一个分类 → 下面只列该分类下的标签；选「全部」→ 列全部标签")
+        self.tag_cat_filter.currentIndexChanged.connect(lambda _i: self.reload_tag_table())
+        row_cat.addWidget(self.tag_cat_filter, 1)
+        v.addLayout(row_cat)
         # 用可编辑下拉框当搜索框：不输入也能展开看到全部标签，且宽度足够不截断中文
         self.tag_search = QComboBox()
         self.tag_search.setEditable(True)
@@ -511,22 +519,21 @@ class TaxonomyDialog(QDialog):
         if not hasattr(self, "tag_table"):
             return
         LIMIT = 500
+        # 分类过滤（默认「全部」= 全量）
+        try:
+            cat_key = self.tag_cat_filter.currentData() if hasattr(self, "tag_cat_filter") else ""
+        except Exception:
+            cat_key = ""
+        cat_key = cat_key or ""
         # 下拉框里同步"全部标签"（不输入也能点开挑），并按当前输入过滤表格
         try:
             q = self.tag_search.currentText().strip()
         except Exception:
             q = ""
-        all_rows = self.store.list_tags(q)
+        all_rows = self.store.list_tags(q, category=cat_key or None)
         if hasattr(self, "tag_search"):
-            cur = self.tag_search.currentText()
-            self.tag_search.blockSignals(True)
-            self.tag_search.clear()
-            for t in self.store.list_tags(""):
-                zh = t["zh"] or tag_i18n.translate(t["name"])
-                self.tag_search.addItem(f"{zh}（{t['name']}）" if zh and zh != t["name"] else t["name"],
-                                        t["name"])
-            self.tag_search.setEditText(cur)
-            self.tag_search.blockSignals(False)
+            from .common import fill_tag_combo
+            fill_tag_combo(self.tag_search, self.store, cat_key or None)
         rows = all_rows[:LIMIT]
         self.tag_table.setRowCount(len(rows))
         for i, t in enumerate(rows):
@@ -577,10 +584,7 @@ class TaxonomyDialog(QDialog):
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel("选择新的类型（图谱里的分类连线会同步更新）"))
         lay.addWidget(combo)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
+        ok_cancel(dlg, lay)
         if dlg.exec() != QDialog.Accepted:
             return
         self.store.update_tag(tid, category=combo.currentData())
@@ -852,7 +856,7 @@ class TaxonomyDialog(QDialog):
         v = dlg.values()
         if not v["name"]:
             return
-        tid = self.store.ensure_tag(v["name"], v["category"], v["prompt"] or None)
+        tid = self.store.save_tag(v["name"], v["category"], v["prompt"])
         if parent:
             self.store.link(parent, "tag", tid)
         self.tagCreated.emit(v["name"])
@@ -1095,10 +1099,7 @@ class RenameTagDialog(QDialog):
         self.cb_files.setChecked(True)
         v.addWidget(self.cb_files)
         v.addStretch(1)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        v.addWidget(bb)
+        ok_cancel(self, v)
 
     def new_name(self) -> str:
         return self.edit.text().strip()

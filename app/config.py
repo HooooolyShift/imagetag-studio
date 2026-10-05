@@ -165,6 +165,8 @@ class Settings:
     grid_columns_hint: int = 0
     show_auto_tags: bool = True
     confirm_before_write: bool = False
+    show_startup_tip: bool = True          # 启动时是否提示"开始使用"（可勾选不再显示）
+    show_model_tip: bool = True            # 启动时是否提示"模型未下载"（可勾选不再提示）
     # 扫描
     ignore_dirs: list[str] = field(default_factory=lambda: [".imtag", "@eaDir", ".git", "$RECYCLE.BIN", "System Volume Information"])
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QColor, QIcon, QPixmap
-from PySide6.QtWidgets import QLabel, QListWidget, QListWidgetItem, QPushButton
+from PySide6.QtGui import QIcon, QImageReader, QPixmap
+from PySide6.QtWidgets import QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QPushButton
 
 from .. import imaging
 
@@ -82,11 +82,47 @@ class ThumbPool:
 _icon_cache: dict[str, QIcon] = {}
 
 
+def load_pixmap(path: str | Path) -> QPixmap:
+    """读一张图（带 EXIF 方向自动旋转，JPG/HEIC 之类 Qt 直读失败时兜底）。
+
+    所有界面显示原图/大图都走这里，不要在各自文件里重复写 QPixmap + QImageReader 兜底。
+    """
+    pm = QPixmap(str(path))
+    if not pm.isNull():
+        return pm
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    img = reader.read()
+    return QPixmap.fromImage(img) if not img.isNull() else QPixmap()
+
+
+def thumb_pixmap(file_id: int, src: str | Path, mtime: float = 0.0, size: int = 320) -> QPixmap | None:
+    """取（必要时先生成）缩略图文件并读成 QPixmap；失败返回 None。"""
+    try:
+        p = imaging.thumb_path(int(file_id), float(mtime or 0), int(size))
+        if not p.exists():
+            p = imaging.make_thumb(str(src), int(file_id), float(mtime or 0), int(size)) or p
+        pm = load_pixmap(p) if p and Path(p).exists() else QPixmap()
+        if pm.isNull():
+            pm = load_pixmap(src)          # 缩略图坏了就直接读原图
+        if pm.isNull():
+            return None
+        return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    except Exception:
+        return None
+
+
+def thumb_icon(file_id: int, src: str | Path, mtime: float = 0.0, size: int = 320) -> QIcon | None:
+    """缩略图 QIcon（列表/表格里的图标列共用）。"""
+    pm = thumb_pixmap(file_id, src, mtime, size)
+    return QIcon(pm) if pm is not None else None
+
+
 def icon_from_path(path: str | Path) -> QIcon | None:
     p = str(path)
     if p in _icon_cache:
         return _icon_cache[p]
-    pm = QPixmap(p)
+    pm = load_pixmap(p)
     if pm.isNull():
         return None
     ic = QIcon(pm)
@@ -98,8 +134,38 @@ def clear_icon_cache() -> None:
     _icon_cache.clear()
 
 
+def ok_cancel(dialog, parent_layout=None, ok_text: str = "确定", cancel_text: str = "取消"):
+    """统一的「确定 / 取消」按钮条（中文文案，避免 Qt 默认显示 OK/Cancel）。
+
+    返回按钮条本身，调用方按需 addWidget / addRow 到自己的布局里。
+    """
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bb.button(QDialogButtonBox.Ok).setText(ok_text)
+    bb.button(QDialogButtonBox.Cancel).setText(cancel_text)
+    bb.accepted.connect(dialog.accept)
+    bb.rejected.connect(dialog.reject)
+    if parent_layout is not None:
+        if hasattr(parent_layout, "addRow"):
+            parent_layout.addRow(bb)
+        else:
+            parent_layout.addWidget(bb)
+    return bb
+
+
 def colored(text: str, color: str) -> str:
     return f'<span style="color:{color}">{text}</span>'
+
+
+def human_size(n: int | None) -> str:
+    """文件体积人性化显示（查重/导入等界面共用）。"""
+    if not n:
+        return "?"
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if val < 1024 or unit == "GB":
+            return f"{val:.0f} {unit}" if unit == "B" else f"{val:.1f} {unit}"
+        val /= 1024.0
+    return "?"
 
 
 class ChipList(QListWidget):
@@ -163,8 +229,7 @@ def attach_tag_completer(line_edit, store) -> None:
     try:
         groups = store.tag_name_groups()          # tag -> [图谱分类名]
         for t in store.list_tags():
-            zh = t["zh"] or tag_i18n.translate(t["name"])
-            base = f"{zh}（{t['name']}）" if zh and zh != t["name"] else t["name"]
+            base = tag_i18n.display(t["name"], t["zh"] or "")
             for cat in (groups.get(t["name"]) or [])[:2]:
                 words.append(f"{cat} · {base}")
             words.append(base)
@@ -179,10 +244,78 @@ def attach_tag_completer(line_edit, store) -> None:
     except Exception:
         pass
     for name, zh in tag_i18n.MODEL_DICT.items():
-        words.append(f"{zh}（{name}）" if zh and zh != name else name)
+        words.append(tag_i18n.display(name, zh))
     comp = QCompleter(sorted(set(words)), line_edit)
     comp.setCaseSensitivity(Qt.CaseInsensitive)
     comp.setFilterMode(Qt.MatchFlag.MatchContains)
     comp.setMaxVisibleItems(14)
     comp.setCompletionMode(QCompleter.PopupCompletion)
     line_edit.setCompleter(comp)
+
+
+def tag_words(store, category: str | None = None) -> list[str]:
+    """标签联想词条：category 为空/None = 全量；否则只列该分类下的标签。"""
+    from .. import tag_i18n
+    words: list[str] = []
+    try:
+        groups = store.tag_name_groups()
+        for t in store.list_tags(category=category):
+            base = tag_i18n.display(t["name"], t["zh"] or "")
+            for cat in (groups.get(t["name"]) or [])[:2]:
+                words.append(f"{cat} · {base}")
+            words.append(base)
+    except Exception:
+        pass
+    if not category:                       # 只有"全部"才把词典里未入库的也列出来
+        for name, zh in tag_i18n.MODEL_DICT.items():
+            words.append(tag_i18n.display(name, zh))
+    return sorted(set(words))
+
+
+def refresh_tag_completer(line_edit, store, category: str | None = None) -> None:
+    """按当前分类重建某个输入框的联想词表。"""
+    from PySide6.QtCore import QStringListModel, Qt
+    from PySide6.QtWidgets import QCompleter
+    words = tag_words(store, category)
+    comp = line_edit.completer()
+    if comp is None:
+        comp = QCompleter([], line_edit)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchFlag.MatchContains)
+        comp.setMaxVisibleItems(14)
+        line_edit.setCompleter(comp)
+    comp.setModel(QStringListModel(words, comp))
+
+
+def fill_tag_combo(combo, store, category: str | None = None) -> None:
+    """按分类填充一个可编辑下拉框（用于审核台/导入等"点开看标签"的框）。"""
+    from .. import tag_i18n
+    cur = combo.currentText()
+    combo.blockSignals(True)
+    combo.clear()
+    try:
+        for t in store.list_tags(category=category):
+            combo.addItem(tag_i18n.display(t["name"], t["zh"] or ""), t["name"])
+    except Exception:
+        pass
+    combo.setEditText(cur)
+    combo.blockSignals(False)
+
+
+def bind_category_filter(cat_combo, tag_input, store, combo_mode: bool = False):
+    """把「分类」下拉框和标签输入框绑起来，所有能建标签的地方都用它。
+
+    combo_mode=True  → tag_input 是可编辑下拉框（审核台/图谱等"点开看标签"）
+    combo_mode=False → tag_input 是普通输入框（靠 QCompleter 联想）
+    规则：分类 =「全部」→ 全量；分类 = 具体类型 → 只列该类型下的标签。
+    建好后立刻按当前分类刷新一次。
+    """
+    def _apply(_index: int = -1) -> None:
+        cat = cat_combo.currentData() or None
+        if combo_mode:
+            fill_tag_combo(tag_input, store, cat)
+        else:
+            refresh_tag_completer(tag_input, store, cat)
+    cat_combo.currentIndexChanged.connect(_apply)
+    _apply()
+    return _apply

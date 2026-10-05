@@ -3,24 +3,22 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QKeySequence
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSlider,
-    QSplitter, QTabWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
-    QDialog, QDialogButtonBox, QInputDialog,
+    QTabWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QDialog, QInputDialog,
 )
 
-from .. import imaging, naming
-from ..config import CATEGORY_ORDER, SOURCE_LABELS, TAG_CATEGORIES, Settings
-from ..library import EngineHub, Library, prompt_templates
+from ..config import Settings
+from ..library import EngineHub, Library
 from ..store import Store
 from ..workers import Task
-from .common import STYLE, colored, label
+from .common import STYLE, ThumbPool, label, ok_cancel
 from .dialogs import (CategoryManagerDialog, ModelsDialog, PersonDialog, PreviewDialog, SeriesDialog,
                       SettingsDialog, TagEditDialog, TagManagerDialog, category_combo)
 from .taxonomy import TaxonomyDialog
@@ -28,7 +26,6 @@ from .review import ReviewDialog
 from .dupes import DuplicateDialog
 from .import_dialog import ImportDialog
 from .grid import GridItem, GridModel, GridView
-from .common import ThumbPool
 
 
 def _cat_order(store) -> list[str]:
@@ -63,11 +60,13 @@ class TagPanel(QWidget):
         self.new_tag = QLineEdit()
         self.new_tag.setPlaceholderText("新标签…")
         self.new_tag.returnPressed.connect(self.add_new_tag)
-        from .common import attach_tag_completer
+        from .common import attach_tag_completer, bind_category_filter
         attach_tag_completer(self.new_tag, self.store)
         add.addWidget(self.new_tag, 1)
-        self.new_cat = category_combo(self.store)
+        self.new_cat = category_combo(self.store, "", include_all=True)   # 默认"全部"，可切分类过滤
         add.addWidget(self.new_cat)
+        # 分类 ↔ 标签输入框联动：选分类只联想该分类下的标签，选「全部」才全量
+        bind_category_filter(self.new_cat, self.new_tag, self.store)
         b = QPushButton("添加")
         b.clicked.connect(self.add_new_tag)
         add.addWidget(b)
@@ -316,9 +315,7 @@ class TagPanel(QWidget):
             name = v["name"]
             if not name:
                 return
-            self.store.ensure_tag(name, v["category"], v["prompt"] or None, v["auto"])
-            self.store.update_tag(self.store.tag_id(name), category=v["category"], prompt=v["prompt"],
-                                  auto=v["auto"], requires=v.get("requires", ""))
+            self.store.save_tag(name, v["category"], v["prompt"], v["auto"], v.get("requires", ""))
             self.tagCreated.emit(name)
         self.library.add_tags_to_files(self.file_ids, [name], "manual")
         self.new_tag.clear()
@@ -1309,6 +1306,7 @@ class MainWindow(QMainWindow):
 
     def bulk_delete_tags_ui(self) -> None:
         """批量删除标签（默认只删索引；可勾选同时从文件名里去掉）。"""
+        from .. import tag_i18n
         from PySide6.QtWidgets import QInputDialog
         text, ok = QInputDialog.getText(
             self, "批量删除标签",
@@ -1316,7 +1314,7 @@ class MainWindow(QMainWindow):
             "勾选下面两项可以同时把它们从文件名里去掉。")
         if not ok or not text.strip():
             return
-        names = [n for n in text.replace(",", " ").split() if n]
+        names = tag_i18n.parse_list(text)
         dlg = QDialog(self)
         dlg.setWindowTitle("删除选项")
         lay = QVBoxLayout(dlg)
@@ -1325,10 +1323,7 @@ class MainWindow(QMainWindow):
         cb_name = QCheckBox("同时从文件名里去掉这些标签（会重命名文件）")
         lay.addWidget(cb_scope)
         lay.addWidget(cb_name)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
+        ok_cancel(dlg, lay)
         if dlg.exec() != QDialog.Accepted:
             return
         ids = None

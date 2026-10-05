@@ -11,21 +11,9 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .. import imaging
 from ..workers import Task
-from .common import label
+from .common import human_size, label, thumb_pixmap
 from ._series_helper import _series_of
-
-
-def human_size(n: int | None) -> str:
-    if not n:
-        return "?"
-    val = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if val < 1024 or unit == "GB":
-            return f"{val:.0f} {unit}" if unit == "B" else f"{val:.1f} {unit}"
-        val /= 1024.0
-    return "?"
 
 
 class DuplicateDialog(QDialog):
@@ -179,13 +167,7 @@ class DuplicateDialog(QDialog):
 
     # ---------------------------------------------------------------- 展示
     def _thumb(self, row) -> QPixmap | None:
-        p = imaging.thumb_path(int(row["id"]), row["mtime"] or 0, 320)
-        if not p.exists():
-            p = imaging.make_thumb(row["path"], int(row["id"]), row["mtime"] or 0, 320) or p
-        pm = QPixmap(str(p))
-        if pm.isNull():
-            pm = QPixmap(row["path"])
-        return None if pm.isNull() else pm.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        return thumb_pixmap(int(row["id"]), row["path"], row["mtime"] or 0, 96)
 
     def on_group_changed(self, row: int) -> None:
         if row < 0 or row >= len(self.groups):

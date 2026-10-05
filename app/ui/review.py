@@ -10,16 +10,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
+    QListWidget,
+    QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
     QRadioButton, QVBoxLayout, QWidget,
 )
 
 from ..config import SOURCE_LABELS
-from .common import label
+from .common import bind_category_filter, fill_tag_combo, label, load_pixmap, thumb_icon
 from .dialogs import ImageCanvas, TagEditDialog, category_combo
 
 CONFIRMED = QColor("#7ddc7d")
@@ -164,8 +164,10 @@ class ReviewDialog(QDialog):
         self.new_tag.lineEdit().returnPressed.connect(self.add_manual_tag)
         self.new_tag.activated.connect(lambda _i: self.add_manual_tag())
         add_row.addWidget(self.new_tag, 1)
-        self.new_cat = category_combo(self.store)
+        self.new_cat = category_combo(self.store, "", include_all=True)   # 默认"全部"，可切分类过滤
         add_row.addWidget(self.new_cat)
+        # 分类与标签框联动：选分类只列该分类下的标签；选「全部」才全量
+        bind_category_filter(self.new_cat, self.new_tag, self.store, combo_mode=True)
         b_add = QPushButton("添加")
         b_add.clicked.connect(self.add_manual_tag)
         add_row.addWidget(b_add)
@@ -278,7 +280,7 @@ class ReviewDialog(QDialog):
         it = self._q_items.get(int(file_id))
         if it is None or not path:
             return
-        pm = QPixmap(path)
+        pm = load_pixmap(path)
         if not pm.isNull():
             try:
                 it.setIcon(QIcon(pm.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
@@ -297,13 +299,7 @@ class ReviewDialog(QDialog):
             return
         r = self.queue[self.index]
         self.path = r["path"]
-        pm = QPixmap(self.path)
-        if pm.isNull():
-            from PySide6.QtGui import QImageReader
-            rd = QImageReader(self.path)
-            rd.setAutoTransform(True)
-            pm = QPixmap.fromImage(rd.read())
-        self.canvas.set_pixmap(pm)
+        self.canvas.set_pixmap(load_pixmap(self.path))
         self.decisions = {}
         self.selected_tag = None
         self.box_mode = False
@@ -519,9 +515,9 @@ class ReviewDialog(QDialog):
         fid = int(self.queue[self.index]["id"])
         cat = self.new_cat.ensure_current(self)
         if self.store.tag_id(name) is None:
-            self.store.ensure_tag(name, cat)
+            self.store.save_tag(name, cat)
         self.library.add_tags_to_files([fid], [name], "manual")
-        self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
+        self.store.mark_reviewed([fid])
         self.new_tag.setEditText("")
         self.reload_confirmed()
         self.reload_table()
@@ -541,12 +537,10 @@ class ReviewDialog(QDialog):
         v = dlg.values()
         if not v["name"]:
             return
-        tid = self.store.ensure_tag(v["name"], v["category"], v["prompt"] or None, v["auto"])
-        self.store.update_tag(tid, category=v["category"], prompt=v["prompt"], auto=v["auto"],
-                              requires=v.get("requires", ""))
+        self.store.save_tag(v["name"], v["category"], v["prompt"], v["auto"], v.get("requires", ""))
         fid = int(self.queue[self.index]["id"])
         self.library.add_tags_to_files([fid], [v["name"]], "manual")
-        self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
+        self.store.mark_reviewed([fid])
         self.tagCreated.emit(v["name"])
         self.new_tag.setEditText("")
         self.reload_confirmed()
@@ -561,17 +555,9 @@ class ReviewDialog(QDialog):
         """把库里全部已有标签填进「补标签」下拉框：不输入也能点开看到。"""
         if not hasattr(self, "new_tag"):
             return
-        from .. import tag_i18n
         try:
-            cur = self.new_tag.currentText()
-            self.new_tag.blockSignals(True)
-            self.new_tag.clear()
-            for t in self.store.list_tags(""):
-                zh = t["zh"] or tag_i18n.translate(t["name"])
-                self.new_tag.addItem(
-                    f"{zh}（{t['name']}）" if zh and zh != t["name"] else t["name"], t["name"])
-            self.new_tag.setEditText(cur)
-            self.new_tag.blockSignals(False)
+            cat = (self.new_cat.currentData() or None) if hasattr(self, "new_cat") else None
+            fill_tag_combo(self.new_tag, self.store, cat)
         except Exception:
             pass
 
@@ -596,9 +582,9 @@ class ReviewDialog(QDialog):
             return
         fid = int(self.queue[self.index]["id"])
         if self.store.tag_id(name) is None:
-            self.store.ensure_tag(name, "other")
+            self.store.save_tag(name, "other")
         self.library.add_tags_to_files([fid], [name], "manual")
-        self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
+        self.store.mark_reviewed([fid])
         self.suggest_list.takeItem(self.suggest_list.row(it))
         self.reload_confirmed()
         self.changed.emit()
@@ -627,7 +613,6 @@ class ReviewDialog(QDialog):
 
     # ------------------------------------------------------------ 系列
     def reload_series(self) -> None:
-        from .. import imaging
         self.series_list.clear()
         cur_fid = int(self.queue[self.index]["id"]) if self.queue else None
         cur_series = None
@@ -644,12 +629,9 @@ class ReviewDialog(QDialog):
             first = self.store.one("SELECT id,path,mtime FROM files WHERE series_id=? ORDER BY page_no,id LIMIT 1",
                                    (int(s["id"]),))
             if first:
-                p = imaging.thumb_path(int(first["id"]), first["mtime"] or 0, 320)
-                if not p.exists():
-                    p = imaging.make_thumb(first["path"], int(first["id"]), first["mtime"] or 0, 320) or p
-                pm = QPixmap(str(p))
-                if not pm.isNull():
-                    it.setIcon(QIcon(pm.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+                ic = thumb_icon(int(first["id"]), first["path"], first["mtime"] or 0, 64)
+                if ic is not None:
+                    it.setIcon(ic)
             self.series_list.addItem(it)
         if self.series_list.count() == 0:
             self.series_list.addItem(QListWidgetItem("（还没有系列）"))
@@ -686,7 +668,8 @@ class ReviewDialog(QDialog):
                                               text=" ".join(conf[:8]))
         if not ok2:
             return
-        tags = [t for t in tags_text.replace(",", " ").split() if t]
+        from .. import tag_i18n
+        tags = tag_i18n.parse_list(tags_text)
         res = self.library.merge_into_series([fid], name=name.strip(), tags=tags, mode="move")
         if not res.get("ok"):
             QMessageBox.warning(self, "新建系列失败", res.get("msg", ""))
@@ -731,10 +714,10 @@ class ReviewDialog(QDialog):
             name = self.new_tag.currentText().strip()
             cat = self.new_cat.ensure_current(self)
             if self.store.tag_id(name) is None:
-                self.store.ensure_tag(name, cat)
+                self.store.save_tag(name, cat)
             fid = int(self.queue[self.index]["id"])
             self.library.add_tags_to_files([fid], [name], "manual")
-            self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
+            self.store.mark_reviewed([fid])
             self.reload_confirmed()
             self.changed.emit()
             self.new_tag.setEditText("")

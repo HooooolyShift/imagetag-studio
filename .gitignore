@@ -19,4 +19,7 @@ manual_shots/
 *.log
 split.log
 release_parts/
+# 临时排查脚本/临时数据库（不进版本库）
+.fix12/
+.verify_pics/
 

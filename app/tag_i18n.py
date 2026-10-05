@@ -243,6 +243,20 @@ def display(name: str, zh_hint: str = "") -> str:
 
 _PAREN = re.compile(r"^(.*?)（([^（）]+)）$")
 
+# 输入框里常见的分隔符（中英文标点都算）
+_SEPARATORS = ("，", "、", "；", ";", ",", "|", "\n", "\r", "\t")
+
+
+def parse_list(text: str) -> list[str]:
+    """把输入框里的一串标签拆成列表（空格 + 中英文逗号/顿号/分号都算分隔符）。
+
+    所有界面的「粘一串标签进来」都走这里，避免各写一份 split 规则。
+    """
+    t = text or ""
+    for sep in _SEPARATORS:
+        t = t.replace(sep, " ")
+    return [x for x in t.split() if x]
+
 
 def parse_input(text: str, store=None) -> str:
     """把输入框里的文字规范成标签名。

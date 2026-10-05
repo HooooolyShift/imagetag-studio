@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QDrag, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate
 
-from .. import imaging
-from .common import ThumbPool, icon_from_path
+from .common import ThumbPool, load_pixmap
 
 
 @dataclass
@@ -89,7 +87,7 @@ class GridModel(QAbstractListModel):
         self._pending.discard(file_id)
         if not path:
             return
-        pm = QPixmap(path)
+        pm = load_pixmap(path)
         if pm.isNull():
             return
         self._icons[file_id] = pm

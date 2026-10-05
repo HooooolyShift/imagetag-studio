@@ -69,8 +69,22 @@ def main() -> int:
         rlib = Library(store, settings)
         rdlg = ReviewDialog(rlib, EngineHub(settings), win)
         if rdlg.queue:
+            # 分类 ↔ 标签框联动：默认「全部」应看到全量；切分类后收窄
+            n_all = rdlg.new_tag.count()
+            assert rdlg.new_cat.currentData() == "", "审核台分类默认应为「全部（不限分类）」"
+            idx_cloth = rdlg.new_cat.findData("clothing")
+            rdlg.new_cat.setCurrentIndex(idx_cloth)
+            n_cloth = rdlg.new_tag.count()
+            print(f"  审核台标签框：全部={n_all} 项 → 切到服装={n_cloth} 项")
+            if not (n_all >= n_cloth > 0):
+                print("  分类联动自检失败：切分类后标签数量未收窄")
+                return 1
+            rdlg.new_cat.setCurrentIndex(0)
+            if rdlg.new_tag.count() != n_all:
+                print("  分类联动自检失败：切回「全部」未恢复全量")
+                return 1
             rdlg.new_tag.setEditText("审核时补的标签")
-            rdlg.new_cat.setCurrentIndex(CATEGORY_ORDER.index("clothing"))
+            rdlg.new_cat.setCurrentIndex(rdlg.new_cat.findData("clothing"))
             rdlg.add_manual_tag()
             fid = int(rdlg.queue[0]["id"])
             tags = [t["name"] for t in store.tags_for_file(fid, statuses=("confirmed",))]

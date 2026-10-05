@@ -5,12 +5,11 @@
 """
 from __future__ import annotations
 
-import os
 import zlib
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QSplitter,
@@ -18,21 +17,9 @@ from PySide6.QtWidgets import (
 )
 
 from .. import imaging
-from ..config import IMAGE_EXTS
 from ..workers import Task
-from .common import ThumbPool, label
+from .common import ThumbPool, human_size, load_pixmap
 from .dialogs import category_combo
-
-
-def human(n: int | None) -> str:
-    if not n:
-        return "?"
-    v = float(n)
-    for u in ("B", "KB", "MB", "GB"):
-        if v < 1024 or u == "GB":
-            return f"{v:.0f} {u}" if u == "B" else f"{v:.1f} {u}"
-        v /= 1024.0
-    return "?"
 
 
 class ImportDialog(QDialog):
@@ -121,11 +108,12 @@ class ImportDialog(QDialog):
         row = QHBoxLayout()
         self.tag_edit = QLineEdit()
         self.tag_edit.setPlaceholderText("例如：2026春 外拍 泳装（空格分隔多个）")
-        from .common import attach_tag_completer
+        from .common import attach_tag_completer, bind_category_filter
         attach_tag_completer(self.tag_edit, self.store)
         row.addWidget(self.tag_edit, 1)
-        self.tag_cat = category_combo(self.store)
+        self.tag_cat = category_combo(self.store, "", include_all=True)
         row.addWidget(self.tag_cat)
+        bind_category_filter(self.tag_cat, self.tag_edit, self.store)
         b2.addLayout(row)
         b2.addWidget(QLabel("这些标签会直接生效（等同于手动打的），并写进文件名"))
         rv.addWidget(box2)
@@ -292,7 +280,7 @@ class ImportDialog(QDialog):
     def _append_item(self, c: dict) -> None:
             name = Path(c["path"]).name
             extra = "  ⚠疑似重复" if c.get("dup") else ""
-            it = QListWidgetItem(f"{name}\n{human(c.get('size'))}{extra}")
+            it = QListWidgetItem(f"{name}\n{human_size(c.get('size'))}{extra}")
             it.setData(Qt.UserRole, c)
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             checked = not (c.get("dup") and self.cb_skip_dup.isChecked())
@@ -337,7 +325,7 @@ class ImportDialog(QDialog):
         it = self._item_by_key.get(int(key))
         if it is None:
             return
-        pm = QPixmap(path)
+        pm = load_pixmap(path)
         if pm.isNull():
             return
         try:
@@ -410,7 +398,7 @@ class ImportDialog(QDialog):
                                 else f"将存入：<盘符>\\{self.settings.library_dir_name}")
         self.lbl_target.setStyleSheet("color:#ffcc66;" if any(
             not self._target_status(d)[1] for d in drives) else "")
-        self.summary.setText(f"已选 {sel_n} / {self.list.count()} 张，共 {human(total)}"
+        self.summary.setText(f"已选 {sel_n} / {self.list.count()} 张，共 {human_size(total)}"
                              + (f"（其中 {dups} 张疑似重复）" if dups else ""))
         self.b_import.setEnabled(sel_n > 0)
 
@@ -454,14 +442,14 @@ class ImportDialog(QDialog):
         move = self.mode.currentIndex() == 0
         res = self.library.import_to_library(ids, move=move, progress=progress, cancel=cancel,
                                              auto_write_names=False)
-        tags = [t for t in self.tag_edit.text().replace(",", " ").split() if t]
+        from .. import tag_i18n
+        tags = tag_i18n.parse_list(self.tag_edit.text())
         if tags:
             cat = self.tag_cat.ensure_current(self)
             for t in tags:
                 self.store.ensure_tag(t, cat)
             self.library.add_tags_to_files(ids, tags, "manual")
-            for fid in ids:
-                self.store.execute("UPDATE files SET reviewed=1 WHERE id=?", (fid,))
+            self.store.mark_reviewed(ids)
         if self.cb_writeback.isChecked() and self.settings.tag_storage == "filename":
             res["renamed"] = self.library.apply_disk_names(ids, progress).get("renamed", 0)
         res["ok"] = True

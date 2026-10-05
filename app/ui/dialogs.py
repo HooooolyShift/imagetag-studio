@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImageReader, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-    QButtonGroup, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QButtonGroup, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QRadioButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
     QVBoxLayout, QWidget,
@@ -18,7 +18,7 @@ from .. import categories, models as model_lib
 from ..config import CATEGORY_ORDER, SOURCE_LABELS, TAG_CATEGORIES
 from ..engines.wd14 import guess_category
 from ..workers import Task
-from .common import label
+from .common import label, load_pixmap, ok_cancel
 
 
 class CategoryNewDialog(QDialog):
@@ -40,10 +40,7 @@ class CategoryNewDialog(QDialog):
                      "不影响你已经打好的标签；留空则用通用模板。")
         tip.setWordWrap(True)
         form.addRow("", tip)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        form.addRow(bb)
+        ok_cancel(self, form)
 
     def values(self) -> tuple[str, list[str]]:
         return (self.name.text().strip(),
@@ -56,14 +53,19 @@ class CategoryCombo(QComboBox):
     - 直接选已有类型；
     - 输入一个不存在的名字 → 弹「新建类型」小窗（可配提示词模板）；
     - 或点列表里的「＋ 新建类型…」。
+    - include_all=True 时最前面多一项「全部（不限分类）」，用来让标签列表/联想显示全量；
+      这时它本身的取值由 all_means 决定（默认归到「其它」）。
     取用请调用 ensure_current()，它会保证返回的类型在库里真实存在。
     """
 
     NEW_SENTINEL = "__new_category__"
+    ALL_TEXT = "全部（不限分类）"
 
     def __init__(self, store=None, current: str | None = None, parent=None):
         super().__init__(parent)
         self.store = store
+        self.include_all = False       # 是否在最前面放「全部（不限分类）」项
+        self.all_means: str | None = None   # 选中「全部」时 ensure_current() 返回的类型
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.NoInsert)
         self.lineEdit().setPlaceholderText("选一个类型，或输入新类型名")
@@ -71,7 +73,13 @@ class CategoryCombo(QComboBox):
         self.activated.connect(self._on_activated)
 
     def reload(self, select: str | None = None) -> None:
-        target = select or (self.currentData() if self.count() else None) or "other"
+        cur = self.currentData() if self.count() else None
+        if select is not None:
+            target = select
+        elif cur is not None:
+            target = cur            # 可能是 ""（「全部」项），下面会把它重新插回列表头部
+        else:
+            target = "other"
         self.blockSignals(True)
         self.clear()
         if self.store is not None:
@@ -82,6 +90,8 @@ class CategoryCombo(QComboBox):
             for key in CATEGORY_ORDER:
                 self.addItem(f"{TAG_CATEGORIES[key]} ({key})", key)
         self.addItem("＋ 新建类型…", self.NEW_SENTINEL)
+        if self.include_all:
+            self.insertItem(0, self.ALL_TEXT, "")
         self.blockSignals(False)
         idx = self.findData(target)
         self.setCurrentIndex(idx if idx >= 0 else 0)
@@ -101,6 +111,8 @@ class CategoryCombo(QComboBox):
         if self.store is None:
             return self.currentData() or "other"
         data = self.currentData()
+        if data == "":            # 选中了「全部（不限分类）」→ 不靠它决定类型
+            return self.all_means or "other"
         text = self.currentText().strip()
         if data and data != self.NEW_SENTINEL:
             # 文本被改过就按新名字处理，否则用选中的 key
@@ -125,9 +137,20 @@ class CategoryCombo(QComboBox):
         return key
 
 
-def category_combo(store=None, current: str | None = None):
-    """兼容旧调用：返回可用 ensure_current() 取值的类型选择框。"""
-    return CategoryCombo(store, current)
+def category_combo(store=None, current: str | None = None, include_all: bool = False,
+                   all_means: str | None = None):
+    """类型选择框。
+
+    include_all=True 时最前面多一项「全部（不限分类）」（值为空字符串），
+    用于让旁边的标签列表/联想显示全量；选它时 ensure_current() 返回 all_means（默认「其它」）。
+    """
+    cb = CategoryCombo(store, current)
+    cb.include_all = bool(include_all)
+    cb.all_means = all_means
+    if include_all:
+        cb.reload(select=current if current is not None else "")
+        cb.setToolTip("选一个分类 → 标签框只列该分类下的标签；选「全部（不限分类）」→ 标签框列全部标签")
+    return cb
 
 
 class CategoryManagerDialog(QDialog):
@@ -249,11 +272,17 @@ class TagEditDialog(QDialog):
         form = QFormLayout(self)
         self.name_edit = QLineEdit(name)
         form.addRow("标签名", self.name_edit)
+        default_cat = category or "other"
         if store is not None:
-            from .common import attach_tag_completer
+            from .common import attach_tag_completer, bind_category_filter
             attach_tag_completer(self.name_edit, store)
-        self.cat = category_combo(store, category)
+        # 「全部」= 标签名联想不限分类；选具体类型则只联想该类型下的标签。
+        # 选「全部」时保存的类型仍是当前类型（不因为筛选而把标签挪到「其它」）。
+        self.cat = category_combo(store, "" if default_cat in ("", "other") else default_cat,
+                                  include_all=True, all_means=default_cat)
         form.addRow("标签类型", self.cat)
+        if store is not None:
+            bind_category_filter(self.cat, self.name_edit, store)
         self.prompt_edit = QLineEdit(prompt)
         self.prompt_edit.setPlaceholderText("可留空；也可填英文提示词或用逗号写整句，例如 hatsune_miku")
         form.addRow("识别提示词", self.prompt_edit)
@@ -266,14 +295,11 @@ class TagEditDialog(QDialog):
         tip = QLabel("提示：填 <b>hatsune_miku</b> 这类 WD14 英文标签名，可以把 WD14 的结果直接映射到这个中文标签上。")
         tip.setWordWrap(True)
         form.addRow("", tip)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        form.addRow(bb)
+        ok_cancel(self, form)
         self.name_edit.textChanged.connect(self._guess)
 
     def _guess(self, text: str) -> None:
-        if self.cat.currentData() == "other" and not self.prompt_edit.text():
+        if (self.cat.currentData() or "other") == "other" and not self.prompt_edit.text():
             cat = guess_category(text.strip().replace(" ", "_"), 0)
             idx = self.cat.findData(cat)
             if cat != "other" and idx >= 0:
@@ -387,7 +413,7 @@ class TagManagerDialog(QDialog):
                 self.table.setSpan(i, 0, 1, self.table.columnCount())
                 self._group_rows.setdefault(cat, [])
                 i += 1
-            from .. import tag_i18n, categories as _cats
+            from .. import tag_i18n
             it_name = QTableWidgetItem(tag_i18n.display(t["name"], t["zh"] or ""))
             it_name.setToolTip(f"{t['name']}（双击行或用「编辑选中」改类型/提示词）")
             it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
@@ -452,9 +478,7 @@ class TagManagerDialog(QDialog):
             v = dlg.values()
             if not v["name"]:
                 return
-            tid = self.store.ensure_tag(v["name"], v["category"], v["prompt"] or None, v["auto"])
-            self.store.update_tag(tid, category=v["category"], prompt=v["prompt"], auto=v["auto"],
-                                  requires=v.get("requires", ""))
+            self.store.save_tag(v["name"], v["category"], v["prompt"], v["auto"], v.get("requires", ""))
             self.tagCreated.emit(v["name"])
             self.reload()
 
@@ -615,9 +639,7 @@ class PersonDialog(QDialog):
         row = self.store.one("SELECT path FROM files WHERE id=?", (file_id,))
         if not row:
             return None
-        reader = QImageReader(row["path"])
-        reader.setAutoTransform(True)
-        img = reader.read()
+        img = load_pixmap(row["path"]).toImage()
         if img.isNull():
             return None
         w, h = img.width(), img.height()
@@ -737,10 +759,7 @@ class SeriesDialog(QDialog):
         self.preview = QLabel("")
         self.preview.setWordWrap(True)
         v.addWidget(self.preview)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        v.addWidget(bb)
+        ok_cancel(self, v)
         self._update_preview()
         self.list.model().rowsMoved.connect(self._update_preview)
         self.name_edit.textChanged.connect(self._update_preview)
@@ -764,13 +783,15 @@ class SeriesDialog(QDialog):
 
     def _update_preview(self, *_) -> None:
         name = self.name_edit.text().strip() or "(未命名)"
-        tags = [t for t in self.tags_edit.text().replace(",", " ").split() if t]
+        from .. import tag_i18n
+        tags = tag_i18n.parse_list(self.tags_edit.text())
         folder = f"{name} [{' '.join(tags)}]" if tags else name
         labels = self._page_labels()
         sample = "、".join(labels[:6]) + (" …" if len(labels) > 6 else "")
         self.preview.setText(f"目标：<b>{folder}/</b><br>共 {len(labels)} 页，文件名：{sample}")
 
     def values(self) -> dict:
+        from .. import tag_i18n
         order, page_names = [], {}
         for i in range(self.list.count()):
             it = self.list.item(i)
@@ -781,7 +802,7 @@ class SeriesDialog(QDialog):
             if custom and fid is not None:
                 page_names[int(fid)] = custom
         return {"name": self.name_edit.text().strip() or "series",
-                "tags": [t for t in self.tags_edit.text().replace(",", " ").split() if t],
+                "tags": tag_i18n.parse_list(self.tags_edit.text()),
                 "order": order, "page_names": page_names,
                 "digits": int(self.digits.value()), "start": int(self.start.value()),
                 "mode": "copy" if self.mode.currentIndex() == 0 else "move"}
@@ -949,10 +970,7 @@ class SettingsDialog(QDialog):
         f7.addStretch(1)
         tabs.addTab(w7, "性能")
 
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        v.addWidget(bb)
+        ok_cancel(self, v)
 
     def pick_models_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择模型目录", self.models_dir.text())
@@ -1178,14 +1196,7 @@ class PreviewDialog(QDialog):
 
     # ---- 载入 ----
     def load(self) -> None:
-        pm = QPixmap(self.path)
-        if pm.isNull():
-            r = QImageReader(self.path)
-            r.setAutoTransform(True)
-            from PySide6.QtGui import QImage
-            img: QImage = r.read()
-            pm = QPixmap.fromImage(img)
-        self.canvas.set_pixmap(pm)
+        self.canvas.set_pixmap(load_pixmap(self.path))
         self.reload_tags()
         self.reload_regions()
         self.reload_tag_combo()
@@ -1248,7 +1259,8 @@ class PreviewDialog(QDialog):
         if dlg.exec() == QDialog.Accepted:
             v = dlg.values()
             if v["name"]:
-                self.store.ensure_tag(v["name"], v["category"], v["prompt"] or None, v["auto"])
+                self.store.save_tag(v["name"], v["category"], v["prompt"], v["auto"],
+                                    v.get("requires", ""))
                 self.reload_tag_combo()
                 self.tag_combo.setCurrentText(v["name"])
 

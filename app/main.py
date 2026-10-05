@@ -36,7 +36,7 @@ def main() -> int:
     sys.excepthook = _excepthook
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QIcon
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox
 
     from . import models as model_lib
     from . import perf
@@ -78,17 +78,49 @@ def main() -> int:
     win.show()
 
     def first_run() -> None:
-        if not settings.roots:
-            QMessageBox.information(
-                win, "开始使用",
+        # 「开始使用」提醒：库里真的一个图片目录都没有时才提示，且可以勾选「下次不再显示」
+        # （以前判断的是 settings.roots，它永远是空的 → 每次启动都弹，很烦）
+        try:
+            n_roots = int(store.one("SELECT COUNT(*) AS c FROM roots")["c"])
+        except Exception:
+            n_roots = len(settings.roots)
+        if n_roots == 0 and getattr(settings, "show_startup_tip", True):
+            box = QMessageBox(win)
+            box.setWindowTitle("开始使用")
+            box.setIcon(QMessageBox.Information)
+            box.setText(
                 "第一次使用：\n\n1) 点左上角「添加文件夹」选择你的图片目录（建议先用小目录试）\n"
                 "2) 点「自动打标」给图片打标签\n"
                 "3) 在左侧按标签筛选，在右侧勾选/新增标签\n\n"
                 "标签会写进文件名（[tag1 tag2]），手机上用文件管理器就能搜到。")
+            cb = QCheckBox("下次不再显示这条提醒")
+            box.setCheckBox(cb)
+            box.exec()
+            if cb.isChecked():
+                settings.show_startup_tip = False
+                try:
+                    settings.save()
+                except Exception:
+                    pass
         missing = model_lib.missing_keys(["wd14_onnx", "wd14_tags"])
-        if missing:
-            if QMessageBox.question(win, "模型未下载",
-                                    "本地模型还没下载（约 450MB / 用国内镜像）。现在下载吗？") == QMessageBox.Yes:
+        if missing and getattr(settings, "show_model_tip", True):
+            box2 = QMessageBox(win)
+            box2.setWindowTitle("模型未下载")
+            box2.setIcon(QMessageBox.Question)
+            box2.setText("本地模型还没下载（约 450MB / 用国内镜像）。现在下载吗？")
+            box2.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            box2.button(QMessageBox.Yes).setText("现在下载")
+            box2.button(QMessageBox.No).setText("以后再说")
+            cb2 = QCheckBox("下次不再提示（可在「模型管理」里手动下载）")
+            box2.setCheckBox(cb2)
+            box2.exec()
+            if cb2.isChecked():
+                settings.show_model_tip = False
+                try:
+                    settings.save()
+                except Exception:
+                    pass
+            if box2.standardButton(box2.clickedButton()) == QMessageBox.Yes:
                 dlg = ModelsDialog(settings, win)
                 dlg.download_missing()
                 dlg.exec()
