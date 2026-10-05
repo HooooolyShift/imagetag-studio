@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QGraphicsPathItem, QGraphicsScene, QGraphicsRectItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
+    QTableWidget, QTabWidget,
+    QTableWidgetItem, QInputDialog,
 )
 
 from ..config import CATEGORY_ORDER, TAG_CATEGORIES
@@ -374,7 +376,6 @@ class TaxonomyDialog(QDialog):
         self.tree.itemClicked.connect(self.on_tree_clicked)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.tree_menu)
-        split.addWidget(self.tree)
         find_row = QHBoxLayout()
         self.find_edit = QLineEdit()
         self.find_edit.setPlaceholderText("搜索标签并定位（中文/英文都行，回车跳转）")
@@ -388,7 +389,11 @@ class TaxonomyDialog(QDialog):
         lw.setContentsMargins(0, 0, 0, 0)
         lw.addWidget(self.tree, 1)
         lw.addLayout(find_row)
-        split.addWidget(left_wrap)
+        # 左侧两个标签页：体系树 / 标签管理（原来独立的"标签管理"窗口并到这里）
+        left_tabs = QTabWidget()
+        left_tabs.addTab(left_wrap, "体系树")
+        left_tabs.addTab(self._build_tag_tab(), "标签管理")
+        split.addWidget(left_tabs)
 
         self.canvas = GraphCanvas()
         self.canvas.nodeClicked.connect(self.on_canvas_clicked)
@@ -428,6 +433,125 @@ class TaxonomyDialog(QDialog):
         split.setSizes([330, 820, 310])
         v.addWidget(split, 1)
         self.rebuild()
+
+    # ---------------- 左侧「标签管理」标签页（与图谱联动） ----------------
+    def _build_tag_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(4, 4, 4, 4)
+        self.tag_search = QLineEdit()
+        self.tag_search.setPlaceholderText("搜索标签（中文/英文），回车定位到图上")
+        self.tag_search.textChanged.connect(self.reload_tag_table)
+        self.tag_search.returnPressed.connect(self.locate_from_table)
+        v.addWidget(self.tag_search)
+        self.tag_table = QTableWidget(0, 3)
+        self.tag_table.setHorizontalHeaderLabels(["标签（中文备注）", "类型", "图片数"])
+        self.tag_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tag_table.horizontalHeader().setStretchLastSection(True)
+        self.tag_table.setColumnWidth(0, 190)
+        self.tag_table.setColumnWidth(1, 110)
+        self.tag_table.setSortingEnabled(False)
+        self.tag_table.cellDoubleClicked.connect(lambda *_: self.locate_from_table())
+        v.addWidget(self.tag_table, 1)
+        row = QHBoxLayout()
+        for text, slot in (("定位到图上", self.locate_from_table),
+                           ("改类型…", self.change_category_selected),
+                           ("删除标签", self.delete_tag_selected)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        v.addLayout(row)
+        self.tag_note = QLabel("双击标签行 = 定位到图上；这里的改动会立即同步到图谱与体系树")
+        self.tag_note.setWordWrap(True)
+        self.tag_note.setStyleSheet("color:#8f96a3;")
+        v.addWidget(self.tag_note)
+        self.reload_tag_table()
+        return w
+
+    def reload_tag_table(self) -> None:
+        from .. import tag_i18n, categories as _cats
+        if not hasattr(self, "tag_table"):
+            return
+        LIMIT = 500
+        all_rows = self.store.list_tags(self.tag_search.text().strip() if hasattr(self, "tag_search") else "")
+        rows = all_rows[:LIMIT]
+        self.tag_table.setRowCount(len(rows))
+        for i, t in enumerate(rows):
+            it = QTableWidgetItem(tag_i18n.display(t["name"], t["zh"] or ""))
+            it.setData(Qt.UserRole, int(t["id"]))
+            it.setToolTip(t["name"])
+            self.tag_table.setItem(i, 0, it)
+            cat = QTableWidgetItem(_cats.label_of(self.store, t["category"]))
+            cat.setData(Qt.UserRole, t["category"])
+            self.tag_table.setItem(i, 1, cat)
+            self.tag_table.setItem(i, 2, QTableWidgetItem(str(t["count"])))
+        if hasattr(self, "tag_note"):
+            self.tag_note.setText(
+                f"共 {len(all_rows)} 个标签" + (f"（只列出前 {LIMIT} 个，用搜索框定位）" if len(all_rows) > LIMIT else "")
+                + "　·　双击 = 定位到图上；改动会立即同步图谱")
+
+    def _selected_tag_id(self) -> int | None:
+        row = self.tag_table.currentRow() if hasattr(self, "tag_table") else -1
+        item = self.tag_table.item(row, 0) if row >= 0 else None
+        return int(item.data(Qt.UserRole)) if item else None
+
+    def locate_from_table(self) -> None:
+        tid = self._selected_tag_id()
+        row = self.store.one("SELECT name FROM tags WHERE id=?", (tid,)) if tid else None
+        if not row:
+            from .. import tag_i18n
+            q = self.tag_search.text().strip()
+            if q:
+                self.find_edit.setText(q)
+                self.goto_first_match()
+            return
+        self.find_edit.setText(row["name"])
+        self.goto_first_match()
+
+    def change_category_selected(self) -> None:
+        tid = self._selected_tag_id()
+        if not tid:
+            return
+        from .dialogs import category_combo
+        from PySide6.QtWidgets import QInputDialog
+        combo = category_combo(self.store)
+        cur = self.store.one("SELECT category FROM tags WHERE id=?", (tid,))
+        idx = combo.findData(cur["category"] if cur else "other")
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("改类型")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("选择新的类型（图谱里的分类连线会同步更新）"))
+        lay.addWidget(combo)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.store.update_tag(tid, category=combo.currentData())
+        self.library.sync_taxonomy()                 # 补分类节点
+        self.library.relink_all_categories()         # 按新分类重建连线（别用反向同步）
+        self.changed.emit()
+        self.rebuild()
+        self.reload_tag_table()
+        self.detail.setText("已改类型并同步图谱连线")
+
+    def delete_tag_selected(self) -> None:
+        tid = self._selected_tag_id()
+        if not tid:
+            return
+        row = self.store.one("SELECT name FROM tags WHERE id=?", (tid,))
+        if QMessageBox.question(self, "删除标签",
+                                f"删除标签「{row['name'] if row else tid}」？\n"
+                                f"只从库里移除该标签及其连线，图片文件不受影响。") != QMessageBox.Yes:
+            return
+        self.store.delete_tag(int(tid))
+        self.changed.emit()
+        self.rebuild()
+        self.reload_tag_table()
+        self.detail.setText("已删除标签及其连线")
 
     # ================= 构建视图 =================
     def rebuild(self) -> None:
