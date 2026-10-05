@@ -103,8 +103,8 @@ class EdgeItem(QGraphicsPathItem):
         a = self.src.center()
         b = self.dst.center()
         path = QPainterPath(a)
-        mid_x = (a.x() + b.x()) / 2
-        path.cubicTo(QPointF(mid_x, a.y()), QPointF(mid_x, b.y()), b)
+        # 直线代替三次贝塞尔：连线上千条时开销小得多
+        path.lineTo(b)
         self.setPath(path)
 
     def paint(self, painter, option, widget=None) -> None:
@@ -137,6 +137,8 @@ class GraphCanvas(QGraphicsView):
         self.scene_ = QGraphicsScene(self)
         self.setScene(self.scene_)
         self.setRenderHint(QPainter.Antialiasing)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
+        self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setBackgroundBrush(QBrush(QColor("#16171b")))
         self.items: dict[tuple[str, int], NodeItem] = {}
@@ -154,6 +156,7 @@ class GraphCanvas(QGraphicsView):
 
     def add_node(self, kind: str, nid: int, name: str, count: int, x: float, y: float) -> NodeItem:
         item = NodeItem(kind, nid, name, count, on_move=self._on_move)
+        item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         item.setPos(x, y)
         self.scene_.addItem(item)
         self.items[(kind, nid)] = item
@@ -324,6 +327,7 @@ class TaxonomyDialog(QDialog):
         self.setWindowTitle("标签体系（分类图谱）—— 与图片分离，随便改层级都不影响图片")
         self.resize(1460, 900)
         self.current: tuple[str, int] | None = None
+        self._collapsed_now: set[int] = set()
         self.connect_source: NodeItem | None = None
         v = QVBoxLayout(self)
 
@@ -370,6 +374,20 @@ class TaxonomyDialog(QDialog):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.tree_menu)
         split.addWidget(self.tree)
+        find_row = QHBoxLayout()
+        self.find_edit = QLineEdit()
+        self.find_edit.setPlaceholderText("搜索标签并定位（中文/英文都行，回车跳转）")
+        self.find_edit.returnPressed.connect(self.goto_first_match)
+        find_row.addWidget(self.find_edit, 1)
+        b_find = QPushButton("定位")
+        b_find.clicked.connect(self.goto_first_match)
+        find_row.addWidget(b_find)
+        left_wrap = QWidget()
+        lw = QVBoxLayout(left_wrap)
+        lw.setContentsMargins(0, 0, 0, 0)
+        lw.addWidget(self.tree, 1)
+        lw.addLayout(find_row)
+        split.addWidget(left_wrap)
 
         self.canvas = GraphCanvas()
         self.canvas.nodeClicked.connect(self.on_canvas_clicked)
@@ -429,11 +447,23 @@ class TaxonomyDialog(QDialog):
         tag_rows = {int(t["id"]): t for t in self.store.list_tags()}
 
         saved = self.store.positions()
+        # 性能：标签很多时，默认折叠"子节点很多"的分类（打开就是轻量的 13 个分类节点），
+        # 想看点开那个分类即可；同时给可见标签数设上限，避免一次画上千个节点。
+        tag_total = self.store.one("SELECT COUNT(*) c FROM tags")["c"]
+        if tag_total > 200:
+            for nid, n in nodes.items():
+                if n["collapsed"] or n["x"] is not None:
+                    continue                     # 用户手动设过折叠/位置的不动
+                kids = self.store.children_of_node(int(nid))
+                if len(kids) >= 15:
+                    self.store.update_node(int(nid), collapsed=1)
+                    self._collapsed_now.add(int(nid))     # sqlite3.Row 只读，用集合记本次折叠
+        VISIBLE_TAG_CAP = 600
         # 折叠：把「已折叠」节点的所有子孙藏起来；用 visited 防环（有人乱连成圈也不会死循环）
         hidden: set[tuple[str, int]] = set()
         stack, visited = [], set()
         for nid, n in nodes.items():
-            if n["collapsed"]:
+            if n["collapsed"] or int(nid) in self._collapsed_now:
                 stack.append(int(nid))
         while stack:
             nid = stack.pop()
@@ -455,10 +485,13 @@ class TaxonomyDialog(QDialog):
             self.canvas.add_node("node", nid, n["name"], 0, x, yy)
         y = 40
         y2 = 40
+        shown_tags = 0
         for tid, t in tag_rows.items():
             if tid not in linked_tags and not self.show_all.isChecked():
                 continue
             if ("tag", tid) in hidden:
+                continue
+            if shown_tags >= VISIBLE_TAG_CAP:
                 continue
             default = (270.0, y) if tid in linked_tags else (560.0, y2)
             x, yy = saved.get(("tag", tid), default)
@@ -466,6 +499,7 @@ class TaxonomyDialog(QDialog):
                 y += NODE_H + 14
             else:
                 y2 += NODE_H + 14
+            shown_tags += 1
             from .. import tag_i18n
             self.canvas.add_node("tag", tid, tag_i18n.translate(t["name"], t["zh"] or ""),
                                  int(t["count"]), x, yy)
@@ -749,6 +783,32 @@ class TaxonomyDialog(QDialog):
         self.store.update_node(node_id, collapsed=0 if n["collapsed"] else 1)
         self.rebuild()
         self.detail.setText(("已折叠该节点下方的所有子节点" if not n["collapsed"] else "已展开该节点"))
+
+    def goto_first_match(self) -> None:
+        """搜索标签 → 展开它所在的分类、在图上选中并居中（节点多时用这个定位最快）。"""
+        from .. import tag_i18n
+        q = self.find_edit.text().strip().lower()
+        if not q:
+            return
+        hit = None
+        for t in self.store.list_tags():
+            zh = (t["zh"] or tag_i18n.translate(t["name"])).lower()
+            if q in t["name"].lower() or q in zh:
+                hit = t
+                break
+        if hit is None:
+            self.detail.setText(f"没找到匹配「{q}」的标签")
+            return
+        # 展开它的所有父分类（含被折叠的），否则看不见
+        for p in self.store.parents_of_tag(int(hit["id"])):
+            self.store.update_node(int(p["id"]), collapsed=0)
+        self.current = ("tag", int(hit["id"]))
+        self.rebuild()
+        item = self.canvas.items.get(("tag", int(hit["id"])))
+        if item is not None:
+            self.canvas.centerOn(item)
+            item.setSelected(True)
+        self.detail.setText(f"已定位：{tag_i18n.display(hit['name'], hit['zh'] or '')}")
 
     # ================= 右键菜单 =================
     def canvas_menu(self, pos) -> None:
