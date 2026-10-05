@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 
 import numpy as np
@@ -133,18 +134,35 @@ _INTERACTION2 = (
 )
 
 
+_HIT_PATTERNS: dict[tuple[str, ...], "re.Pattern"] = {}
+
+
+def _hits(low: str, seq, min_len: int = 0) -> bool:
+    """seq 里任意一个"词"在 low 里成词出现就算命中。
+
+    按"词"匹配而不是任意子串：否则 arknights 里的 night 会被当场景、
+    unbuttoned 里的 button 会被当界面控件。
+
+    关键：整组词只编译**一条**正则并缓存 —— 以前是对每个词各调一次 re.search，
+    等于每轮都在重新编译正则，4000 多个标签能卡死主线程（启动即假死）。
+    """
+    toks = tuple(t for t in seq if len(t) >= min_len)
+    if not toks:
+        return False
+    pat = _HIT_PATTERNS.get(toks)
+    if pat is None:
+        alt = "|".join(re.escape(t) for t in toks)
+        pat = re.compile(rf"(?:^|[_\-(])(?:{alt})(?:$|[_\-\)])")
+        _HIT_PATTERNS[toks] = pat
+    return pat.search(low) is not None
+
+
 def guess_category(name: str, wd_category: int) -> str:
     if wd_category == 4:
         return "character"
     if wd_category == 9:
         return "rating"
     low = name.lower()
-    import re as _re
-
-    def hit(tok: str) -> bool:
-        """按"词"匹配而不是任意子串：否则 arknights 里的 night 会被当场景、
-        unbuttoned 里的 button 会被当界面控件。"""
-        return _re.search(rf"(?:^|[_\-(]){_re.escape(tok)}(?:$|[_\-\)])", low) is not None
 
     # 先整词匹配，再按关键词包含关系兜底（white_apron、long_hair 这类组合词）
     for seq, cat in ((_COUNT, "count"), (_CLOTHING, "clothing"), (_POSE, "pose"),
@@ -152,7 +170,7 @@ def guess_category(name: str, wd_category: int) -> str:
         if low in seq:
             return cat
     for seq, cat in ((_CLOTHING, "clothing"), (_POSE, "pose"), (_COUNT, "count")):
-        if any(hit(tok) for tok in seq if len(tok) > 3):
+        if _hits(low, seq, 4):
             return cat
     # 精确命中新增的五类（性行为/身体细节/文本界面/道具/视角）
     for seq, cat in ((_INTERACTION, "interaction"), (_TEXT_UI, "text_ui"), (_OBJECT2, "object"),
@@ -161,17 +179,17 @@ def guess_category(name: str, wd_category: int) -> str:
         if low in seq:
             return cat
     # 更宽的构词匹配（这两组顺序有讲究：服装/身体优先于场景，避免"bath"被当场景等误判）
-    if any(hit(tok) for tok in _VIEW):
+    if _hits(low, _VIEW):
         return "pose"
     # 组合词兜底：white_apron 这类，靠关键词包含判断
     for seq, cat in ((_INTERACTION, "interaction"), (_TEXT_UI, "text_ui"), (_OBJECT2, "object"),
                      (_BODY_DETAIL, "body_detail"), (_VIEW2, "view"), (_SPECIES, "character"),
                      (_INTERACTION2, "interaction")):
-        if any(hit(tok) for tok in seq if len(tok) >= 4):
+        if _hits(low, seq, 4):
             return cat
     for seq, cat in ((_CLOTHING2, "clothing"), (_BODY_PARTS, "body"), (_ACTION, "action"),
                      (_POSE, "pose"), (_STYLE2, "style"), (_SCENE2, "scene")):
-        if any(hit(tok) for tok in seq if len(tok) >= 3):
+        if _hits(low, seq, 3):
             return cat
     return "other"
 

@@ -1,6 +1,8 @@
 """无界面测试安装流程：直接调用安装程序里的 InstallWorker 做一次真实安装。
 
-用法： python tools\\test_install.py [目标目录，默认 K:\\_install_test]
+用法： python tools\\test_install.py [目标目录，默认 K:\\_install_test] [安装包目录]
+
+安装包目录默认取 K:\\ImageTagStudio\\安装包（盘里的成品位置）。
 """
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-PKG = Path("K:\\ImageTagStudio_安装包")
+PKG = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("K:\\ImageTagStudio\\安装包")
 sys.path.insert(0, str(HERE / "installer"))      # installer_gui.py
 sys.path.insert(0, str(PKG / "payload"))         # app 包
 TARGET = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("K:\\_install_test")
