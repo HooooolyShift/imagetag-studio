@@ -854,6 +854,40 @@ class Library:
         return {"n": n, "logit": bool(logit), "centroid": bool(cent), "region": bool(region),
                 "extra_threshold": 0.0 if n >= 5 else (0.12 if n >= 2 else 0.18)}
 
+    def clear_model_feedback(self, progress=None) -> dict:
+        """清空"模型反馈"，回到干净状态重新学。
+
+        什么算反馈（都会清）：
+          1) tag_probe —— 用你的审核结果训练出来的特征中心/分类器；
+          2) file_tags 里 status='rejected' 的否决记录 —— 这是负样本，错译最容易把它带偏；
+          3) files.reviewed 标记 —— "已审过但不含这个标签"也会被当成负样本，不清就还会污染。
+        什么不动（都是你的数据）：
+          · 已确认的标签（confirmed）—— 图库里的标签本身；
+          · 标签类型、图谱连线、从属关系、汉化词典；
+          · 框选区域（你自己画的框）。
+        """
+        before = {
+            "probes": self.store.one("SELECT COUNT(*) c FROM tag_probe")["c"],
+            "rejected": self.store.one("SELECT COUNT(*) c FROM file_tags WHERE status='rejected'")["c"],
+            "reviewed": self.store.one("SELECT COUNT(*) c FROM files WHERE reviewed=1")["c"],
+        }
+        if progress:
+            progress("清空模型反馈", 0.2)
+        self.store.execute("DELETE FROM tag_probe")
+        if progress:
+            progress("清空模型反馈", 0.6)
+        self.store.execute("DELETE FROM file_tags WHERE status='rejected'")
+        self.store.execute("UPDATE files SET reviewed=0")
+        self.store.refresh_counts()
+        if progress:
+            progress("清空模型反馈", 1.0)
+        after = {
+            "probes": self.store.one("SELECT COUNT(*) c FROM tag_probe")["c"],
+            "rejected": self.store.one("SELECT COUNT(*) c FROM file_tags WHERE status='rejected'")["c"],
+            "reviewed": self.store.one("SELECT COUNT(*) c FROM files WHERE reviewed=1")["c"],
+        }
+        return {"before": before, "after": after}
+
     # -------------------------------------------------- 以图找图（冷启动最快的方式）
     def find_similar(self, file_id: int, kind: str = "image", region_id: int | None = None,
                      limit: int = 120, progress=None, cancel=None) -> list[tuple[int, float]]:

@@ -42,9 +42,54 @@ OTHER: dict[str, str] = {
     "gawr_gura": "噶呜·古拉", "watson_amelia": "阿米莉亚·华生",
     # 联网复核里确认过的普通词
     "hatsune_miku": "初音未来", "3d_render": "3D渲染", "manga_page": "漫画页面",
+    # —— 高频词逐条复核（2026-10-05，按图片使用量排序看下来的错译）——
+    "thighhighs": "过膝袜", "white_thighhighs": "白色过膝袜", "black_thighhighs": "黑色过膝袜",
+    "pantyhose": "连裤袜", "black_pantyhose": "黑色连裤袜",
+    "small_breasts": "小胸", "medium_breasts": "中等胸部", "large_breasts": "大胸",
+    "hetero": "异性恋", "ahoge": "呆毛", "bow": "蝴蝶结", "on_back": "仰卧",
+    "shibari": "日式绳缚", "gag": "口塞", "gagged": "戴口塞", "ball_gag": "口球",
+    "wiffle_gag": "空心口塞", "gag_harness": "口塞束带",
+    "pussy_juice": "爱液", "anal": "肛交", "anal_object_insertion": "物体插入肛门",
+    "vaginal_object_insertion": "物体插入阴道", "object_insertion": "物体插入",
+    "cowboy_shot": "牛仔镜头", "detached_sleeves": "分离式袖子", "hood": "兜帽",
+    "soles": "脚底", "bottomless": "下半身赤裸", "cleavage": "乳沟", "collar": "项圈",
+    "censored": "打码", "mosaic_censoring": "马赛克遮挡", "open_clothes": "衣服敞开",
+    "grin": "咧嘴笑", "suspension": "悬吊", "motion_lines": "动感线",
+    "twin_drills": "双钻卷发", "spreader_bar": "撑开器", "futanari": "扶她",
+    "cat_girl": "猫娘", "fox_girl": "狐狸娘", "wolf_girl": "狼娘",
+    "dragon_girl": "龙娘", "rabbit_girl": "兔娘", "shota": "正太",
+    "otoko_no_ko": "伪娘", "fang": "虎牙", "ascot": "领巾", "2koma": "两格漫画",
+    "kasane_teto": "重音特托", "looking_at_viewer": "看向观众", "blush": "脸红",
+    "animal_ear_fluff": "兽耳绒毛", "torn_clothes": "衣服破损", "1girl": "一个女孩",
+    "2girls": "两个女孩", "multiple_girls": "多个女孩", "1boy": "一个男孩",
 }
 
 SERIES_SUFFIX = {"_(arknights)": ARKNIGHTS, "_(sousou_no_frieren)": FRIEREN}
+
+# 作品名（tag→tag 从属关系里的"父"），给人物归类用
+SERIES_ZH: dict[str, str] = {
+    "arknights": "明日方舟", "blue_archive": "蔚蓝档案", "genshin_impact": "原神",
+    "honkai:_star_rail": "崩坏：星穹铁道", "honkai_impact_3rd": "崩坏3",
+    "kancolle": "舰队Collection", "azur_lane": "碧蓝航线", "girls'_frontline": "少女前线",
+    "fate": "Fate系列", "fate/grand_order": "Fate/Grand Order", "pokemon": "宝可梦",
+    "girls_und_panzer": "少女与战车", "chainsaw_man": "电锯人",
+    "re:zero": "Re:从零开始的异世界生活", "sousou_no_frieren": "葬送的芙莉莲",
+    "cyberpunk": "赛博朋克", "cyberpunk:_edgerunners": "赛博朋克：边缘行者",
+    "spy_x_family": "间谍过家家", "vocaloid": "VOCALOID", "konosuba": "为美好的世界献上祝福",
+    "nier": "尼尔", "nier:automata": "尼尔：机械纪元", "sao": "刀剑神域",
+    "umamusume": "赛马娘", "majo_no_tabitabi": "魔女之旅", "shoujo_shuumatsu_ryokou": "少女终末旅行",
+    "touhou": "东方Project", "love_live": "LoveLive!", "idolmaster": "偶像大师",
+    "one_piece": "海贼王", "naruto": "火影忍者", "bleach": "死神", "jujutsu_kaisen": "咒术回战",
+    "kimetsu_no_yaiba": "鬼灭之刃", "boku_no_hero_academia": "我的英雄学院",
+    "attack_on_titan": "进击的巨人", "evangelion": "新世纪福音战士", "neon_genesis_evangelion": "新世纪福音战士",
+    "eromanga_sensei": "情色漫画老师", "oreshura": "我的妹妹不可能那么可爱",
+    "dragon_ball": "龙珠", "sailor_moon": "美少女战士", "cardcaptor_sakura": "魔卡少女樱",
+    "puella_magi_madoka_magica": "魔法少女小圆", "steins;gate": "命运石之门",
+    "hololive": "hololive", "nijisanji": "彩虹社", "genshin": "原神",
+    "arknights:_operators": "明日方舟", "blue_archive_(game)": "蔚蓝档案",
+    "project_sekai": "世界计划", "bang_dream": "邦邦", "osomatsu_san": "阿松",
+    "touken_ranbu": "刀剑乱舞", "kantai_collection": "舰队Collection",
+}
 
 
 def build_fixes() -> dict[str, str]:
@@ -53,6 +98,7 @@ def build_fixes() -> dict[str, str]:
     fixes.update(ARKNIGHTS)
     fixes.update(FRIEREN)
     fixes.update(OTHER)
+    fixes.update(SERIES_ZH)
     for suffix, group in SERIES_SUFFIX.items():
         for key, val in group.items():
             if "_(" not in key:
@@ -79,6 +125,7 @@ def main() -> int:
                     raw.pop(k)
                     removed += 1
     changed, added = 0, 0
+    stale: list[tuple[str, str, str]] = []      # (标签名, 旧译名, 新译名)
     for k, v in fixes.items():
         old = raw.get(k)
         if old == v:
@@ -87,13 +134,42 @@ def main() -> int:
             added += 1
         else:
             changed += 1
+            stale.append((k, old, v))
         print(f"  {k:34} {old!r} → {v!r}")
         raw[k] = v
     if not dry:
         DICT.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+        hist_path = HERE / "app" / "tag_zh_fix_history.json"
+        try:                                    # 记录"旧译名 → 新译名"，供库里同步旧值用
+            hist = json.loads(hist_path.read_text(encoding="utf-8"))
+        except Exception:
+            hist = {}
+        for k, old_v, new_v in stale:
+            hist[k] = [old_v, new_v]
+        for k, v in fixes.items():
+            hist.setdefault(k, ["", v])
+        hist_path.write_text(json.dumps(hist, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"修正历史表已更新（{len(hist)} 条）")
     if removed:
         print(f"清掉误加条目 {removed} 条")
     print(f"修正 {changed} 条、新增 {added} 条" + ("（干跑，未写入）" if dry else f"；词典现在 {len(raw)} 条"))
+
+    # 库里以前"把词典译名存进了 tags.zh"的标签不会跟着词典更新，这里同步掉
+    if not dry and stale and "--no-db" not in sys.argv:
+        sys.path.insert(0, str(HERE))
+        try:
+            from app.store import Store
+            store = Store()
+            n = 0
+            for name, old_zh, new_zh in stale:
+                row = store.one("SELECT id, zh FROM tags WHERE name=?", (name,))
+                if row and (row["zh"] or "").strip() == old_zh.strip():
+                    store.update_tag(int(row["id"]), zh=new_zh)
+                    n += 1
+            if n:
+                print(f"库里同步更新了 {n} 个标签已存的旧译名")
+        except Exception as e:      # 库不在本机/被占用都不影响词典本身
+            print("（跳过库内同步：%s）" % e)
     return 0
 
 

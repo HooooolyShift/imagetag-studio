@@ -454,6 +454,9 @@ class MainWindow(QMainWindow):
                  "把汉化词典、分类体系、从属关系和自训练探针导出，供另一个库/另一台机器导入"),
                 ("导入学习包…", self.import_pack_ui,
                  "导入别人（或你自己另一台机器）的学习包并合并——A 库训练出的判断 B 库直接可用"),
+                ("清空模型反馈（重新学）", self.clear_feedback_ui,
+                 "清掉自训练探针、审核里的否决记录和已审标记，回到干净状态重新积累；"
+                 "已确认的标签、类型、连线都不动。中文名错译导致误判时用这个"),
                 ("清理失效目录/文件", self.cleanup_missing_ui,
                  "删掉的文件夹/库不再留在界面里：失效的库记录删除，已不存在的文件标记为缺失")):
             if text is None:
@@ -1312,6 +1315,24 @@ class MainWindow(QMainWindow):
             self.refresh_files()
 
         self.run_task("生成标签从属关系", job, on_done=done)
+
+    def clear_feedback_ui(self) -> None:
+        """清空模型反馈（探针 + 否决记录 + 已审标记）—— 中文名错译导致误判后用它重来。"""
+        n_probe = self.store.one("SELECT COUNT(*) c FROM tag_probe")["c"]
+        n_rej = self.store.one("SELECT COUNT(*) c FROM file_tags WHERE status='rejected'")["c"]
+        n_rev = self.store.one("SELECT COUNT(*) c FROM files WHERE reviewed=1")["c"]
+        if QMessageBox.question(
+                self, "清空模型反馈",
+                f"将清掉：\n· 自训练探针 {n_probe} 条\n· 审核否决记录 {n_rej} 条\n"
+                f"· 已审标记 {n_rev} 张\n\n"
+                "已确认的标签、标签类型、图谱连线、以及你画的框都不动。\n"
+                "清理后会重新积累反馈，确认继续？") != QMessageBox.Yes:
+            return
+        res = self.library.clear_model_feedback()
+        self.status_label.setText(
+            f"已清空模型反馈：探针 {res['before']['probes']}→{res['after']['probes']}，"
+            f"否决 {res['before']['rejected']}→{res['after']['rejected']}，"
+            f"已审标记 {res['before']['reviewed']}→{res['after']['reviewed']}")
 
     def bulk_delete_tags_ui(self) -> None:
         """批量删除标签（默认只删索引；可勾选同时从文件名里去掉）。"""

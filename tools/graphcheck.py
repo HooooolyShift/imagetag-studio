@@ -34,13 +34,17 @@ def main() -> int:
     tax = TaxonomyDialog(lib)
     bad = 0
 
-    # 0) 全部标签都在图谱里（上一版默认折叠 + 统计慢，导致 4000+ 标签只画出十几个）
+    # 0) 每个标签都挂进了图谱；默认只显示顶层分类，点「展开全部」后必须一个不少地画出来
     total = store.one("SELECT COUNT(*) c FROM tags")["c"]
-    shown = len([k for k in tax.canvas.items if k[0] == "tag"])
     unlinked = store.one("SELECT COUNT(*) c FROM tags t WHERE NOT EXISTS("
                          "SELECT 1 FROM taxonomy_edges e WHERE e.child_kind='tag' AND e.child_id=t.id)")["c"]
-    ok0 = shown >= total and unlinked == 0
-    print(f"[0] 库里标签 {total} ｜ 图上画出 {shown} ｜ 未连线 {unlinked} {'OK' if ok0 else '不一致'}")
+    default_tags = len([k for k in tax.canvas.items if k[0] == "tag"])
+    tax.set_all_collapsed(False)
+    shown = len([k for k in tax.canvas.items if k[0] == "tag"])
+    tax.set_all_collapsed(True)
+    ok0 = unlinked == 0 and default_tags == 0 and shown >= total
+    print(f"[0] 库里标签 {total} ｜ 默认视图标签 {default_tags}（应为 0）｜ 展开后画出 {shown} ｜ "
+          f"未连线 {unlinked} {'OK' if ok0 else '不一致'}")
     bad += 0 if ok0 else 1
 
     tags = store.list_tags()
@@ -82,6 +86,39 @@ def main() -> int:
 
     # 改回去，别留下痕迹
     store.update_tag(tid, zh=old_zh)
+
+    # 拖放：把标签拖到别的分类 = 改类型；把分类拖到别的分类下 = 换父级；禁止拖成环
+    try:
+        tmp_node = store.ensure_node("拖放测试分类")
+        roots = store.node_roots()
+        if roots:
+            store.link(int(roots[0]["id"]), "node", int(tmp_node))
+        store.link(int(tmp_node), "tag", tid)
+        tax.on_tag_dropped(tid, int(tmp_node))
+        after = store.one("SELECT category FROM tags WHERE id=?", (tid,))
+        linked = store.query("SELECT COUNT(*) c FROM taxonomy_edges WHERE child_kind='tag' AND child_id=? "
+                             "AND parent_kind='node' AND parent_id=?", (tid, int(tmp_node)))[0]["c"]
+        ok5 = bool(after) and linked >= 1
+        print(f"[4] 拖标签到分类：类型={after['category'] if after else None} 连线={linked} "
+              f"{'OK' if ok5 else '不一致'}")
+        bad += 0 if ok5 else 1
+        # 环：把 tmp_node 拖到它自己下面应被拒绝
+        before_parents = {int(e["parent_id"]) for e in
+                          store.query("SELECT parent_id FROM taxonomy_edges WHERE child_kind='node' AND child_id=?",
+                                      (int(tmp_node),))}
+        tax.on_node_dropped(int(tmp_node), int(tmp_node))
+        after_parents = {int(e["parent_id"]) for e in
+                         store.query("SELECT parent_id FROM taxonomy_edges WHERE child_kind='node' AND child_id=?",
+                                     (int(tmp_node),))}
+        ok6 = before_parents == after_parents
+        print(f"[5] 分类拖到自己下面是拒绝的：{'OK' if ok6 else '不一致'}")
+        bad += 0 if ok6 else 1
+        # 清理测试节点
+        store.execute("DELETE FROM taxonomy_edges WHERE child_id=? OR parent_id=?", (int(tmp_node), int(tmp_node)))
+        store.execute("DELETE FROM nodes WHERE id=?", (int(tmp_node),))
+    except Exception as exc:      # noqa: BLE001
+        print("  拖放自检失败:", exc)
+        bad += 1
     print("结论:", "全部通过" if bad == 0 else f"{bad} 处不一致")
     tax.close()
     return 0 if bad == 0 else 1

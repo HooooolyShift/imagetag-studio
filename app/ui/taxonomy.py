@@ -130,6 +130,52 @@ class EdgeItem(QGraphicsPathItem):
         painter.drawPolygon(QPolygonF(pts))
 
 
+class TagTree(QTreeWidget):
+    """资源管理器式的标签树：可以把标签拖到别的分类里（改类型），也能拖分类换父级。"""
+
+    tagDropped = Signal(int, int)        # (tag_id, 目标分类节点 id)
+    nodeDropped = Signal(int, int)       # (被拖的分类节点 id, 新父节点 id；0 表示根）
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setHeaderHidden(True)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+
+    @staticmethod
+    def _data(item) -> tuple | None:
+        d = item.data(0, Qt.UserRole) if item is not None else None
+        return tuple(d) if isinstance(d, (tuple, list)) else None
+
+    def _target_node(self, pos) -> int | None:
+        """拖到哪个分类节点上（拖到空白 = 根，返回 0）。"""
+        item = self.itemAt(pos)
+        while item is not None:
+            d = self._data(item)
+            if d and len(d) >= 2 and d[0] == "node":
+                return int(d[1])
+            item = item.parent()
+        return 0
+
+    def dropEvent(self, event) -> None:
+        """接管拖放：不真的移动树项，而是发信号让上层改数据库，再整树重建。"""
+        dragged = self.currentItem() or (self.selectedItems() or [None])[0]
+        d = self._data(dragged)
+        if not d or len(d) < 2:
+            event.ignore()
+            return
+        target = self._target_node(event.position().toPoint())
+        if d[0] == "tag":
+            self.tagDropped.emit(int(d[1]), int(target or 0))
+        elif d[0] == "node":
+            if int(d[1]) != int(target or 0):
+                self.nodeDropped.emit(int(d[1]), int(target or 0))
+        event.accept()
+
+
 class GraphCanvas(QGraphicsView):
     nodeClicked = Signal(str, int)
     edgeClicked = Signal(int)
@@ -336,7 +382,7 @@ class TaxonomyDialog(QDialog):
         v = QVBoxLayout(self)
 
         bar = QHBoxLayout()
-        for text, slot in (("新建分类", self.new_group), ("新建标签", self.new_tag),
+        for text, slot in (("新建标签", self.new_tag),
                            ("关联标签…", self.link_tags), ("取消关联", self.unlink_selected),
                            ("重命名…", self.rename_selected), ("删除", self.delete_selected)):
             b = QPushButton(text)
@@ -372,8 +418,11 @@ class TaxonomyDialog(QDialog):
         v.addLayout(bar)
 
         split = QSplitter(Qt.Horizontal)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
+        self.tree = TagTree()                       # 资源管理器式：拖标签改分类、拖分类换父级
+        self.tree.tagDropped.connect(self.on_tag_dropped)
+        self.tree.nodeDropped.connect(self.on_node_dropped)
+        self.tree.setToolTip("把标签拖到别的分类里 = 改它的类型；把分类拖到别的分类上 = 换父级；\n"
+                             "拖到空白处 = 移到根目录")
         self.tree.itemClicked.connect(self.on_tree_clicked)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.tree_menu)
@@ -705,10 +754,18 @@ class TaxonomyDialog(QDialog):
             draw_order.append(tid)
         hidden_tag_count = 0
         # 折叠：把「已折叠」节点的所有子孙藏起来；用 visited 防环（有人乱连成圈也不会死循环）
+        # 默认策略：**有子级的分类默认折叠**（图谱一打开只剩最高层分类），你手动展开过的会被记住
+        root_ids = {int(r["id"]) for r in self.store.node_roots()}
         hidden: set[tuple[str, int]] = set()
         stack, visited = [], set()
         for nid, n in nodes.items():
-            if (n["collapsed"] or int(nid) in self._collapsed_now) and int(nid) not in self._expanded_now:
+            nid = int(nid)
+            if nid in root_ids:
+                continue                      # 根节点不画也不参与折叠（它的子级就是要露出的顶层分类）
+            if nid in self._expanded_now:
+                continue
+            has_kids = bool(self.store.children_of_node(nid))
+            if n["collapsed"] or nid in self._collapsed_now or has_kids:
                 stack.append(int(nid))
         while stack:
             nid = stack.pop()
@@ -722,8 +779,10 @@ class TaxonomyDialog(QDialog):
                     stack.append(int(ch["cid"]))
         # 位置：优先用保存过的坐标，否则先按“分类一列、标签一列”排布（之后可自动排列或手拖）
         y = 40
+        # 根节点（"全部标签"）不画：它的子分类直接悬浮在最上层
+        root_ids = {int(r["id"]) for r in self.store.node_roots()}
         for nid, n in nodes.items():
-            if ("node", nid) in hidden:
+            if ("node", nid) in hidden or nid in root_ids:
                 continue
             x, yy = saved.get(("node", nid), (40.0, y))
             y += NODE_H + 18
@@ -765,6 +824,8 @@ class TaxonomyDialog(QDialog):
         for e in self.store.edges():
             if (e["child_kind"], int(e["child_id"])) not in self.canvas.items:
                 continue
+            if e["parent_kind"] == "node" and int(e["parent_id"]) in root_ids:
+                continue                       # 从根节点出来的连线也不画
             self.canvas.add_edge(e["parent_kind"], int(e["parent_id"]), e["child_kind"], int(e["child_id"]),
                                  int(e["id"]), e["relation"])
         self.canvas.scene_.setSceneRect(self.canvas.scene_.itemsBoundingRect().adjusted(-80, -80, 120, 120))
@@ -809,12 +870,36 @@ class TaxonomyDialog(QDialog):
                 sub = QTreeWidgetItem([label_txt + (f"  ({ch['count']})" if ch["count"] else "")])
                 sub.setData(0, Qt.UserRole, ("tag", int(ch["cid"])))
                 it.addChild(sub)
+                add_tag_children(int(ch["cid"]), sub, 0)      # 人物挂到作品下面（tag→tag 从属）
             for cid in child_nodes.get(node_id, []):
                 add_node(cid, it, depth + 1)
 
+        def add_tag_children(tag_id: int, parent_item: QTreeWidgetItem, depth: int) -> None:
+            """把 tag→tag 从属关系（作品 → 人物）也铺进树里，形成"文件夹里有子项"的层级。"""
+            from .. import tag_i18n
+            if depth > 3:
+                return
+            for ch in self.store.tag_children(int(tag_id)):
+                cid = int(ch["id"])
+                if cid in visited_tags:
+                    continue
+                visited_tags.add(cid)
+                name = str(ch["name"])
+                row = self.store.one("SELECT zh, count, category FROM tags WHERE id=?", (cid,))
+                label_txt = tag_i18n.display(name, (row["zh"] if row else "") or "")
+                sub = QTreeWidgetItem([label_txt + (f"  ({row['count']})" if row and row["count"] else "")])
+                sub.setData(0, Qt.UserRole, ("tag", cid))
+                if row and row["category"] == "series":
+                    f = sub.font(0)
+                    f.setBold(True)
+                    sub.setFont(0, f)
+                parent_item.addChild(sub)
+                add_tag_children(cid, sub, depth + 1)
+
+        visited_tags: set[int] = set()
         for root in self.store.node_roots():
             add_node(int(root["id"]), None)
-        self.tree.expandToDepth(1)
+        self.tree.expandToDepth(2)
 
     # ================= 选择 / 详情 =================
     def on_tree_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
@@ -915,15 +1000,70 @@ class TaxonomyDialog(QDialog):
         return int(roots[0]["id"]) if roots else None
 
     def new_group(self) -> None:
+        self.new_group_under(self._selected_node_id())
+
+    def new_group_under(self, parent_node_id: int | None) -> None:
+        """新建分类（文件夹）。选中了某个分类 → 建在它下面；没选中 → 建在根下。"""
         name, ok = QInputDialogName(self, "新建分类", "分类名（例如：人物 / 服装 / 体位）")
         if not ok or not name.strip():
             return
         nid = self.store.ensure_node(name.strip())
-        parent = self.store.node_roots()
-        if parent and int(parent[0]["id"]) != nid:
-            self.store.link(int(parent[0]["id"]), "node", nid)
+        parent = int(parent_node_id) if parent_node_id else 0
+        if not parent:                                   # 没选中 → 挂到根节点下
+            roots = self.store.node_roots()
+            parent = int(roots[0]["id"]) if roots else 0
+        if parent and parent != nid:
+            self.store.link(parent, "node", nid)
+        self._expanded_now.add(parent)                    # 建完让父级展开，能看到新分类
         self.changed.emit()
         self.rebuild()
+        self.detail.setText(f"已在{'根目录' if parent_node_id is None else '所选分类'}下新建分类「{name.strip()}」")
+
+    # ---------------- 拖放迁移 ----------------
+    def on_tag_dropped(self, tag_id: int, node_id: int) -> None:
+        """把标签拖到某分类里 = 改它的类型（并重建图谱连线）。"""
+        row = self.store.one("SELECT name, category FROM tags WHERE id=?", (tag_id,))
+        if not row:
+            return
+        node = self.store.node(node_id) if node_id else None
+        key = self.store.category_key_by_label(node["name"]) if node else None
+        if not key:
+            self.detail.setText(f"「{row['name']}」没动：目标不是标签类型分类（拖到服装/人物这类分类上才会改类型）")
+            return
+        self.store.update_tag(tag_id, category=key)
+        self.library.relink_all_categories()              # 按新类型重建连线（别用反向同步）
+        self.changed.emit()
+        self.rebuild()
+        from .. import categories as _cats
+        self.detail.setText(f"「{row['name']}」已迁移到「{_cats.label_of(self.store, key)}」"
+                            f"（原类型：{_cats.label_of(self.store, row['category'])}）")
+
+    def on_node_dropped(self, node_id: int, new_parent: int) -> None:
+        """把分类拖到别的分类上 = 换父级（拖到空白 = 移到根下）。"""
+        if not new_parent:
+            roots = self.store.node_roots()
+            new_parent = int(roots[0]["id"]) if roots else 0
+        if not new_parent or new_parent == node_id:
+            return
+        # 防环：不能把节点拖到它自己的子孙下面
+        stack, seen = [node_id], set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            if cur == new_parent:
+                self.detail.setText("没动：不能把分类拖到它自己的子分类下面")
+                return
+            for ch in self.store.children_of_node(cur):
+                if ch["kind"] == "node":
+                    stack.append(int(ch["cid"]))
+        self.store.execute("DELETE FROM taxonomy_edges WHERE child_kind='node' AND child_id=?", (node_id,))
+        self.store.link(new_parent, "node", node_id)
+        self._expanded_now.add(int(new_parent))
+        self.changed.emit()
+        self.rebuild()
+        self.detail.setText("已移动分类")
 
     def new_tag(self) -> None:
         parent = self._selected_node_id()
@@ -1217,8 +1357,11 @@ class TaxonomyDialog(QDialog):
         item = self.tree.itemAt(pos)
         if item:
             self.on_tree_clicked(item, 0)
+        else:
+            self.tree.clearSelection()            # 点空白 = 取消选中 → 新分类建在根下
+            self.current = None
         menu = QMenu(self)
-        a_new = menu.addAction("新建子分类")
+        a_new = menu.addAction("新建分类（在此分类下）" if item else "新建分类（根目录）")
         a_tag = menu.addAction("新建标签")
         a_link = menu.addAction("关联已有标签…")
         menu.addSeparator()
@@ -1226,12 +1369,7 @@ class TaxonomyDialog(QDialog):
         a_del = menu.addAction("删除")
         act = menu.exec(self.tree.mapToGlobal(pos))
         if act == a_new:
-            name, ok = QInputDialogName(self, "新建子分类", "分类名")
-            parent = self._selected_node_id()
-            if ok and name.strip() and parent:
-                nid = self.store.ensure_node(name.strip())
-                self.store.link(parent, "node", nid)
-                self.rebuild()
+            self.new_group_under(self._selected_node_id() if item else None)
         elif act == a_tag:
             self.new_tag()
         elif act == a_link:
