@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
     QTableWidget, QTabWidget,
     QTableWidgetItem, QInputDialog,
+    QHeaderView,
 )
 
 from ..config import CATEGORY_ORDER, TAG_CATEGORIES
@@ -441,20 +442,38 @@ class TaxonomyDialog(QDialog):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(4, 4, 4, 4)
-        self.tag_search = QLineEdit()
-        self.tag_search.setPlaceholderText("搜索标签（中文/英文），回车定位到图上")
-        self.tag_search.textChanged.connect(self.reload_tag_table)
-        self.tag_search.returnPressed.connect(self.locate_from_table)
+        tip = QLabel("① 直接点下面这个框就能看到全部已有标签（也可输入中文/英文过滤）")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#8f96a3;")
+        v.addWidget(tip)
+        # 用可编辑下拉框当搜索框：不输入也能展开看到全部标签，且宽度足够不截断中文
+        self.tag_search = QComboBox()
+        self.tag_search.setEditable(True)
+        self.tag_search.setInsertPolicy(QComboBox.NoInsert)
+        self.tag_search.setMinimumWidth(320)
+        self.tag_search.lineEdit().setPlaceholderText("点这里看全部标签，或输入中文/英文过滤")
+        self.tag_search.setMaxVisibleItems(30)
+        self.tag_search.editTextChanged.connect(self.reload_tag_table)
+        self.tag_search.lineEdit().returnPressed.connect(self.locate_from_table)
+        self.tag_search.activated.connect(lambda _i: self.locate_from_table())
         v.addWidget(self.tag_search)
         self.tag_table = QTableWidget(0, 3)
-        self.tag_table.setHorizontalHeaderLabels(["标签（中文备注）", "类型", "图片数"])
+        self.tag_table.setHorizontalHeaderLabels(["标签（中文备注 / 英文原名）", "类型", "图片数"])
         self.tag_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tag_table.horizontalHeader().setStretchLastSection(True)
-        self.tag_table.setColumnWidth(0, 190)
-        self.tag_table.setColumnWidth(1, 110)
+        self.tag_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tag_table.horizontalHeader().setStretchLastSection(False)
+        self.tag_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)   # 第一列自适应，不再截断
+        self.tag_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tag_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.tag_table.setSortingEnabled(False)
         self.tag_table.cellDoubleClicked.connect(lambda *_: self.locate_from_table())
+        self.tag_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tag_table.customContextMenuRequested.connect(self._tag_table_menu)
         v.addWidget(self.tag_table, 1)
+        hint = QLabel("② 先在上面表里点一行选中标签，再点下面的按钮；右键行也有同样菜单")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8f96a3;")
+        v.addWidget(hint)
         row = QHBoxLayout()
         for text, slot in (("定位到图上", self.locate_from_table),
                            ("改类型…", self.change_category_selected),
@@ -463,19 +482,51 @@ class TaxonomyDialog(QDialog):
             b.clicked.connect(slot)
             row.addWidget(b)
         v.addLayout(row)
-        self.tag_note = QLabel("双击标签行 = 定位到图上；这里的改动会立即同步到图谱与体系树")
+        self.tag_note = QLabel("")
         self.tag_note.setWordWrap(True)
         self.tag_note.setStyleSheet("color:#8f96a3;")
         v.addWidget(self.tag_note)
         self.reload_tag_table()
         return w
 
+    def _tag_table_menu(self, pos) -> None:
+        row = self.tag_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.tag_table.selectRow(row)
+        menu = QMenu(self)
+        a_locate = menu.addAction("在图上定位这个标签")
+        a_cat = menu.addAction("改类型…")
+        a_del = menu.addAction("删除这个标签")
+        act = menu.exec(self.tag_table.mapToGlobal(pos))
+        if act == a_locate:
+            self.locate_from_table()
+        elif act == a_cat:
+            self.change_category_selected()
+        elif act == a_del:
+            self.delete_tag_selected()
+
     def reload_tag_table(self) -> None:
         from .. import tag_i18n, categories as _cats
         if not hasattr(self, "tag_table"):
             return
         LIMIT = 500
-        all_rows = self.store.list_tags(self.tag_search.text().strip() if hasattr(self, "tag_search") else "")
+        # 下拉框里同步"全部标签"（不输入也能点开挑），并按当前输入过滤表格
+        try:
+            q = self.tag_search.currentText().strip()
+        except Exception:
+            q = ""
+        all_rows = self.store.list_tags(q)
+        if hasattr(self, "tag_search"):
+            cur = self.tag_search.currentText()
+            self.tag_search.blockSignals(True)
+            self.tag_search.clear()
+            for t in self.store.list_tags(""):
+                zh = t["zh"] or tag_i18n.translate(t["name"])
+                self.tag_search.addItem(f"{zh}（{t['name']}）" if zh and zh != t["name"] else t["name"],
+                                        t["name"])
+            self.tag_search.setEditText(cur)
+            self.tag_search.blockSignals(False)
         rows = all_rows[:LIMIT]
         self.tag_table.setRowCount(len(rows))
         for i, t in enumerate(rows):
