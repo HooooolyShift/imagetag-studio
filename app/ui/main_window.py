@@ -1390,11 +1390,22 @@ class MainWindow(QMainWindow):
             self.library.finish_job(job_id, "done")
             return True
 
+        job_ids = list(ids)          # 本次任务处理的图片，done 回调里刷系列要用
+
         def done(_r):
             summary = self.store.pending_summary()
             self.status_label.setText(f"{name} 完成；新增待审核标签 {summary['pending_tags']} 个，别忘了审核")
             self.update_pending_button()
             self.refresh_files()
+            # 打标跑完：这些图若属于某个系列，重新汇总系列标签并刷新系列文件夹名
+            try:
+                n = self.library.refresh_series_for_files(job_ids)
+                if n:
+                    self.status_label.setText(self.status_label.text() +
+                                              f"；已更新 {n} 个系列的标签与文件夹名")
+                    self.refresh_roots()
+            except Exception:
+                pass
 
         self.run_task(name, job, on_done=done, on_item=self.on_item_tagged)
 
@@ -1429,6 +1440,16 @@ class MainWindow(QMainWindow):
         self.refresh_tags()
         self.refresh_files()
         self.update_selection()
+        # 审核完也可能给系列图新增了标签 → 重新汇总系列标签并刷新文件夹名
+        try:
+            n = self.library.refresh_series_for_files(
+                [int(r["id"]) for r in self.store.query(
+                    "SELECT DISTINCT file_id AS id FROM file_tags WHERE status='confirmed'")])
+            if n:
+                self.status_label.setText(f"已更新 {n} 个系列的标签与文件夹名")
+                self.refresh_roots()
+        except Exception:
+            pass
         if self.settings.auto_import_after_review:
             # 原来要求"整个待审队列清空"才自动入库 —— 队列里只要还剩别的图就永远不触发，
             # 这就是"我审核完了却没自动入库"的原因。改成：审核一结束，把**所有已审核通过、

@@ -1273,6 +1273,26 @@ class Library:
         return True
 
     # ------------------------------------------------------------------ 系列
+    def refresh_series_for_files(self, file_ids: Sequence[int]) -> int:
+        """打标/审核之后刷新这些文件**所属系列**的标签与文件夹名。
+
+        系列标签 = 该系列所有页标签的并集（_series_tag_union），所以只要重新走一遍
+        rename_series_dir，目录名就会带上新识别出来的标签；页码与文件本身不动。
+        """
+        try:
+            rows = self.store.files_by_ids(list(file_ids))
+        except Exception:
+            return 0
+        ids = {int(r["series_id"]) for r in rows if r["series_id"]}
+        n = 0
+        for sid in ids:
+            try:
+                if self.rename_series_dir(sid):
+                    n += 1
+            except Exception:
+                continue
+        return n
+
     def set_series_order(self, series_id: int, ordered_ids: Sequence[int],
                          digits: int | None = None) -> dict:
         """按给定顺序重排系列页码：文件**原地**重命名为 001/002/…，并更新 page_no 与系列目录名。
