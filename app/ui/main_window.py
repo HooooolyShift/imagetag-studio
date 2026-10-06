@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 import subprocess
 from pathlib import Path
 
@@ -426,7 +427,13 @@ class MainWindow(QMainWindow):
         self.root_filter: int | None = None
         self.dir_filter: str = ""
         from ..config import VERSION
-        self.setWindowTitle(f"图片标签工坊  v{VERSION}  —  {store.db_path.parent}")
+        # 标题里带上"这份代码的构建时间"：出问题时一眼就能看出跑的是不是最新代码
+        # （以前排查"改了没生效"，先得猜用户到底在跑哪一版）
+        try:
+            _built = datetime.fromtimestamp(Path(__file__).stat().st_mtime).strftime("%m-%d %H:%M")
+        except Exception:
+            _built = "?"
+        self.setWindowTitle(f"图片标签工坊  v{VERSION}  —  {store.db_path.parent}　[代码 {_built}]")
         self.setStyleSheet(STYLE)
         self.resize(1500, 920)
         self._build_ui()
