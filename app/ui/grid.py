@@ -308,10 +308,33 @@ class GridDelegate(QStyledItemDelegate):
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter,
                          painter.fontMetrics().elidedText(it.name, Qt.ElideRight, text_rect.width()))
         if self.model.tile_tags and it.tags:
-            painter.setPen(QColor("#8f96a3"))
-            painter.drawText(QRect(r.left() + 2, img_rect.bottom() + 17, r.width() - 4, 30),
-                             Qt.AlignLeft | Qt.TextWordWrap,
-                             " ".join(it.tags[:6]) + (" …" if len(it.tags) > 6 else ""))
+            # 标签用「中文名气泡」逐个画：能排下就同一行，排不下换行，**绝不把标签本身断开**。
+            # 每个格子有自己的上下滚动量（鼠标悬停在标签区滚轮即可滚它们，见 GridView.wheelEvent）。
+            from .. import tag_i18n
+            fm = painter.fontMetrics()
+            box = QRect(r.left() + 2, img_rect.bottom() + 17, r.width() - 4,
+                        max(18, r.height() - (img_rect.height() + 19)))
+            line_h = fm.height() + 4
+            x, y = box.left(), box.top() - int(getattr(it, "tag_scroll", 0))
+            for name in it.tags:
+                label = tag_i18n.label(name, "")
+                w = fm.horizontalAdvance(label) + 12
+                if x + w > box.right() and x > box.left():
+                    x = box.left()
+                    y += line_h                      # 排不下就整块换行
+                if y + line_h < box.top() - line_h:
+                    x, y = box.left(), y + line_h     # 滚过头了也要继续往下算（用于裁剪）
+                    continue
+                if y > box.bottom():
+                    break
+                chip = QRect(x, y, w, line_h - 3)
+                if chip.bottom() >= box.top() and chip.top() <= box.bottom():
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(58, 64, 78, 200))
+                    painter.drawRoundedRect(chip, 6, 6)
+                    painter.setPen(QColor("#c9d3e0"))
+                    painter.drawText(chip.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
+                x += w + 4
         painter.restore()
 
 
@@ -350,6 +373,25 @@ class GridView(QListView):
         self.setIconSize(QSize(size, size))
         self.setGridSize(QSize(size + 16, size + 52))
         self.reset()
+
+    def wheelEvent(self, event) -> None:
+        """鼠标悬停在某个格子的**标签区**时，滚轮滚的是那个格子的标签；其它位置正常滚列表。"""
+        try:
+            pos = event.position().toPoint()
+            idx = self.indexAt(pos)
+            it = self.grid_model.item_at(idx) if idx.isValid() else None
+            if it is not None and self.grid_model.tile_tags and it.tags:
+                rect = self.visualRect(idx)
+                tag_top = rect.top() + int(self.grid_model.icon_size) + 19
+                if pos.y() >= tag_top:
+                    step = -3 if event.angleDelta().y() > 0 else 3
+                    it.tag_scroll = max(0, int(getattr(it, "tag_scroll", 0)) + step)
+                    self.update(idx)
+                    event.accept()
+                    return
+        except Exception:
+            pass
+        super().wheelEvent(event)
 
     def _request_visible(self) -> None:
         for idx in self.visible_indexes():
