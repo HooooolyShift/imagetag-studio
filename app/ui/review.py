@@ -527,6 +527,44 @@ class ReviewDialog(QDialog):
         parent_map = self.store.tag_parent_map() if rows else {}
         self._child_map, self._parent_map = child_map, parent_map
         pending = [t for t in rows if t["name"] not in self.decisions]
+        # CLIP 与 WD14 可能对**同一件事**给出两个词条（典型是"中文标签 + 对应英文标签"，
+        # 例如某个中文名与它的英文原标签同时被提出来），审核时同一件事判两遍很别扭。
+        # 这里按"规范名"合并成一行：中文名归到对应英文标签；英文名按小写比对。
+        # 保留更可信的来源（manual > 系列/文件名 > wd14 > clip），分数取较大者。
+        try:
+            zh2name: dict[str, str] = {}
+            for t in self.store.list_tags():
+                z = str(t["zh"] or "").strip()
+                if z and z not in zh2name:
+                    zh2name[z] = str(t["name"])
+            order = {"manual": 0, "series": 1, "filename": 2, "filename_parent": 2,
+                     "face": 2, "wd14": 3, "clip": 4}
+            merged, seen = [], {}
+            for t in pending:
+                nm = str(t["name"])
+                key = str(zh2name.get(nm, nm)).lower()
+                prev = seen.get(key)
+                if prev is None:
+                    seen[key] = t
+                    merged.append(t)
+                    continue
+                # 同一件事出现两次：留来源更可信的那个，分数取大
+                if order.get(str(t["source"]), 9) < order.get(str(prev["source"]), 9):
+                    merged[merged.index(prev)] = t
+                    seen[key] = t
+                elif float(t["score"] or 0) > float(prev["score"] or 0):
+                    try:
+                        prev = dict(prev)
+                        prev["score"] = t["score"]
+                        merged[merged.index(seen[key])] = prev
+                        seen[key] = prev
+                    except Exception:
+                        pass
+            if len(merged) < len(pending):
+                self.title.setToolTip(f"已把 {len(pending) - len(merged)} 个重复词条（中英同义）合并显示")
+            pending = merged
+        except Exception:
+            pass
         names = {t["name"] for t in pending}
         hidden_by: dict[str, str] = {}
         for t in pending:                                   # 父标签：有后代也在待审就先藏起来
