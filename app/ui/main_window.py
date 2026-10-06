@@ -418,6 +418,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = store
         self.settings = settings
+        self._blank_start = True        # 启动时图库页留空，等用户选条件再加载（见 refresh_files）
         self.library = Library(store, settings)
         self.hub = EngineHub(settings)
         self.thumbs = ThumbPool(size=max(320, settings.thumb_size * 2))
@@ -852,6 +853,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------ 查询 + 网格
     def refresh_files(self) -> None:
         required, any_of, text = self._filter_args()
+        # 启动时不自动列出全部图片：左侧没选任何条件就保持空白（点标签/文件夹/搜索后才加载）
+        if getattr(self, "_blank_start", False):
+            if not required and not any_of and not text and self.root_filter is None \
+                    and self.current_series is None:
+                self.model.set_items([])
+                self.status_label.setText("请先在左侧选择标签、文件夹，或直接搜索 —— 避免一开就加载几千张")
+                return
+            self._blank_start = False
         try:      # 库里标记过 R18 的标签名（图谱页可改），图库气泡据此染粉
             self.model.r18_names = {str(r["name"]) for r in self.store.query(
                 "SELECT name FROM tags WHERE COALESCE(r18,0)=1")}
