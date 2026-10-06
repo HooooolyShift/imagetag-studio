@@ -164,6 +164,29 @@ class GridModel(QAbstractListModel):
                 self.dataChanged.emit(idx, idx)
 
 
+R18_KEYWORDS_ZH = (
+    "性", "裸", "乳", "阴", "阳具", "肛", "口交", "自慰", "爱液", "精液", "插入", "绳缚",
+    "拘束", "调教", "触手", "内射", "潮吹", "屁股", "臀", "穴", "勃起", "淫", "情色",
+    "开脚", "后入", "骑乘", "玩具", "乳首", "性器", "兽交", "群交", "口内", "尿道",
+)
+R18_KEYWORDS_EN = (
+    "sex", "nude", "naked", "nipple", "areola", "penis", "vagina", "pussy", "anal", "oral",
+    "cum", "semen", "dildo", "vibrator", "onahole", "bondage", "shibari", "lewd", "hentai",
+    "masturbat", "orgasm", "insertion", "tentacle", "bdsm", "topless", "bottomless",
+    "futanari", "ahegao", "clitoris", "urethra", "squirting", "cervix", "condom", "sex_toy",
+    "r18", "18禁", "panties", "crotch", "butt", "breast", "lingerie",
+)
+
+
+def is_r18_tag(name: str, zh: str = "") -> bool:
+    """R18 相关标签（性行为 / 性玩具 / 裸露…）→ 用来把气泡染成粉色。"""
+    n = str(name or "").lower()
+    z = str(zh or "")
+    if any(k in z for k in R18_KEYWORDS_ZH):
+        return True
+    return any(k in n for k in R18_KEYWORDS_EN)
+
+
 class GridDelegate(QStyledItemDelegate):
     """画缩略图 + 标题 + 标签行 + 系列角标。"""
 
@@ -330,9 +353,10 @@ class GridDelegate(QStyledItemDelegate):
                 chip = QRect(x, y, w, line_h - 3)
                 if chip.bottom() >= box.top() and chip.top() <= box.bottom():
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(58, 64, 78, 200))
+                    _r18 = is_r18_tag(name, label)
+                    painter.setBrush(QColor(226, 88, 158, 195) if _r18 else QColor(58, 64, 78, 200))
                     painter.drawRoundedRect(chip, 6, 6)
-                    painter.setPen(QColor("#c9d3e0"))
+                    painter.setPen(QColor("#ffffff") if _r18 else QColor("#c9d3e0"))
                     painter.drawText(chip.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
                 x += w + 4
         painter.restore()
