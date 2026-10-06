@@ -49,6 +49,9 @@ class GridModel(QAbstractListModel):
         # 还没审核通过的 R18/R18G 也算进来（打标完没审的时候就先遮住，保护性功能不能等审核）
         self.blur_ids: set[int] = set()
         self._blur_cache: dict[str, QPixmap] = {}      # 真·高斯模糊结果缓存（按缩略图路径）
+        # 缩略图生成完的通知必须在这里接上。之前这行被挤到 blurred() 的 return 之后成了死代码，
+        # 模型永远收不到通知 → 所有缩略图只显示"…"（就是这次缩略图集体失效的根因）
+        thumbs.signals.ready.connect(self._on_thumb)
 
     def blurred(self, key: str, pm: QPixmap) -> QPixmap:
         """对缩略图做一次真正的高斯卷积（PIL），结果缓存起来，别每帧重算。
@@ -77,7 +80,6 @@ class GridModel(QAbstractListModel):
             self._blur_cache.clear()
         self._blur_cache[key] = got
         return got
-        thumbs.signals.ready.connect(self._on_thumb)
 
     # ---- 基础接口 ----
     def rowCount(self, parent=QModelIndex()) -> int:
