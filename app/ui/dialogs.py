@@ -1290,7 +1290,22 @@ class ImageCanvas(QWidget):
         self.update()
 
     def wheelEvent(self, e) -> None:
+        # 以**鼠标位置**为中心缩放：先记下光标下面是图的哪一点，缩放后把这一点挪回光标处
+        pos = e.position()
+        before = self._target_rect()
         self.zoom = max(0.2, min(8.0, self.zoom * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1)))
+        if before.width() > 0 and before.height() > 0:
+            ux = (pos.x() - before.left()) / before.width()
+            uy = (pos.y() - before.top()) / before.height()
+            after = self._target_rect()          # 新 zoom + 旧 pan
+            self.pan += QPointF(pos.x() - (after.left() + ux * after.width()),
+                                pos.y() - (after.top() + uy * after.height()))
+        self.update()
+
+    def fit_view(self) -> None:
+        """适应窗口：缩放回 1.0 并居中（和"换图"时的初始状态一致）。"""
+        self.zoom = 1.0
+        self.pan = QPointF(0, 0)
         self.update()
 
     def paintEvent(self, _e) -> None:
@@ -1370,6 +1385,21 @@ class PreviewDialog(QDialog):
         split = QSplitter(Qt.Horizontal)
         self.canvas = ImageCanvas()
         self.canvas.regionDrawn.connect(self.on_region_drawn)
+        # 大图操作条：适应窗口 / 100% / 提示
+        ops = QHBoxLayout()
+        b_fit = QPushButton("适应窗口")
+        b_fit.setToolTip("缩放回 1.0 并居中（左键拖动可平移，滚轮以鼠标位置为中心缩放）")
+        b_fit.clicked.connect(self.canvas.fit_view)
+        ops.addWidget(b_fit)
+        b_zoom_in = QPushButton("放大 +")
+        b_zoom_in.clicked.connect(lambda: setattr(self.canvas, "zoom", min(8.0, self.canvas.zoom * 1.25)) or self.canvas.update())
+        ops.addWidget(b_zoom_in)
+        b_zoom_out = QPushButton("缩小 −")
+        b_zoom_out.clicked.connect(lambda: setattr(self.canvas, "zoom", max(0.2, self.canvas.zoom / 1.25)) or self.canvas.update())
+        ops.addWidget(b_zoom_out)
+        ops.addWidget(QLabel("左键拖动平移 · 滚轮以鼠标位置缩放"))
+        ops.addStretch(1)
+        v.addLayout(ops)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.canvas)
