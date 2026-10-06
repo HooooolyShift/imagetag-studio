@@ -2141,7 +2141,14 @@ class MainWindow(QMainWindow):
                 return
             self.task.cancel()
             self.task.wait(3000)
-        for key in list(self.settings.__dataclass_fields__):
-            pass
         self.settings.save()
+        # 关窗口 = 真正退出（以前会缩到托盘继续活着，于是"我明明重启过了"其实还是旧进程）
+        try:
+            from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+            for w in QApplication.topLevelWidgets():
+                if isinstance(w, QSystemTrayIcon):
+                    w.hide()
+            QApplication.quit()
+        except Exception:
+            pass
         event.accept()

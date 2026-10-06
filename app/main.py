@@ -113,7 +113,9 @@ def main() -> int:
     QTimer.singleShot(300, recheck_files)
     QTimer.singleShot(600, housekeeping)
 
-    # ---------------- 托盘图标：关窗口不退出，托盘菜单里退出 ----------------
+    # ---------------- 托盘图标 ----------------
+    # 关窗口现在 = 真退出（见 MainWindow.closeEvent）；托盘只作为"任务在跑时的入口"，
+    # 点托盘图标可以重新把窗口叫出来，托盘菜单里也能退出。
     tray = None
     try:
         from PySide6.QtWidgets import QMenu, QSystemTrayIcon
