@@ -43,6 +43,20 @@ class ThumbSignals(QObject):
     ready = Signal(int, str)
 
 
+def _log_thumb(file_id: int, src: str, why: str) -> None:
+    """缩略图失败时记一行日志（pythonw 没有控制台，出问题只能靠这个查）。"""
+    try:
+        from ..config import data_dir
+        p = data_dir() / "thumbs.log"
+        if p.exists() and p.stat().st_size > 2_000_000:      # 别无限涨
+            p.write_text("", encoding="utf-8")
+        with open(p, "a", encoding="utf-8") as fh:
+            import time as _t
+            fh.write("%s  #%s  %s  -> %s\n" % (_t.strftime("%Y-%m-%d %H:%M:%S"), file_id, src, why))
+    except Exception:
+        pass
+
+
 class _ThumbJob(QRunnable):
     def __init__(self, file_id: int, src: str, mtime: float, size: int, signals: ThumbSignals):
         super().__init__()
@@ -52,8 +66,11 @@ class _ThumbJob(QRunnable):
         try:
             p = imaging.make_thumb(self.src, self.file_id, self.mtime, self.size)
             path = str(p) if p else ""
-        except Exception:
+            if not path:
+                _log_thumb(self.file_id, self.src, "make_thumb 返回空（格式不支持或文件损坏）")
+        except Exception as exc:
             path = ""
+            _log_thumb(self.file_id, self.src, f"{type(exc).__name__}: {exc}")
         try:                      # 对话框可能已关闭 → 信号源被销毁，忽略即可
             self.signals.ready.emit(self.file_id, path)
         except RuntimeError:

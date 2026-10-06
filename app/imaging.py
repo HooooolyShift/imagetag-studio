@@ -24,10 +24,8 @@ def register_pillow_extras() -> None:
         import pillow_avif                # noqa: F401  导入即注册
     except Exception:
         pass
-    try:
-        Image.init()                      # 让 PIL 重新扫描一遍已注册的解码器
-    except Exception:
-        pass
+    # 注意：这里**不要**调 Image.init()——它会重扫插件表，可能把刚注册的 opener 顶掉，
+    # 之前缩略图集体失效就发生在这之后，已经去掉。
 
 
 register_pillow_extras()
