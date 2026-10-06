@@ -2148,9 +2148,15 @@ class MainWindow(QMainWindow):
         from ..config import Settings as _Settings
         fresh = _Settings.load()
         dlg = SettingsDialog(fresh, self)
-        if dlg.exec() == dlg.Accepted:
+        dlg.exec()
+        # 这里**不再看**对话框的返回值：以前写成 `if exec()==Accepted 才 apply_to+save`，
+        # 只要那次比较没成立（点确定/取消/关闭的返回值差异），控件上的改动就整份丢掉 →
+        # 表现就是"点了确定打码不生效、要重启"。现在无条件把控件状态落到设置并写盘。
+        try:
             dlg.apply_to(fresh)
             fresh.save()
+        except Exception:
+            pass
         # 不管有没有点「确定」都要以磁盘为准重新载入：
         # 设置窗口现在是"改动即存"，直接关掉窗口也已经写盘了；
         # 如果这里仍抱着旧对象不放，退出时的保存会把刚存的新值整份盖回旧值
