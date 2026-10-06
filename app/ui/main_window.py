@@ -2118,20 +2118,22 @@ class MainWindow(QMainWindow):
         if dlg.exec() == dlg.Accepted:
             dlg.apply_to(fresh)
             fresh.save()
-            self.settings = fresh            # 之后主窗口统一用这份新对象
-            # 写完立刻回读校验：把"确实存进去了"直接摆在状态栏上，避免又是"看着没生效"
-            back = _Settings.load()
-            self.status_label.setText(
-                "设置已保存并校验回读：保留原文件名=%s ｜ 只写最具体标签=%s ｜ 缩略图=%dpx ｜ 性能=%s"
-                % ("是" if back.rename_keep_original else "否",
-                   "是" if getattr(back, "tag_most_specific_on_disk", True) else "否",
-                   int(back.thumb_size), back.perf_mode))
-            from .. import perf
-            perf.configure(self.settings)
-            self.hub.unload()
-            self.model.icon_size = self.settings.thumb_size
-            self.grid.set_icon_size(self.settings.thumb_size)
-            self.status_label.setText(f"设置已保存 · 性能挡位：{perf.label()}")
+        # 不管有没有点「确定」都要以磁盘为准重新载入：
+        # 设置窗口现在是"改动即存"，直接关掉窗口也已经写盘了；
+        # 如果这里仍抱着旧对象不放，退出时的保存会把刚存的新值整份盖回旧值
+        # （日志里出现过 16:51:39 写 False、16:51:40 又被写回 True 就是这个原因）。
+        self.settings = _Settings.load()
+        back = self.settings
+        self.status_label.setText(
+            "设置已保存并校验回读：保留原文件名=%s ｜ 只写最具体标签=%s ｜ 缩略图=%dpx ｜ 性能=%s"
+            % ("是" if back.rename_keep_original else "否",
+               "是" if getattr(back, "tag_most_specific_on_disk", True) else "否",
+               int(back.thumb_size), back.perf_mode))
+        from .. import perf
+        perf.configure(self.settings)
+        self.hub.unload()
+        self.model.icon_size = self.settings.thumb_size
+        self.grid.set_icon_size(self.settings.thumb_size)
 
     # ------------------------------------------------ 关闭
     def closeEvent(self, event) -> None:
@@ -2141,7 +2143,8 @@ class MainWindow(QMainWindow):
                 return
             self.task.cancel()
             self.task.wait(3000)
-        self.settings.save()
+        # 这里**不再**保存设置：设置窗口已经是"改动即存"，而主窗口内存里这份一旦是旧的，
+        # 退出时保存就会把用户刚改的值整份盖回去（日志里 16:51:39 写 False、16:51:40 又写回 True 就是它）。
         # 关窗口 = 真正退出（以前会缩到托盘继续活着，于是"我明明重启过了"其实还是旧进程）
         try:
             from PySide6.QtWidgets import QApplication, QSystemTrayIcon
