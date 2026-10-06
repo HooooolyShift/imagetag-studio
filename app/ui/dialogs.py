@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
@@ -1215,12 +1215,17 @@ class ImageCanvas(QWidget):
         self.regions: list[tuple[str, float, float, float, float]] = []
         self._start: QPoint | None = None
         self._cur: QPoint | None = None
+        self.pan = QPointF(0, 0)              # 放大后可拖动平移的偏移量
+        self._panning = False
+        self._pan_from: QPoint | None = None
+        self._pan_origin = QPointF(0, 0)
         self.setMouseTracking(True)
         self.setMinimumSize(320, 240)
 
     def set_pixmap(self, pm: QPixmap) -> None:
         self.pm = pm
         self.zoom = 1.0
+        self.pan = QPointF(0, 0)              # 换图时复位平移
         self.updateGeometry()
         self.update()
 
@@ -1234,10 +1239,17 @@ class ImageCanvas(QWidget):
         scale = min(avail.width() / pw, avail.height() / ph) * self.zoom
         scale = max(scale, 0.02)
         w, h = pw * scale, ph * scale
-        return QRectF((avail.width() - w) / 2, (avail.height() - h) / 2, w, h)
+        return QRectF((avail.width() - w) / 2 + self.pan.x(),
+                      (avail.height() - h) / 2 + self.pan.y(), w, h)
 
     def mousePressEvent(self, e) -> None:
         if not self.annotate or self.pm is None:
+            # 非标注模式 = 拖动平移（放大后想看别处不用来回滚缩放）
+            if self.pm is not None and e.button() == Qt.LeftButton:
+                self._panning = True
+                self._pan_from = e.position().toPoint()
+                self._pan_origin = QPointF(self.pan)
+                self.setCursor(Qt.ClosedHandCursor)
             return
         r = self._target_rect()
         if r.contains(e.position()):
@@ -1246,11 +1258,21 @@ class ImageCanvas(QWidget):
             self.update()
 
     def mouseMoveEvent(self, e) -> None:
+        if self._panning and self._pan_from is not None:
+            d = e.position().toPoint() - self._pan_from
+            self.pan = self._pan_origin + QPointF(d.x(), d.y())
+            self.update()
+            return
         if self._start is not None:
             self._cur = e.position().toPoint()
             self.update()
 
     def mouseReleaseEvent(self, e) -> None:
+        if self._panning:
+            self._panning = False
+            self._pan_from = None
+            self.setCursor(Qt.ArrowCursor)
+            return
         if self._start is None or self.pm is None:
             return
         end = e.position().toPoint()
