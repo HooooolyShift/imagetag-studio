@@ -2292,7 +2292,7 @@ class Library:
 
     def import_to_library(self, file_ids: Sequence[int], move: bool = True,
                           auto_write_names: bool = True, progress=None, cancel=None,
-                          keep_folder: bool = True) -> dict:
+                          keep_folder: bool = True, subdir: str = "") -> dict:
         """把选中的图片正式收进「图库」：移动到同盘图库目录，源文件随之消失（下次扫描不会重复）。
 
         同盘移动 = rename，毫秒级；跨盘自动复制后删除。
@@ -2325,7 +2325,9 @@ class Library:
             except Exception:
                 pass
             sub = ""
-            if r["series_id"]:
+            if subdir:
+                sub = str(subdir).strip().strip("\\/")      # 审核台指定的入库位置（优先）
+            elif r["series_id"]:
                 s = self.store.one("SELECT dir FROM series WHERE id=?", (int(r["series_id"]),))
                 if s and s["dir"]:
                     sub = Path(s["dir"]).name

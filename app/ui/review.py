@@ -36,6 +36,8 @@ class ReviewDialog(QDialog):
         self.library = library
         self.hub = hub
         self.store = library.store
+        self.settings = library.settings
+        self.library = library
         self.setWindowTitle("审核待定标签（确认后才正式生效）")
         self.resize(1500, 900)
         self.queue: list[dict] = []          # [{'id':..,'name':..,'path':..,'pending':[tag rows]}]
@@ -51,6 +53,7 @@ class ReviewDialog(QDialog):
         self.box_mode = False
         self.box_target: str | None = None
         self._build()
+        self._reload_dest()
         self.reload_queue()
 
     # ------------------------------------------------------------ UI
@@ -69,6 +72,19 @@ class ReviewDialog(QDialog):
             b = QPushButton(text)
             b.clicked.connect(slot)
             top.addWidget(b)
+        # 入库位置：默认图库根，可换子目录 / 新建 / 重命名
+        top.addWidget(QLabel("入库位置："))
+        self.dest = QComboBox()
+        self.dest.setMinimumWidth(130)
+        self.dest.setToolTip("审核通过后自动收录到图库的这个子目录（会记住选择）")
+        self.dest.currentIndexChanged.connect(lambda _i: self._dest_changed())
+        top.addWidget(self.dest)
+        b_newdir = QPushButton("新建文件夹")
+        b_newdir.clicked.connect(self._new_dest_folder)
+        top.addWidget(b_newdir)
+        b_rendir = QPushButton("重命名")
+        b_rendir.clicked.connect(self._rename_dest_folder)
+        top.addWidget(b_rendir)
         b_clear = QPushButton("清空审核队列")
         b_clear.setToolTip("把待审队列里所有还没判过的标签一次性删掉（只动数据库索引，不碰图片文件）。\n"
                            "已生效/已否决的标签不受影响；想重新来一遍打标就先点这个。")
@@ -243,6 +259,73 @@ class ReviewDialog(QDialog):
         v.addWidget(split, 1)
 
     # ------------------------------------------------------------ 队列
+    # ---------------- 入库位置（审核通过后自动收录到图库的哪个子目录） ----------------
+    def _lib_root(self):
+        from pathlib import Path as _P
+        rows = self.store.query("SELECT path FROM roots WHERE is_library=1")
+        return _P(rows[0]["path"]) if rows else None
+
+    def _reload_dest(self) -> None:
+        """列出图库下已有的子目录（含"根目录"），供选择入库位置。"""
+        root = self._lib_root()
+        cur = str(getattr(self.settings, "import_subdir", "") or "")
+        self.dest.clear()
+        self.dest.addItem("图库根目录", "")
+        if root and root.exists():
+            for d in sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name):
+                self.dest.addItem(d.name, d.name)
+        idx = self.dest.findData(cur)
+        self.dest.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _dest_changed(self) -> None:
+        try:
+            self.settings.import_subdir = str(self.dest.currentData() or "")
+            self.settings.save()
+            self.status.setText(f"审核通过后将收录到：图库 / {self.settings.import_subdir or '（根目录）'}")
+        except Exception:
+            pass
+
+    def _new_dest_folder(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        root = self._lib_root()
+        if root is None:
+            return
+        name, ok = QInputDialog.getText(self, "新建文件夹", "在图库里新建文件夹：")
+        name = (name or "").strip().strip("\\/")
+        if not ok or not name:
+            return
+        try:
+            (root / name).mkdir(parents=False, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "新建文件夹", f"建不出来：{exc}")
+            return
+        self._reload_dest()
+        i = self.dest.findData(name)
+        if i >= 0:
+            self.dest.setCurrentIndex(i)
+            self._dest_changed()
+
+    def _rename_dest_folder(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        root = self._lib_root()
+        old = str(self.dest.currentData() or "")
+        if root is None or not old:
+            QMessageBox.information(self, "重命名文件夹", "先在下拉里选中一个子文件夹（不能改根目录）。")
+            return
+        name, ok = QInputDialog.getText(self, "重命名文件夹", "新名称：", text=old)
+        name = (name or "").strip().strip("\\/")
+        if not ok or not name or name == old:
+            return
+        try:
+            (root / old).rename(root / name)
+            self.library.settings.import_subdir = name
+            self.settings.import_subdir = name
+            self.settings.save()
+        except Exception as exc:
+            QMessageBox.warning(self, "重命名文件夹", f"改不了：{exc}")
+            return
+        self._reload_dest()
+
     def _suggest_new_tag(self, text: str) -> None:
         """审核台"新增标签"框的联想：按匹配度重排，含 Danbooru 独有词。"""
         try:

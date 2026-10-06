@@ -1353,7 +1353,8 @@ class MainWindow(QMainWindow):
                     "WHERE f.missing=0 AND COALESCE(f.reviewed,0)=1 "
                     "AND f.root_id NOT IN (SELECT id FROM roots WHERE is_library=1)")]
                 if ids:
-                    res = self.library.import_to_library(ids, progress=None)
+                    res = self.library.import_to_library(
+                        ids, progress=None, subdir=str(getattr(self.settings, "import_subdir", "") or ""))
                     self.status_label.setText(f"已自动收录 {res.get('moved', 0)} 张到图库")
                     self.refresh_roots()
                     self.refresh_files()
@@ -1380,7 +1381,9 @@ class MainWindow(QMainWindow):
                 return
 
         def job(progress, cancel, item):
-            return self.library.import_to_library(ids, move=True, progress=progress, cancel=cancel)
+            return self.library.import_to_library(
+                ids, move=True, progress=progress, cancel=cancel,
+                subdir=str(getattr(self.settings, "import_subdir", "") or ""))
 
         def done(res):
             msg = f"已收录 {res['moved']} 张；重写文件名 {res['renamed']} 个"
