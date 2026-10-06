@@ -160,6 +160,10 @@ class Settings:
     import_subdir: str = ""                # 审核通过后自动入库到图库下的哪个子目录（空=用原文件夹名）
     splash_enabled: bool = True            # 启动时显示过渡窗口（类似 Adobe 那种开屏）
     splash_dir: str = ""                   # 开屏封面图所在文件夹（每次启动随机取一张；空=用内置图）
+    # 开屏封面轮换用的「播放列表」状态（伪随机 shuffle-bag：一轮内不重复）
+    splash_playlist: list[str] = field(default_factory=list)  # 洗好的文件名顺序
+    splash_playlist_index: int = 0                            # 下一张取第几个
+    splash_playlist_sig: str = ""                             # 列表对应的库指纹（库变了就重排）
     auto_import_after_review: bool = False # 审核完成后自动把图片收进图库
     dup_threshold: int = 6                 # 感知哈希汉明距离阈值（越小越严格）
     dup_use_clip: bool = True              # 是否用 CLIP 再兜一层

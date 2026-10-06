@@ -1,9 +1,17 @@
 """启动过渡窗口（开屏）：显示一张随机封面图 + 名称/版本/启动进度。
 
-封面图来源：设置里的「开屏封面文件夹」（每次启动随机取一张）；没设置就用 assets 里的图标兜底。
+封面图来源：设置里的「开屏封面文件夹」（留空则用随程序分发的 assets/splash/）。
+
+轮换规则（伪随机 shuffle-bag，而不是每次独立随机）：
+  把文件夹里的图洗牌成一份「播放列表」，之后每次启动按顺序取下一张，
+  保证一轮之内不会重复；只有这两种情况才会重新洗牌：
+    1) 轮换库有改动（增删图片、或图片内容/时间变了）
+    2) 列表已经完整走过一轮
+  ——这样既不会像真随机那样连着几张撞同一张，也不会出现"总轮不到某些图"。
 """
 from __future__ import annotations
 
+import hashlib
 import random
 from pathlib import Path
 
@@ -15,10 +23,12 @@ W, H = 560, 340
 COVER_H = 236
 
 
-def pick_cover(folder: str | Path | None) -> QPixmap | None:
-    """从封面文件夹里随机取一张图，读成 QPixmap（读不出来就返回 None 用内置图）。"""
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif"}
+
+
+def cover_folder(folder: str | Path | None) -> Path | None:
+    """解析封面文件夹：留空就用随程序分发的 assets/splash/。"""
     if not folder:
-        # 没设置就优先用随程序分发的 assets/splash/（把授权允许的图放这里即可）
         here = Path(__file__).resolve().parent.parent.parent / "assets" / "splash"
         if here.is_dir():
             folder = here
@@ -27,12 +37,68 @@ def pick_cover(folder: str | Path | None) -> QPixmap | None:
     p = Path(folder)
     if not p.exists() or not p.is_dir():
         return None
-    exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif"}
-    files = [f for f in p.iterdir() if f.is_file() and f.suffix.lower() in exts]
-    if not files:
+    return p
+
+
+def list_covers(p: Path) -> list[str]:
+    return sorted(f.name for f in p.iterdir() if f.is_file() and f.suffix.lower() in IMG_EXTS)
+
+
+def _signature(p: Path, names: list[str]) -> str:
+    """库指纹：文件名 + 大小 + 修改时间。增删/替换图片都会变。"""
+    h = hashlib.sha1()
+    for n in names:
+        try:
+            st = (p / n).stat()
+            h.update(f"{n}|{st.st_size}|{int(st.st_mtime)}".encode("utf-8", "ignore"))
+        except OSError:
+            h.update(n.encode("utf-8", "ignore"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def next_cover(settings=None, folder: str | Path | None = None) -> Path | None:
+    """按「播放列表」取下一张封面；库变了或刚好走完一轮才重新洗牌。"""
+    if folder is None and settings is not None:
+        folder = getattr(settings, "splash_dir", "")
+    p = cover_folder(folder)
+    if p is None:
         return None
-    random.shuffle(files)
-    for f in files[:8]:                 # 最多试 8 张，避免个别坏图拖慢启动
+    names = list_covers(p)
+    if not names:
+        return None
+    sig = _signature(p, names)
+    playlist = [n for n in (getattr(settings, "splash_playlist", None) or []) if n in names] if settings else []
+    idx = int(getattr(settings, "splash_playlist_index", 0) or 0) if settings else 0
+    saved_sig = str(getattr(settings, "splash_playlist_sig", "") or "") if settings else ""
+    # 需要重新洗牌的三种情况：库变了 / 列表没了或用光 / 一轮已经走完
+    if settings is None or sig != saved_sig or not playlist or idx >= len(playlist):
+        playlist = names[:]
+        random.shuffle(playlist)
+        idx = 0
+    name = playlist[idx]
+    if settings is not None:
+        try:
+            settings.splash_playlist = playlist
+            settings.splash_playlist_index = idx + 1
+            settings.splash_playlist_sig = sig
+            settings.save()
+        except Exception:
+            pass
+    return p / name
+
+
+def pick_cover(folder: str | Path | None, settings=None) -> QPixmap | None:
+    """取本次开屏要显示的封面图；读不出来就顺延到列表里的下一张。"""
+    p = cover_folder(folder) if folder is not None else None
+    if p is None and settings is not None:
+        p = cover_folder(getattr(settings, "splash_dir", ""))
+    if p is None:
+        return None
+    for _ in range(8):                  # 最多试 8 张，避免个别坏图拖慢启动
+        f = next_cover(settings, p)
+        if f is None:
+            return None
         try:
             from .common import load_pixmap
             pm = load_pixmap(str(f))
@@ -61,7 +127,7 @@ def build_pixmap(settings, app_name: str, version: str, status: str = "正在启
     p.scale(dpr, dpr)                      # 之后都用"逻辑像素"坐标
     p.setRenderHint(QPainter.TextAntialiasing)
     # 上半部分：封面图（按比例裁切填满）
-    cover = pick_cover(getattr(settings, "splash_dir", ""))
+    cover = pick_cover(getattr(settings, "splash_dir", ""), settings)
     area = QRectF(0, 0, W, COVER_H)
     if cover is not None and not cover.isNull():
         scaled = cover.scaled(int(area.width()), int(area.height()),

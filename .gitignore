@@ -29,3 +29,14 @@ promo/
 
 # Danbooru 词表下载缓存（成品数据在 app/booru_zh/）
 .booru_zh_cache/
+
+# 开屏图生成/对比实验的工作目录与拼图（成品图在 assets/splash/）
+.splash_gen*/
+.splash_debug/
+.splash_quality/
+.splash_hair/
+.splash_clean/
+.splash_style/
+.splash_model/
+.splash_model2/
+montage_*.png
