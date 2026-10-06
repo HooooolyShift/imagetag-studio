@@ -2122,8 +2122,12 @@ class MainWindow(QMainWindow):
         # 设置窗口现在是"改动即存"，直接关掉窗口也已经写盘了；
         # 如果这里仍抱着旧对象不放，退出时的保存会把刚存的新值整份盖回旧值
         # （日志里出现过 16:51:39 写 False、16:51:40 又被写回 True 就是这个原因）。
-        self.settings = _Settings.load()
-        back = self.settings
+        # 关键：**原地**更新主窗口这份对象，不要换成新对象。
+        # Library / EngineHub / 缩略图池等都持有同一个引用（self.library.settings 等），
+        # 一旦这里换对象，它们就继续看旧值 —— "改了保留原文件名，写回文件名却不改名"就是这么来的。
+        back = _Settings.load()
+        self.settings.__dict__.clear()
+        self.settings.__dict__.update(back.__dict__)
         self.status_label.setText(
             "设置已保存并校验回读：保留原文件名=%s ｜ 只写最具体标签=%s ｜ 缩略图=%dpx ｜ 性能=%s"
             % ("是" if back.rename_keep_original else "否",
