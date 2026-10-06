@@ -719,15 +719,22 @@ class MainWindow(QMainWindow):
                 continue
             dirs = self._dirs_of_root(int(r["id"]))
             for d in dirs:
+                # 注意：depth 是"斜杠个数"，**直接子目录是 0**。
+                # 以前写的是 depth == 1，于是所有二级目录都被挂到了根上（父子关系丢失、看着是平的）。
                 depth = d.count("/")
                 node = QTreeWidgetItem([Path(d).name])
                 node.setData(0, Qt.UserRole, ("dir", int(r["id"]), d))
-                if depth == 1:
+                if depth == 0:
                     top.addChild(node)
                 else:
                     parent_rel = d.rsplit("/", 1)[0]
                     parent = self._find_item(top, parent_rel)
                     (parent or top).addChild(node)
+            # 有子目录的节点自动显示小三角（图库/来源一视同仁），并按需展开
+            for i in range(self.dir_tree.topLevelItemCount()):
+                it = self.dir_tree.topLevelItem(i)
+                if it.childCount():
+                    it.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
             top.setExpanded(True)
         self._update_breadcrumb()
 
