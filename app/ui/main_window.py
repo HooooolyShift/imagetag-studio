@@ -382,6 +382,16 @@ class DirTree(QTreeWidget):
 
     filesDropped = Signal(object, list)          # (目标节点的 UserRole 数据, [绝对路径])
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 关键：树默认 dragDropMode = NoDragDrop，等于**不接收任何拖放** →
+        # 从图库里拖图片过来时鼠标一直是"禁止"符号。这里显式打开"只接收"模式。
+        from PySide6.QtWidgets import QAbstractItemView as _AIV
+        self.setAcceptDrops(True)
+        self.setDragDropMode(_AIV.DropOnly)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setDropIndicatorShown(True)
+
     def _accepts(self, mime) -> bool:
         return bool(mime.hasUrls()) or mime.hasFormat("application/x-imtag-rows")
 
