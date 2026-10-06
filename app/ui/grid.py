@@ -197,8 +197,15 @@ class GridDelegate(QStyledItemDelegate):
             path.addRoundedRect(img_rect, 4, 4)
             painter.drawPath(path)
         pm = index.data(Qt.DecorationRole)
-        blur = self.model.blur_r18 and (it.rating in ("r18", "r18g")
-                                       or it.file_id in self.model.blur_ids)
+        # 三种判定，任一命中就遮：数据库里的分级字段 / 分级标签名单 / 文件名里带 R18 字样
+        # （最后一条是兜底：很多图还没有分级标签，但文件名里已经写着 R18，用户期望它就该被遮住）
+        _name = str(getattr(it, "name", "") or "").lower()
+        _hit_name = ("r18" in _name) or ("18禁" in _name)
+        blur = bool(self.model.blur_r18) and (
+            it.rating in ("r18", "r18g")
+            or it.file_id in self.model.blur_ids
+            or _hit_name
+        )
         if isinstance(pm, QPixmap) and not pm.isNull() and not blur:
             scaled = pm.scaled(img_rect.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             x = img_rect.left() + (img_rect.width() - scaled.width()) // 2

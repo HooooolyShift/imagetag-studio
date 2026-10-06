@@ -2163,9 +2163,21 @@ class MainWindow(QMainWindow):
             self.thumbs.size = max(320, int(self.settings.thumb_size) * 2)
             self.zoom.setValue(int(self.settings.thumb_size))
             self.grid.set_icon_size(int(self.settings.thumb_size))
-            # 关键：打码判定用的 blur_ids（哪些图要遮）是在 refresh_files 里算的，
-            # 以前改开关只刷了 blur_r18 却没重算 blur_ids → 看着就是"要重启才生效"
-            self.refresh_files()
+        except Exception:
+            pass
+        # 打码名单（哪些图要遮）在这里自己重算一遍，不依赖 refresh_files——
+        # 一来避免整表重建导致滚动位置跳动，二来 refresh_files 里任何异常都会让上面的
+        # try 整段被吞掉，表现就是"点了确定没反应、要重启才生效"。
+        try:
+            rows_rating = self.store.query(
+                "SELECT DISTINCT ft.file_id AS fid, t.name AS nm FROM file_tags ft "
+                "JOIN tags t ON t.id=ft.tag_id "
+                "WHERE (ft.status='pending' OR ft.status='confirmed') AND t.category='rating'")
+            self.model.blur_ids = {int(r["fid"]) for r in rows_rating
+                                   if "r18" in str(r["nm"]).lower().replace("-", "").replace("_", "")}
+        except Exception:
+            pass
+        try:
             self.grid.viewport().update()
             self.grid.repaint()
         except Exception:
