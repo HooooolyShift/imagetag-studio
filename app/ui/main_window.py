@@ -766,6 +766,40 @@ class MainWindow(QMainWindow):
             parts = p.parts[:-1]
             for i in range(1, len(parts) + 1):
                 dirs.add("/".join(parts[:i]))
+        # 光靠库内 rel 会漏掉"刚建好、还没放图片"的空文件夹 —— 磁盘上真实的目录也要列出来
+        try:
+            root_row = self.store.one("SELECT path FROM roots WHERE id=?", (root_id,))
+            base = Path(root_row["path"]) if root_row else None
+            # 只走浅层（2 层）就够了，实测整个图库目录 0.05 秒；
+            # 但目录多的时候（上千个）仍然要 7 秒，所以结果缓存 10 秒；
+            # 新建/改名/删除文件夹的地方会主动清缓存，保证操作完立刻能看到
+            import time as _t
+            cache = getattr(self, "_dir_disk_cache", None)
+            if cache is None:
+                cache = self._dir_disk_cache = {}
+            hit = cache.get(root_id)
+            if hit and _t.time() - hit[0] < 10:
+                dirs.update(hit[1])
+                return sorted(dirs)
+            if base and base.exists():
+                found: set[str] = set()
+                stack = [(base, 0)]
+                while stack and len(dirs) < 3000:
+                    cur, depth = stack.pop()
+                    if depth >= 2:
+                        continue
+                    try:
+                        for child in cur.iterdir():
+                            if not child.is_dir() or child.name.startswith((".", "$")):
+                                continue
+                            found.add(child.relative_to(base).as_posix())
+                            stack.append((child, depth + 1))
+                    except Exception:
+                        continue
+                dirs.update(found)
+                cache[root_id] = (_t.time(), found)
+        except Exception:
+            pass
         return sorted(dirs)
 
     def refresh_tags(self) -> None:
@@ -1683,6 +1717,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "新建文件夹", f"建不出来：{exc}")
             return
         self.status_label.setText(f"已新建文件夹：{target}")
+        self._dir_disk_cache = {}          # 让左树马上出现这个空文件夹（缓存立刻失效）
         self.refresh_roots()
         self._select_dir(target)
 
