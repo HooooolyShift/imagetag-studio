@@ -58,16 +58,28 @@ def main() -> int:
     settings = Settings.load()
     # 启动过渡窗口（类似 Adobe 系列的开屏）：先显示封面，窗口就绪后再收掉
     splash = None
+    SPLASH_STEPS = 4
+
+    def splash_step(n: int, text: str) -> None:
+        """更新开屏上的启动进度（第 n/SPLASH_STEPS 步）。"""
+        if splash is None:
+            return
+        try:
+            splash.set_status(text, n, SPLASH_STEPS)
+        except Exception:
+            pass
+
     if getattr(settings, "splash_enabled", True):
         try:
             from .ui.splash import AppSplash
-            splash = AppSplash(settings, APP_NAME, VERSION)
+            splash = AppSplash(settings, APP_NAME, VERSION, "正在准备运行环境…", 1, SPLASH_STEPS)
             splash.show()
             QApplication.processEvents()
         except Exception:
             splash = None
     model_lib.setup_env(settings.models_path())
     perf.configure(settings)
+    splash_step(2, "正在加载模型与性能挡位…")
     from . import singleton
     if not singleton.acquire(data_dir()):
         QMessageBox.warning(None, f"{APP_NAME} 已在运行",
@@ -75,9 +87,9 @@ def main() -> int:
                             "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
         return 1
     store = Store()
-    if splash is not None:
-        splash.set_status("正在读取图库…")
+    splash_step(3, "正在读取图库…")
     win = MainWindow(store, settings)
+    splash_step(4, "正在构建主界面…")
     win.statusBar().showMessage(f"性能挡位：{perf.describe()}", 8000)
     win.show()
     if splash is not None:

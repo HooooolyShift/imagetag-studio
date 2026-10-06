@@ -1,4 +1,4 @@
-"""启动过渡窗口（开屏）：显示一张随机封面图 + 名称/版本/启动进度。
+"""启动过渡窗口（开屏）：封面图（完整显示）+ 下方白底信息条 + Win11 圆角。
 
 封面图来源：设置里的「开屏封面文件夹」（留空则用随程序分发的 assets/splash/）。
 
@@ -7,7 +7,11 @@
   保证一轮之内不会重复；只有这两种情况才会重新洗牌：
     1) 轮换库有改动（增删图片、或图片内容/时间变了）
     2) 列表已经完整走过一轮
-  ——这样既不会像真随机那样连着几张撞同一张，也不会出现"总轮不到某些图"。
+
+窗口尺寸规则：
+  · 宽度固定（默认 560，保证在不同尺寸的自定义图下窗口宽度一致）；
+  · 高度随封面比例算——图片区高 = 宽度 / 图宽高比，所以任何比例的图都能完整显示，
+    不会被裁切；竖图等极端比例会夹在一个合理区间内等比居中（四周留底色）。
 """
 from __future__ import annotations
 
@@ -16,16 +20,23 @@ import random
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QSplashScreen
+from PySide6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QPixmap)
+from PySide6.QtWidgets import QApplication, QWidget
 
-W, H = 560, 340
-COVER_H = 236
-
+W = 560                  # 窗口宽度（固定，不随图变）
+H = 354                  # 兜底总高度（没有封面图时用 236 + 118）
+COVER_H = 236            # 默认封面区高度（无图/兜底用）
+PANEL_H = 118            # 下方白底信息条高度（应用名 / 版本 / 状态 / 进度条）
+RADIUS = 14              # Win11 风格圆角半径
+COVER_H_MIN, COVER_H_MAX = 150, 520   # 极端比例时的图片区高度夹取范围
+W_DIVISOR = 3            # 窗口宽度 = 屏幕宽度 / 3
+W_MIN, W_MAX = 520, 1100  # 宽度夹取范围（小屏/超宽屏都别太夸张）
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif"}
 
 
+# ---------------- 封面文件夹 / 轮换 ----------------
 def cover_folder(folder: str | Path | None) -> Path | None:
     """解析封面文件夹：留空就用随程序分发的 assets/splash/。"""
     if not folder:
@@ -109,73 +120,150 @@ def pick_cover(folder: str | Path | None, settings=None) -> QPixmap | None:
     return None
 
 
-def build_pixmap(settings, app_name: str, version: str, status: str = "正在启动…") -> QPixmap:
+# ---------------- 绘制 ----------------
+def cover_size(cover: QPixmap | None, width: int = W) -> tuple[int, int]:
+    """窗口宽度固定，图片区高度按封面比例算 → 图完整显示，不裁切也不拉伸。"""
+    ok = cover is not None and not cover.isNull() and cover.height() > 0
+    aspect = (cover.width() / cover.height()) if ok else (W / COVER_H)
+    ch = int(round(width / aspect)) if aspect > 0 else COVER_H
+    ch = max(COVER_H_MIN, min(ch, COVER_H_MAX))
+    return width, ch
+
+
+def prefer_width() -> int:
+    """窗口宽度取主屏可用宽度的 1/3（夹在 W_MIN~W_MAX 之间）。"""
+    try:
+        scr = QApplication.primaryScreen()
+        if scr is not None:
+            sw = scr.availableGeometry().width()
+            if sw > 0:
+                return max(W_MIN, min(int(sw / W_DIVISOR), W_MAX))
+    except Exception:
+        pass
+    return W
+
+
+def _ui_fonts() -> tuple[QFont, QFont, QFont]:
     from PySide6.QtGui import QFontDatabase
-    fam = "Microsoft YaHei UI"
-    if fam not in QFontDatabase.families():
-        fam = "Microsoft YaHei" if "Microsoft YaHei" in QFontDatabase.families() else ""
-    # 按屏幕缩放比渲染（高分屏下直接画 1x 位图会被拉伸 → 文字发虚）
+    have = set(QFontDatabase.families())
+    fams = [f for f in ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC")
+            if f in have] or ["sans-serif"]
+
+    def mk(size: float, bold: bool = False) -> QFont:
+        f = QFont()
+        try:
+            f.setFamilies(fams)      # 把候选字体都交给 Qt，缺字时自动挑能显示中文的
+        except Exception:
+            f = QFont(fams[0])
+        f.setPointSizeF(size)
+        f.setBold(bold)
+        return f
+
+    return mk(15.5, True), mk(9.5), mk(9.5)
+
+
+def draw_splash(p: QPainter, cover: QPixmap | None, app_name: str, version: str,
+                status: str, w: int, h: int, cover_h: int,
+                step: int = 0, total: int = 0) -> None:
+    """整块开屏：上方封面（完整）+ 下方独立白底信息条 + 圆角。"""
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.TextAntialiasing, True)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, w, h), RADIUS, RADIUS)
+    p.setClipPath(path)
+    # 上方：封面图（等比缩放到"宽度填满"，高度按图算，所以不裁切）
+    p.fillRect(QRectF(0, 0, w, cover_h), QColor("#0f1116"))
+    if cover is not None and not cover.isNull():
+        scaled = cover.scaled(w, cover_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        p.drawPixmap(int((w - scaled.width()) / 2), int((cover_h - scaled.height()) / 2), scaled)
+    else:
+        grad = QLinearGradient(0, 0, w, cover_h)
+        grad.setColorAt(0.0, QColor("#1d2434"))
+        grad.setColorAt(1.0, QColor("#2a1f2c"))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawRect(QRectF(0, 0, w, cover_h))
+    # 下方：白底信息条——窗口向下延伸出来，不盖住图
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#ffffff"))
+    p.drawRect(QRectF(0, cover_h, w, h - cover_h))
+    p.setBrush(QColor(0, 0, 0, 18))
+    p.drawRect(QRectF(0, cover_h, w, 1))            # 与图的分隔线
+    f_name, f_sub, f_status = _ui_fonts()
+    p.setFont(f_name)
+    p.setPen(QColor("#141821"))
+    p.drawText(QRectF(22, cover_h + 14, w - 44, 26), Qt.AlignLeft | Qt.AlignVCenter, app_name)
+    p.setFont(f_sub)
+    p.setPen(QColor("#6b7280"))
+    p.drawText(QRectF(22, cover_h + 42, w - 44, 18), Qt.AlignLeft | Qt.AlignVCenter,
+               f"v{version}　·　完全离线运行")
+    p.setFont(f_status)
+    p.setPen(QColor("#2563eb"))
+    p.drawText(QRectF(22, cover_h + 65, w - 44, 18), Qt.AlignLeft | Qt.AlignVCenter, status)
+    # 进度条（有 step/total 时才画；右边同时显示"第 n/N 步"）
+    bar_y = cover_h + 92
+    bar_h = 6.0
+    bar_w = w - 44
+    if total > 0:
+        frac = max(0.0, min(1.0, step / float(total)))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#e5e7eb"))
+        p.drawRoundedRect(QRectF(22, bar_y, bar_w, bar_h), bar_h / 2, bar_h / 2)
+        if frac > 0:
+            p.setBrush(QColor("#2563eb"))
+            p.drawRoundedRect(QRectF(22, bar_y, max(bar_h, bar_w * frac), bar_h), bar_h / 2, bar_h / 2)
+        p.setFont(f_sub)
+        p.setPen(QColor("#9ca3af"))
+        p.drawText(QRectF(22, bar_y - 20, bar_w, 16), Qt.AlignRight | Qt.AlignVCenter,
+                   f"第 {step}/{total} 步")
+    # 圆角描边（顺带让图的白底之外有个边界）
+    p.setClipping(False)
+    pen = QPen(QColor(0, 0, 0, 40))
+    pen.setWidthF(1.0)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(path)
+
+
+def build_pixmap(settings, app_name: str, version: str, status: str = "正在启动…") -> QPixmap:
+    """把开屏画成位图（离屏预览 / 说明书截图用）。"""
+    cover = pick_cover(getattr(settings, "splash_dir", ""), settings)
+    w, cover_h = cover_size(cover, prefer_width())
+    h = cover_h + PANEL_H
     try:
         dpr = float(QApplication.primaryScreen().devicePixelRatio()) or 1.0
     except Exception:
         dpr = 1.0
-    pm = QPixmap(int(W * dpr), int(H * dpr))
+    pm = QPixmap(int(w * dpr), int(h * dpr))
     pm.setDevicePixelRatio(dpr)
-    pm.fill(QColor("#16171b"))
+    pm.fill(Qt.transparent)
     p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpr, dpr)                      # 之后都用"逻辑像素"坐标
-    p.setRenderHint(QPainter.TextAntialiasing)
-    # 上半部分：封面图（按比例裁切填满）
-    cover = pick_cover(getattr(settings, "splash_dir", ""), settings)
-    area = QRectF(0, 0, W, COVER_H)
-    if cover is not None and not cover.isNull():
-        scaled = cover.scaled(int(area.width()), int(area.height()),
-                              Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        x = (scaled.width() - area.width()) / 2
-        y = (scaled.height() - area.height()) / 2
-        p.setClipRect(area)
-        p.drawPixmap(int(-x), int(-y), scaled)
-        p.setClipping(False)
-        # 底部渐隐，和下面色块衔接
-        grad = QLinearGradient(0, COVER_H - 70, 0, COVER_H)
-        grad.setColorAt(0.0, QColor(22, 23, 27, 0))
-        grad.setColorAt(1.0, QColor(22, 23, 27, 255))
-        p.setBrush(QBrush(grad))
-        p.setPen(Qt.NoPen)
-        p.drawRect(QRectF(0, COVER_H - 70, W, 70))
-    else:
-        grad = QLinearGradient(0, 0, W, COVER_H)
-        grad.setColorAt(0.0, QColor("#1d2434"))
-        grad.setColorAt(1.0, QColor("#2a1f2c"))
-        p.setBrush(QBrush(grad))
-        p.setPen(Qt.NoPen)
-        p.drawRect(area)
-    # 下半部分：名称 / 版本 / 状态
-    f = QFont(fam) if fam else QFont(); f.setPointSizeF(15); f.setBold(True)
-    p.setFont(f); p.setPen(QColor("#eef2f8"))
-    p.drawText(24, COVER_H + 34, app_name)
-    f2 = QFont(fam) if fam else QFont(); f2.setPointSizeF(9.5)
-    p.setFont(f2); p.setPen(QColor("#8f96a3"))
-    p.drawText(24, COVER_H + 56, f"v{version}　·　完全离线运行")
-    p.setPen(QColor("#9fd0ff"))
-    p.drawText(24, COVER_H + 82, status)
-    p.setPen(QColor("#2a2c33"))
-    p.drawLine(24, H - 22, W - 24, H - 22)
+    p.scale(dpr, dpr)
+    draw_splash(p, cover, app_name, version, status, w, h, cover_h)
     p.end()
     return pm
 
 
-class AppSplash(QSplashScreen):
-    """启动过渡窗口：支持 set_status 更新进度文字。"""
+class AppSplash(QWidget):
+    """启动过渡窗口：圆角 + 封面完整显示 + 下方白底信息条。"""
 
-    def __init__(self, settings, app_name: str, version: str):
+    def __init__(self, settings, app_name: str, version: str, status: str = "正在启动…",
+                 step: int = 0, total: int = 0):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)    # 圆角外透明
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self._settings = settings
         self._app_name = app_name
         self._version = version
-        super().__init__(build_pixmap(settings, app_name, version))
-        self.setWindowFlag(Qt.FramelessWindowHint, True)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self._status = status
+        self._step = step
+        self._total = total
+        self._cover = pick_cover(getattr(settings, "splash_dir", ""), settings)
+        w, cover_h = cover_size(self._cover, prefer_width())
+        self._w, self._cover_h = w, cover_h
+        self._h = cover_h + PANEL_H
+        self.setFixedSize(self._w, self._h)
+        self._center_on_screen()
         # 不要"忙"光标：悬停在开屏上转圈是启动期间残留的等待光标造成的
         try:
             QApplication.restoreOverrideCursor()
@@ -183,6 +271,30 @@ class AppSplash(QSplashScreen):
             pass
         self.setCursor(Qt.ArrowCursor)
 
-    def set_status(self, text: str) -> None:
-        self.setPixmap(build_pixmap(self._settings, self._app_name, self._version, text))
+    def _center_on_screen(self) -> None:
+        scr = QApplication.primaryScreen()
+        if scr is None:
+            return
+        g = scr.availableGeometry()
+        x = g.left() + (g.width() - self._w) // 2
+        y = g.top() + (g.height() - self._h) // 2 - int(g.height() * 0.05)
+        self.move(x, max(g.top(), y))
+
+    def paintEvent(self, _ev) -> None:
+        p = QPainter(self)
+        draw_splash(p, self._cover, self._app_name, self._version,
+                    self._status, self._w, self._h, self._cover_h, self._step, self._total)
+        p.end()
+
+    def set_status(self, text: str, step: int | None = None, total: int | None = None) -> None:
+        self._status = text
+        if step is not None:
+            self._step = step
+        if total is not None:
+            self._total = total
+        self.update()
         QApplication.processEvents()
+
+    def finish(self, _win=None) -> None:
+        self.hide()
+        self.close()

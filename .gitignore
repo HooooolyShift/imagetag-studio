@@ -40,3 +40,6 @@ promo/
 .splash_model/
 .splash_model2/
 montage_*.png
+prev_*.png
+splash_preview*.png
+splash_steps_preview.png
