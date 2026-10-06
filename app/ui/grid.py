@@ -263,7 +263,12 @@ class GridDelegate(QStyledItemDelegate):
                     key = str(it.thumb_src())
                 except Exception:
                     key = str(id(it))
-                painter.drawPixmap(img_rect, self.model.blurred(key, pm))
+                # 注意：要按比例缩放并居中，直接把整个 pixmap 铺进方形格子会把非 1:1 的图**拉伸变形**
+                _bp = self.model.blurred(key, pm)
+                _scaled = _bp.scaled(img_rect.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                _x = img_rect.left() + (img_rect.width() - _scaled.width()) // 2
+                _y = img_rect.top() + (img_rect.height() - _scaled.height()) // 2
+                painter.drawPixmap(_x, _y, _scaled)
             else:
                 painter.setBrush(QColor("#241a1e"))
                 painter.setPen(Qt.NoPen)
