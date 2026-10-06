@@ -1954,19 +1954,31 @@ class Library:
             (src_s, src_s + os.sep + "%"))
         n = 0
         root_paths: dict[int, str] = {}
+        # 目标可能落到**另一个库根**下（比如从来源目录拖进图库目录），
+        # 这时 root_id 也必须跟着改，否则图库里永远看不到它（以前就漏了这一步）。
+        all_roots = [(int(r["id"]), str(r["path"])) for r in self.store.list_roots()]
         for r in rows:
             old = str(r["path"])
             new = str(dst_p) + old[len(src_s):]
             rid = int(r["root_id"])
-            if rid not in root_paths:
-                row = self.store.one("SELECT path FROM roots WHERE id=?", (rid,))
-                root_paths[rid] = str(row["path"]) if row else ""
-            base = root_paths[rid]
+            best = None
+            for cand_id, cand_path in all_roots:
+                if new == cand_path or new.startswith(cand_path.rstrip("\\/") + os.sep):
+                    if best is None or len(cand_path) > len(best[1]):
+                        best = (cand_id, cand_path)
+            if best is not None:
+                rid, base = best
+            else:
+                if rid not in root_paths:
+                    row = self.store.one("SELECT path FROM roots WHERE id=?", (rid,))
+                    root_paths[rid] = str(row["path"]) if row else ""
+                base = root_paths[rid]
             try:
                 rel = str(_P(new).relative_to(base)).replace("/", os.sep) if base else ""
             except Exception:
                 rel = os.path.basename(new)
-            self.store.execute("UPDATE files SET path=?, rel=? WHERE id=?", (new, rel, int(r["id"])))
+            self.store.execute("UPDATE files SET path=?, rel=?, root_id=? WHERE id=?",
+                               (new, rel, rid, int(r["id"])))
             n += 1
         self.store.refresh_counts()
         return n

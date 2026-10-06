@@ -960,8 +960,10 @@ class Store:
         if rel_prefix:
             # 只显示**这一层**的图片，不把子文件夹里的也带出来：
             # 前缀命中之后再要求"剩余部分里没有目录分隔符"（以前 LIKE 'a/%' 会把 a/b/c 里的图一起列出来）
+            # 用 REPLACE 把两种分隔符都当 '/'，否则库内 rel 用反斜杠时筛不出东西
             _p = rel_prefix.replace("\\", "/").rstrip("/")
-            conds.append("(f.rel LIKE ? AND INSTR(SUBSTR(f.rel, ?), '/') = 0)")
+            conds.append("(REPLACE(f.rel,'\\','/') LIKE ? "
+                         "AND INSTR(SUBSTR(REPLACE(f.rel,'\\','/'), ?), '/') = 0)")
             args.append(_p + "/%")
             args.append(len(_p) + 2)
         if rating:
