@@ -1341,8 +1341,22 @@ class MainWindow(QMainWindow):
         self.refresh_tags()
         self.refresh_files()
         self.update_selection()
-        if self.settings.auto_import_after_review and self.store.pending_summary()["pending_tags"] == 0:
-            self.import_to_library(silent=True)
+        if self.settings.auto_import_after_review:
+            # 原来要求"整个待审队列清空"才自动入库 —— 队列里只要还剩别的图就永远不触发，
+            # 这就是"我审核完了却没自动入库"的原因。改成：审核一结束，把**所有已审核通过、
+            # 但还没进图库**的图收进去（同盘是改名操作，很快）。
+            try:
+                ids = [int(r["id"]) for r in self.store.query(
+                    "SELECT DISTINCT f.id FROM files f JOIN file_tags ft ON ft.file_id=f.id "
+                    "WHERE f.missing=0 AND ft.status='confirmed' "
+                    "AND f.root_id NOT IN (SELECT id FROM roots WHERE is_library=1)")]
+                if ids:
+                    res = self.library.import_to_library(ids, progress=None)
+                    self.status_label.setText(f"已自动收录 {res.get('moved', 0)} 张到图库")
+                    self.refresh_roots()
+                    self.refresh_files()
+            except Exception as exc:
+                self.status_label.setText(f"自动收录失败：{exc}")
 
     def import_to_library(self, silent: bool = False) -> None:
         ids = self.expand_ids(self.selected_ids())
@@ -1776,8 +1790,9 @@ class MainWindow(QMainWindow):
             a_ren = menu.addAction("重命名文件夹…")
             a_del = menu.addAction("删除文件夹（丢进回收站，可还原）")
             a_open = menu.addAction("在资源管理器中打开")
+            a_mvdir = menu.addAction("移动整个文件夹到…")
         else:
-            a_new = a_ren = a_del = a_open = None
+            a_new = a_ren = a_del = a_open = a_mvdir = None
         a_clean = menu.addAction("清理失效目录/文件")
         act = menu.exec(self.dir_tree.mapToGlobal(pos))
         if act is None:
@@ -1793,6 +1808,9 @@ class MainWindow(QMainWindow):
             return
         if act == a_open:
             self.open_in_explorer(self._dir_abs(data))
+            return
+        if a_mvdir is not None and act == a_mvdir:
+            self.move_folder_to()
             return
         if act == a_clean:
             self.cleanup_missing_ui()
@@ -2116,6 +2134,37 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.refresh_tags()
         self.update_selection()
+
+    def move_folder_to(self) -> None:
+        """把当前选中的整个文件夹移到别处（选一个目标文件夹，整包搬走并同步库内路径）。"""
+        import shutil
+        src = self._current_dir_abs()
+        if src is None or not src.exists():
+            QMessageBox.information(self, "移动文件夹", "先在左边选中一个文件夹。")
+            return
+        if src == Path(src.anchor):
+            QMessageBox.information(self, "移动文件夹", "不能移动整个盘符。")
+            return
+        parent = QFileDialog.getExistingDirectory(self, "选择目标文件夹（把整个文件夹移进去）", str(src.parent))
+        if not parent:
+            return
+        dst = Path(parent) / src.name
+        if dst.exists():
+            QMessageBox.warning(self, "移动文件夹", f"目标里已经有「{src.name}」了。")
+            return
+        if QMessageBox.question(self, "移动文件夹",
+                                f"把整个文件夹移过去吗？\n\n{src}\n  →  {dst}\n\n"
+                                f"· 里面的图片一起搬走\n· 库内路径会自动同步，不用重新扫描") != QMessageBox.Yes:
+            return
+        try:
+            shutil.move(str(src), str(dst))
+            self.library.reindex_after_move(src, dst)
+            self.status_label.setText(f"已移动文件夹：{src.name} → {dst.parent}")
+        except Exception as exc:
+            QMessageBox.warning(self, "移动文件夹", f"移不动：{exc}")
+            return
+        self.refresh_roots()
+        self.refresh_files()
 
     def on_blur_toggled(self, on: bool) -> None:
         """工具栏上的 R18 打码开关：写设置 + 立即刷新（不依赖设置窗口和确定按钮）。"""
