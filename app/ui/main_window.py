@@ -844,6 +844,21 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------ 查询 + 网格
     def refresh_files(self) -> None:
         required, any_of, text = self._filter_args()
+        # R18 打码：除了已生效的分级，**待审**的 R18/R18G 也要遮住
+        # （打标完还没审核时也得挡，否则保护性设置形同虚设）
+        try:
+            rows_rating = self.store.query(
+                "SELECT DISTINCT ft.file_id AS fid, t.name AS nm FROM file_tags ft "
+                "JOIN tags t ON t.id=ft.tag_id "
+                "WHERE (ft.status='pending' OR ft.status='confirmed') AND t.category='rating'")
+            blur_ids = set()
+            for r in rows_rating:
+                nm = str(r["nm"]).lower().replace("-", "").replace("_", "")
+                if "r18" in nm:
+                    blur_ids.add(int(r["fid"]))
+            self.model.blur_ids = blur_ids
+        except Exception:
+            self.model.blur_ids = set()
         kind = "series_page" if self.only_series.isChecked() else ""
         if self.similar_mode:
             scores: dict[int, float] = self.similar_mode["scores"]

@@ -46,6 +46,8 @@ class GridModel(QAbstractListModel):
         self._pending: set[int] = set()
         self._icons: dict[int, QPixmap] = {}
         self.blur_r18 = False
+        # 还没审核通过的 R18/R18G 也算进来（打标完没审的时候就先遮住，保护性功能不能等审核）
+        self.blur_ids: set[int] = set()
         thumbs.signals.ready.connect(self._on_thumb)
 
     # ---- 基础接口 ----
@@ -164,7 +166,8 @@ class GridDelegate(QStyledItemDelegate):
             path.addRoundedRect(img_rect, 4, 4)
             painter.drawPath(path)
         pm = index.data(Qt.DecorationRole)
-        blur = self.model.blur_r18 and it.rating in ("r18", "r18g")
+        blur = self.model.blur_r18 and (it.rating in ("r18", "r18g")
+                                       or it.file_id in self.model.blur_ids)
         if isinstance(pm, QPixmap) and not pm.isNull() and not blur:
             scaled = pm.scaled(img_rect.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             x = img_rect.left() + (img_rect.width() - scaled.width()) // 2
