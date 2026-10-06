@@ -228,18 +228,6 @@ class GridDelegate(QStyledItemDelegate):
                 painter.setBrush(QColor("#241a1e"))
                 painter.setPen(Qt.NoPen)
                 painter.drawRect(img_rect)
-            # 只留一个通用的分级角标，不再盖住整张图写字
-            label = "R18G" if (it.rating or "").lower().startswith("r18g") else "R18"
-            f = QFont(painter.font())
-            f.setPointSizeF(8.0)
-            f.setBold(True)
-            painter.setFont(f)
-            badge = QRect(img_rect.right() - 44, img_rect.bottom() - 22, 40, 18)
-            painter.setBrush(QColor(200, 40, 40, 210))
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(badge, 4, 4)
-            painter.setPen(QColor("#ffffff"))
-            painter.drawText(badge, Qt.AlignCenter, label)
             painter.restore()
         else:
             painter.setPen(QColor("#5a5f6b"))
@@ -255,6 +243,23 @@ class GridDelegate(QStyledItemDelegate):
             f.setPointSizeF(8)
             painter.setFont(f)
             painter.drawText(badge, Qt.AlignCenter, f"{it.page_count}页")
+        # 分级角标：**所有**带分级的图都标（以前只画在"打码"那一支里，
+        # 所以只有被打码的图才看得到角标——用户看着就像"分级丢了"）
+        _rl = {"r18": "R18", "r18g": "R18G", "r15": "R15", "all_ages": "全年龄"}.get(
+            str(getattr(it, "rating", "") or "").lower(), "")
+        if not _rl and it.file_id in self.model.blur_ids:
+            _rl = "R18"
+        if _rl and it.kind != "series":
+            badge = QRect(img_rect.left() + 4, img_rect.bottom() - 22, 44, 18)
+            painter.setBrush(QColor(200, 40, 40, 205) if _rl != "全年龄" else QColor(40, 120, 60, 205))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor("#ffffff"))
+            f = QFont(painter.font())
+            f.setPointSizeF(8.0)
+            f.setBold(True)
+            painter.setFont(f)
+            painter.drawText(badge, Qt.AlignCenter, _rl)
         if it.regions:
             badge = QRect(img_rect.left() + 4, img_rect.top() + 4, 40, 18)
             painter.setBrush(QColor(30, 90, 60, 200))
