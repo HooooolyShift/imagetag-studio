@@ -1935,6 +1935,37 @@ class Library:
         self.store.refresh_counts()
         return {"categorized": n_cat, "zh": n_zh, "total": len(rows)}
 
+    def reindex_after_move(self, src, dst) -> int:
+        """磁盘上的文件/文件夹被移动或改名后，把库里的路径跟着改掉（不用重新扫描）。
+
+        src / dst 可以是文件也可以是文件夹；文件夹会连带它下面所有已索引的图片一起改。
+        找不到的（还没索引的）忽略。
+        """
+        from pathlib import Path as _P
+        src_p, dst_p = _P(src), _P(dst)
+        src_s = str(src_p)
+        rows = self.store.query(
+            "SELECT id, path, root_id FROM files WHERE path=? OR path LIKE ?",
+            (src_s, src_s + os.sep + "%"))
+        n = 0
+        root_paths: dict[int, str] = {}
+        for r in rows:
+            old = str(r["path"])
+            new = str(dst_p) + old[len(src_s):]
+            rid = int(r["root_id"])
+            if rid not in root_paths:
+                row = self.store.one("SELECT path FROM roots WHERE id=?", (rid,))
+                root_paths[rid] = str(row["path"]) if row else ""
+            base = root_paths[rid]
+            try:
+                rel = str(_P(new).relative_to(base)).replace("/", os.sep) if base else ""
+            except Exception:
+                rel = os.path.basename(new)
+            self.store.execute("UPDATE files SET path=?, rel=? WHERE id=?", (new, rel, int(r["id"])))
+            n += 1
+        self.store.refresh_counts()
+        return n
+
     def cleanup_missing(self, progress=None) -> dict:
         """清理失效路径（修：删掉的文件夹/库不再留在界面里）。
 

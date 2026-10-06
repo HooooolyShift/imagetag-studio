@@ -604,6 +604,25 @@ class MainWindow(QMainWindow):
         self.zoom.valueChanged.connect(self.on_zoom)
         head.addWidget(self.zoom)
         cl.addLayout(head)
+        # 地址栏：像资源管理器那样显示「盘符 › 文件夹 › 子文件夹」，每段可点，点哪跳哪
+        self.crumb_row = QWidget()
+        crumb_lay = QHBoxLayout(self.crumb_row)
+        crumb_lay.setContentsMargins(0, 0, 0, 0)
+        crumb_lay.setSpacing(4)
+        self.crumb_host = QWidget()
+        self.crumb_lay = QHBoxLayout(self.crumb_host)
+        self.crumb_lay.setContentsMargins(0, 0, 0, 0)
+        self.crumb_lay.setSpacing(2)
+        crumb_lay.addWidget(self.crumb_host, 1)
+        self.b_newdir = QPushButton("新建文件夹")
+        self.b_newdir.setToolTip("在当前文件夹里新建一个子文件夹")
+        self.b_newdir.clicked.connect(lambda: self.new_folder())
+        crumb_lay.addWidget(self.b_newdir)
+        self.b_explorer = QPushButton("打开所在文件夹")
+        self.b_explorer.setToolTip("在 Windows 资源管理器里打开当前文件夹")
+        self.b_explorer.clicked.connect(self.open_in_explorer)
+        crumb_lay.addWidget(self.b_explorer)
+        cl.addWidget(self.crumb_row)
         self.model = GridModel(self.thumbs, self.settings.thumb_size)
         self.model.blur_r18 = bool(self.settings.rating_blur)
         self.grid = GridView(self.model)
@@ -653,6 +672,7 @@ class MainWindow(QMainWindow):
                     parent = self._find_item(top, parent_rel)
                     (parent or top).addChild(node)
             top.setExpanded(True)
+        self._update_breadcrumb()
 
     def _find_item(self, top: QTreeWidgetItem, rel: str) -> QTreeWidgetItem | None:
         stack = [top]
@@ -771,6 +791,7 @@ class MainWindow(QMainWindow):
             self.root_filter, self.dir_filter = data[1], data[2]
         self.current_series = None
         self.refresh_files()
+        self._update_breadcrumb()
 
     # ------------------------------------------------ 查询 + 网格
     def refresh_files(self) -> None:
@@ -1400,6 +1421,198 @@ class MainWindow(QMainWindow):
         self.refresh_tags()
         self.refresh_files()
 
+    # ------------------------------------------------ 文件夹操作（像资源管理器那样）
+    def _dir_abs(self, data) -> Path | None:
+        """把树节点（"root"/"dir"）换算成磁盘上的绝对路径。"""
+        if not data:
+            return None
+        row = self.store.one("SELECT path FROM roots WHERE id=?", (int(data[1]),))
+        if not row:
+            return None
+        base = Path(row["path"])
+        return base / data[2] if data[0] == "dir" else base
+
+    def _current_dir_abs(self) -> Path | None:
+        """当前网格所在目录（没选就返回 None）。"""
+        if self.root_filter is None:
+            return None
+        row = self.store.one("SELECT path FROM roots WHERE id=?", (int(self.root_filter),))
+        if not row:
+            return None
+        base = Path(row["path"])
+        return base / self.dir_filter if self.dir_filter else base
+
+    @staticmethod
+    def _recycle(target: Path) -> bool:
+        """丢进回收站（不直接删）。"""
+        import ctypes
+        from ctypes import wintypes
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT),
+                        ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT = 3, 0x0040, 0x0010, 0x0004
+        op = SHFILEOPSTRUCTW(None, FO_DELETE, str(target) + "\0\0", None,
+                             FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT, False, None, None)
+        return ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op)) == 0
+
+    def _select_dir(self, target: Path) -> None:
+        """在左树里选中某个绝对路径对应的节点。"""
+        want = str(target).lower()
+        stack = [self.dir_tree.topLevelItem(i) for i in range(self.dir_tree.topLevelItemCount())]
+        while stack:
+            it = stack.pop()
+            if it is None:
+                continue
+            p = self._dir_abs(it.data(0, Qt.UserRole))
+            if p is not None and str(p).lower() == want:
+                self.dir_tree.setCurrentItem(it)
+                self.dir_tree.scrollToItem(it)
+                return
+            stack.extend([it.child(i) for i in range(it.childCount())])
+
+    def new_folder(self, base: Path | None = None) -> None:
+        """在当前文件夹下新建一个子文件夹（真实建在磁盘上）。"""
+        from PySide6.QtWidgets import QInputDialog
+        base = base or self._current_dir_abs()
+        if base is None:
+            QMessageBox.information(self, "新建文件夹", "先在左边选一个库或文件夹，再新建。")
+            return
+        name, ok = QInputDialog.getText(self, "新建文件夹", f"在「{base.name}」下新建文件夹：")
+        name = (name or "").strip().strip("\\/")
+        if not ok or not name:
+            return
+        target = base / name
+        try:
+            target.mkdir(parents=False, exist_ok=False)
+        except FileExistsError:
+            QMessageBox.warning(self, "新建文件夹", f"「{name}」已经存在了。")
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "新建文件夹", f"建不出来：{exc}")
+            return
+        self.status_label.setText(f"已新建文件夹：{target}")
+        self.refresh_roots()
+        self._select_dir(target)
+
+    def rename_folder(self, data) -> None:
+        """重命名文件夹（磁盘改名 + 库内路径同步）。"""
+        from PySide6.QtWidgets import QInputDialog
+        src = self._dir_abs(data)
+        if src is None or data[0] != "dir":
+            return
+        name, ok = QInputDialog.getText(self, "重命名文件夹", "新名称：", text=src.name)
+        name = (name or "").strip().strip("\\/")
+        if not ok or not name or name == src.name:
+            return
+        dst = src.parent / name
+        if dst.exists():
+            QMessageBox.warning(self, "重命名", f"「{name}」已经存在了。")
+            return
+        try:
+            src.rename(dst)
+        except Exception as exc:
+            QMessageBox.warning(self, "重命名", f"改不了：{exc}")
+            return
+        self.library.reindex_after_move(src, dst)      # 库内路径跟着改，不用重新扫描
+        self.status_label.setText(f"已重命名：{src.name} → {name}")
+        self.refresh_roots()
+        self.refresh_files()
+
+    def delete_folder(self, data) -> None:
+        """删除文件夹：连同里面的图片一起丢进回收站（可还原），并清掉库内索引。"""
+        target = self._dir_abs(data)
+        if target is None:
+            return
+        n = self.store.one(
+            "SELECT COUNT(*) c FROM files WHERE path LIKE ? AND missing=0",
+            (str(target) + os.sep + "%",))["c"]
+        if QMessageBox.question(
+                self, "删除文件夹",
+                f"把整个文件夹丢进回收站吗？\n\n{target}\n\n"
+                f"· 里面有 {n} 张已索引的图片，会一起进回收站（**可以还原**）\n"
+                f"· 库里的索引会一并清掉") != QMessageBox.Yes:
+            return
+        if not self._recycle(target):
+            QMessageBox.warning(self, "删除文件夹", "回收站操作失败，文件没有改动。")
+            return
+        self.store.execute("UPDATE files SET missing=1 WHERE path LIKE ?",
+                           (str(target) + os.sep + "%",))
+        self.status_label.setText(f"已把 {target.name} 丢进回收站（可还原）")
+        self.refresh_roots()
+        self.refresh_files()
+
+    def open_in_explorer(self, target: Path | None = None) -> None:
+        """在 Windows 资源管理器里打开当前（或指定）文件夹。"""
+        import subprocess
+        p = target or self._current_dir_abs()
+        if p is None:
+            QMessageBox.information(self, "打开文件夹", "先在左边选一个库或文件夹。")
+            return
+        if not p.exists():
+            QMessageBox.warning(self, "打开文件夹", f"这个路径不在了：\n{p}")
+            return
+        try:
+            subprocess.Popen(["explorer", str(p)])
+        except Exception as exc:
+            QMessageBox.warning(self, "打开文件夹", f"打不开：{exc}")
+
+    def _update_breadcrumb(self) -> None:
+        """刷新地址栏：盘符 › 文件夹 › 子文件夹，每段可点。"""
+        from PySide6.QtWidgets import QPushButton, QLabel
+        while self.crumb_lay.count():
+            w = self.crumb_lay.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        cur = self._current_dir_abs()
+        if cur is None:
+            self.crumb_lay.addWidget(QLabel("（还没选文件夹：点左边任意一个库或文件夹）"))
+            self.b_newdir.setEnabled(False)
+            self.b_explorer.setEnabled(False)
+            return
+        self.b_newdir.setEnabled(True)
+        self.b_explorer.setEnabled(True)
+        row = self.store.one("SELECT id FROM roots WHERE id=?", (int(self.root_filter),))
+        base = Path(self.store.one("SELECT path FROM roots WHERE id=?",
+                                   (int(self.root_filter),))["path"])
+        parts = [p for p in Path(self.dir_filter).parts] if self.dir_filter else []
+        segs = [(base.drive or base.name, None)] + [(p, i) for i, p in enumerate(parts)]
+        for name, depth in segs:
+            btn = QPushButton(str(name))
+            btn.setFlat(True)
+            btn.setStyleSheet("text-align:left; padding:1px 6px; color:#cfe2ff;")
+            if depth is None:
+                btn.clicked.connect(lambda _c=False, d=None: self._goto_part(d))
+            else:
+                btn.clicked.connect(lambda _c=False, d=depth: self._goto_part(d))
+            self.crumb_lay.addWidget(btn)
+            if depth is not None or len(segs) > 1:
+                sep = QLabel("›")
+                sep.setStyleSheet("color:#6b7688;")
+                self.crumb_lay.addWidget(sep)
+        tail = QLabel(f"  （{self.model.rowCount()} 张）")
+        tail.setStyleSheet("color:#8f96a3;")
+        self.crumb_lay.addWidget(tail)
+        self.crumb_lay.addStretch(1)
+
+    def _goto_part(self, depth: int | None) -> None:
+        """点地址栏的某一段：跳到那级目录。"""
+        row = self.store.one("SELECT path FROM roots WHERE id=?", (int(self.root_filter),))
+        if not row:
+            return
+        base = Path(row["path"])
+        if depth is None:
+            self.dir_filter = ""
+        else:
+            parts = [p for p in Path(self.dir_filter).parts][: depth + 1]
+            self.dir_filter = "/".join(parts)
+        self.current_series = None
+        self.refresh_files()
+        self._select_dir(base / self.dir_filter if self.dir_filter else base)
+
     def dir_menu(self, pos) -> None:
         """库/文件夹树右键菜单。"""
         """库/文件夹树右键：移除索引（只删索引，绝不删文件）、清理失效路径。"""
@@ -1409,11 +1622,31 @@ class MainWindow(QMainWindow):
         a_remove = None
         if data and data[0] == "root":
             a_remove = menu.addAction(f"移除这个库（只删索引，不删文件）")
+            a_new = menu.addAction("在这个库里新建文件夹…")
+            a_open = menu.addAction("在资源管理器中打开")
         elif data and data[0] == "dir":
             a_remove = menu.addAction("把这个目录从索引中移除（只删索引，不删文件）")
+            a_new = menu.addAction("新建子文件夹…")
+            a_ren = menu.addAction("重命名文件夹…")
+            a_del = menu.addAction("删除文件夹（丢进回收站，可还原）")
+            a_open = menu.addAction("在资源管理器中打开")
+        else:
+            a_new = a_ren = a_del = a_open = None
         a_clean = menu.addAction("清理失效目录/文件")
         act = menu.exec(self.dir_tree.mapToGlobal(pos))
         if act is None:
+            return
+        if act == a_new:
+            self.new_folder(self._dir_abs(data))
+            return
+        if act == a_ren:
+            self.rename_folder(data)
+            return
+        if act == a_del:
+            self.delete_folder(data)
+            return
+        if act == a_open:
+            self.open_in_explorer(self._dir_abs(data))
             return
         if act == a_clean:
             self.cleanup_missing_ui()
