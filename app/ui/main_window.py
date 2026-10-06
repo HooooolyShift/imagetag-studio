@@ -478,6 +478,7 @@ class MainWindow(QMainWindow):
         act("查重 / 保留选择", self.open_duplicates, "检测重复与近似图片，选一张保留，其余隔离或删除")
         tb.addSeparator()
         act("合并为系列", self.make_series, "把选中图片合并成一个系列文件夹")
+        act("调整系列顺序…", self.open_series_order, "缩略图拖动排序，保存后按新顺序重命名页码")
         act("写回文件名", self.write_back, "把标签写入文件名/系列文件夹名")
         act("停止", self.stop_task, "停止当前任务")
 
@@ -1098,6 +1099,30 @@ class MainWindow(QMainWindow):
         else:
             self.open_preview(item.path)
 
+    def open_series_order(self, series_id: int | None = None) -> None:
+        """打开"调整系列顺序"对话框：缩略图拖动排序，保存后按新顺序重命名页码。"""
+        sid = int(series_id or self.current_series or 0)
+        if not sid:
+            # 没在系列里就按选中的图找它的系列
+            ids = self.selected_ids()
+            if ids:
+                r = self.store.one("SELECT series_id FROM files WHERE id=?", (int(ids[0]),))
+                sid = int(r["series_id"] or 0) if r else 0
+        if not sid:
+            QMessageBox.information(self, "调整系列顺序", "先进入某个系列（或选中系列里的图）。")
+            return
+        from .dialogs import SeriesOrderDialog
+        dlg = SeriesOrderDialog(self.store, sid, self)
+        if dlg.exec() != dlg.Accepted:
+            return
+        res = self.library.set_series_order(sid, dlg.ordered_ids())
+        if res.get("ok"):
+            self.status_label.setText(f"系列顺序已保存（重排 {res['count']} 页）")
+        else:
+            QMessageBox.warning(self, "保存失败", res.get("msg", ""))
+        self.refresh_roots()
+        self.refresh_files()
+
     def enter_series(self, series_id: int) -> None:
         self.current_series = series_id
         self.b_back.setVisible(True)
@@ -1161,6 +1186,7 @@ class MainWindow(QMainWindow):
         a_face = menu.addAction("人脸检测")
         menu.addSeparator()
         a_series = menu.addAction("合并为系列…")
+        a_series_order = menu.addAction("调整系列顺序…")
         a_new_tag = menu.addAction("添加标签…")
         a_similar = menu.addAction("查找相似图片（以这张为例）")
         a_import = menu.addAction("收录到图库")
@@ -1179,6 +1205,8 @@ class MainWindow(QMainWindow):
             self.run_auto_tag()
         elif action == a_face:
             self.run_face()
+        elif action == a_series_order:
+            self.open_series_order()
         elif action == a_series:
             self.make_series()
         elif action == a_new_tag:

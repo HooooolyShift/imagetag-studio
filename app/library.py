@@ -1273,6 +1273,56 @@ class Library:
         return True
 
     # ------------------------------------------------------------------ 系列
+    def set_series_order(self, series_id: int, ordered_ids: Sequence[int],
+                         digits: int | None = None) -> dict:
+        """按给定顺序重排系列页码：文件**原地**重命名为 001/002/…，并更新 page_no 与系列目录名。
+
+        拖动排序界面用它落盘。先统一改成临时名再改目标名，避免 001↔002 互换时互相撞车。
+        """
+        s = self.store.one("SELECT * FROM series WHERE id=?", (int(series_id),))
+        if s is None:
+            return {"ok": False, "msg": "系列不存在"}
+        rows = {int(r["id"]): r for r in self.store.series_files(int(series_id))}
+        want = [int(i) for i in (ordered_ids or []) if int(i) in rows]
+        rest = [i for i in rows if i not in set(want)]
+        order = want + rest
+        d = int(digits or getattr(self.settings, "page_digits", 3) or 3)
+        tmp: list[tuple[int, Path, Path]] = []
+        for i, fid in enumerate(order, 1):
+            src = Path(rows[fid]["path"])
+            if not src.exists():
+                continue
+            t = src.with_name(f"__ser_{i:04d}{src.suffix}")
+            try:
+                src.rename(t)
+                tmp.append((fid, t, src))
+            except Exception:
+                continue
+        renamed = 0
+        for i, (fid, t, orig) in enumerate(tmp, 1):
+            final = orig.with_name(f"{i:0{d}d}{orig.suffix.lower()}")
+            try:
+                t.rename(final)
+                # 直接改库里的路径，**不要**走 _update_path（它会做防重名处理，会把 001.jpg 改成 001_2.jpg）
+                try:
+                    rel = str(final.relative_to(Path(self.store.one(
+                        "SELECT path FROM roots WHERE id=(SELECT root_id FROM files WHERE id=?)", (fid,))["path"])))
+                except Exception:
+                    rel = final.name
+                self.store.execute("UPDATE files SET path=?, rel=?, page_no=?, kind='series_page' WHERE id=?",
+                                   (str(final), rel, i, fid))
+                renamed += 1
+            except Exception:
+                try:
+                    t.rename(orig)
+                except Exception:
+                    pass
+        try:
+            self.rename_series_dir(int(series_id))       # 页数/标签汇总回目录名
+        except Exception:
+            pass
+        return {"ok": True, "count": renamed, "dir": s["dir"]}
+
     def create_series(self, file_ids: Sequence[int], name: str, tags: Sequence[str],
                       order: Sequence[int] | None = None, mode: str | None = None,
                       digits: int | None = None, start: int = 1,

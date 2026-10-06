@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QButtonGroup, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -1339,6 +1339,93 @@ class ImageCanvas(QWidget):
         if self._start and self._cur:
             p.setPen(QPen(QColor("#7fd0ff"), 2, Qt.DashLine))
             p.drawRect(QRect(self._start, self._cur).normalized())
+
+
+class SeriesOrderDialog(QDialog):
+    """系列排序：缩略图列表直接拖动改顺序（保存后按新顺序重命名页码），双击看大图。"""
+
+    def __init__(self, store, series_id: int, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.series_id = int(series_id)
+        s = store.one("SELECT name FROM series WHERE id=?", (self.series_id,))
+        self.setWindowTitle(f"调整系列顺序 — {s['name'] if s else ''}")
+        self.resize(820, 620)
+        from .common import ThumbPool, load_pixmap
+        self._load_pixmap = load_pixmap
+        v = QVBoxLayout(self)
+        tip = QLabel("拖动缩略图调整页面顺序；双击看大图。点「保存顺序」后按新顺序重命名页码（原地改名，不移动文件）。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#8f96a3;")
+        v.addWidget(tip)
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.IconMode)
+        self.list.setIconSize(QSize(140, 140))
+        self.list.setGridSize(QSize(160, 190))
+        self.list.setResizeMode(QListWidget.Adjust)
+        self.list.setMovement(QListWidget.Snap)
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)     # 拖自己人 = 改顺序
+        self.list.setDefaultDropAction(Qt.MoveAction)
+        self.list.itemDoubleClicked.connect(self._preview)
+        v.addWidget(self.list, 1)
+        self.thumbs = ThumbPool(size=160)
+        self.thumbs.signals.ready.connect(self._on_thumb)
+        self._items: dict[int, QListWidgetItem] = {}
+        self.reload()
+        ok_cancel(self, v)
+        try:
+            self.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok).setText("保存顺序")
+        except Exception:
+            pass
+
+    def reload(self) -> None:
+        self.list.clear()
+        self._items.clear()
+        rows = self.store.series_files(self.series_id)
+        for r in rows:
+            it = QListWidgetItem(f"{int(r['page_no'] or 0):03d}  {Path(r['path']).name}")
+            it.setData(Qt.UserRole, int(r["id"]))
+            it.setToolTip(r["path"])
+            self.list.addItem(it)
+            self._items[int(r["id"])] = it
+            self.thumbs.request(int(r["id"]), str(r["path"]), float(r["mtime"] or 0))
+
+    def _on_thumb(self, file_id: int, path: str) -> None:
+        it = self._items.get(int(file_id))
+        if it is None or not path:
+            return
+        pm = self._load_pixmap(path)
+        if not pm.isNull():
+            it.setIcon(QIcon(pm.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+
+    def _preview(self, item) -> None:
+        fid = int(item.data(Qt.UserRole) or 0)
+        row = self.store.one("SELECT path FROM files WHERE id=?", (fid,))
+        if row is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(Path(row["path"]).name)
+        dlg.resize(900, 700)
+        lay = QVBoxLayout(dlg)
+        lab = QLabel()
+        lab.setAlignment(Qt.AlignCenter)
+        pm = self._load_pixmap(row["path"])
+        lab.setPixmap(pm.scaled(860, 640, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        lay.addWidget(lab, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText("关闭")
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        dlg.exec()
+
+    def ordered_ids(self) -> list[int]:
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            fid = it.data(Qt.UserRole)
+            if fid:
+                out.append(int(fid))
+        return out
 
 
 class PreviewDialog(QDialog):
