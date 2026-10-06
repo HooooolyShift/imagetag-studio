@@ -143,6 +143,14 @@ def prefer_width() -> int:
     return W
 
 
+def _dpr() -> float:
+    try:
+        d = float(QApplication.primaryScreen().devicePixelRatio())
+        return d if d > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
 def _ui_fonts() -> tuple[QFont, QFont, QFont]:
     from PySide6.QtGui import QFontDatabase
     have = set(QFontDatabase.families())
@@ -164,17 +172,24 @@ def _ui_fonts() -> tuple[QFont, QFont, QFont]:
 
 def draw_splash(p: QPainter, cover: QPixmap | None, app_name: str, version: str,
                 status: str, w: int, h: int, cover_h: int,
-                step: int = 0, total: int = 0) -> None:
-    """整块开屏：上方封面（完整）+ 下方独立白底信息条 + 圆角。"""
+                step: int = 0, total: int = 0, dpr: float = 1.0) -> None:
+    """整块开屏：上方封面（完整）+ 下方独立白底信息条 + 圆角。
+
+    封面按"物理像素"缩放后再画（并设置 devicePixelRatio）——高分屏（125%/150%）
+    下如果只按逻辑像素缩放，系统会再放大一次，画面就会发糊、颗粒明显。
+    """
     p.setRenderHint(QPainter.Antialiasing, True)
     p.setRenderHint(QPainter.TextAntialiasing, True)
+    p.setRenderHint(QPainter.SmoothPixmapTransform, True)
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, w, h), RADIUS, RADIUS)
     p.setClipPath(path)
     # 上方：封面图（等比缩放到"宽度填满"，高度按图算，所以不裁切）
     p.fillRect(QRectF(0, 0, w, cover_h), QColor("#0f1116"))
     if cover is not None and not cover.isNull():
-        scaled = cover.scaled(w, cover_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled = cover.scaled(max(1, int(round(w * dpr))), max(1, int(round(cover_h * dpr))),
+                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
         p.drawPixmap(int((w - scaled.width()) / 2), int((cover_h - scaled.height()) / 2), scaled)
     else:
         grad = QLinearGradient(0, 0, w, cover_h)
@@ -228,18 +243,15 @@ def draw_splash(p: QPainter, cover: QPixmap | None, app_name: str, version: str,
 def build_pixmap(settings, app_name: str, version: str, status: str = "正在启动…") -> QPixmap:
     """把开屏画成位图（离屏预览 / 说明书截图用）。"""
     cover = pick_cover(getattr(settings, "splash_dir", ""), settings)
+    dpr = _dpr()
     w, cover_h = cover_size(cover, prefer_width())
     h = cover_h + PANEL_H
-    try:
-        dpr = float(QApplication.primaryScreen().devicePixelRatio()) or 1.0
-    except Exception:
-        dpr = 1.0
     pm = QPixmap(int(w * dpr), int(h * dpr))
     pm.setDevicePixelRatio(dpr)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.scale(dpr, dpr)
-    draw_splash(p, cover, app_name, version, status, w, h, cover_h)
+    draw_splash(p, cover, app_name, version, status, w, h, cover_h, 0, 0, dpr)
     p.end()
     return pm
 
@@ -259,7 +271,13 @@ class AppSplash(QWidget):
         self._step = step
         self._total = total
         self._cover = pick_cover(getattr(settings, "splash_dir", ""), settings)
-        w, cover_h = cover_size(self._cover, prefer_width())
+        self._dpr = _dpr()
+        # 宽度既取屏幕 1/3，又不超过原图像素宽（否则就是把图放大 → 发糊）
+        want = prefer_width()
+        if self._cover is not None and not self._cover.isNull():
+            native = int(self._cover.width() / self._dpr)
+            want = min(want, max(W_MIN, native))
+        w, cover_h = cover_size(self._cover, want)
         self._w, self._cover_h = w, cover_h
         self._h = cover_h + PANEL_H
         self.setFixedSize(self._w, self._h)
@@ -283,7 +301,8 @@ class AppSplash(QWidget):
     def paintEvent(self, _ev) -> None:
         p = QPainter(self)
         draw_splash(p, self._cover, self._app_name, self._version,
-                    self._status, self._w, self._h, self._cover_h, self._step, self._total)
+                    self._status, self._w, self._h, self._cover_h,
+                    self._step, self._total, self._dpr)
         p.end()
 
     def set_status(self, text: str, step: int | None = None, total: int | None = None) -> None:

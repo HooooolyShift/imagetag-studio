@@ -9,7 +9,10 @@
   · 不堆 "flat shading / official art style" 之类 SD1.5 时代的玄学词；
   · 构图靠 wide shot / full body / character on the left 这类 tag 控制。
 
-用法： python tools\\gen_splash.py [底模文件名] [每张出几张=2] [只跑指定任务,如 05]
+用法： python tools\\gen_splash.py [底模文件名] [每张出几张=2] [只跑指定任务,如 05] [宽度]
+
+宽度默认 1216（对应 1216x512）。高分屏上开屏窗口大约是屏幕 1/3 宽，
+想要更锐利就出更大：python tools\\gen_splash.py NoobAI-XL-v1.1.safetensors 3 "" 1536
 """
 from __future__ import annotations
 
@@ -22,7 +25,8 @@ from pathlib import Path
 
 HOST = "http://127.0.0.1:8188"
 OUT = Path(__file__).resolve().parent.parent / ".splash_gen"
-W, H = 1216, 512                # 与开屏封面区(560x236)同比例，直出不裁切
+W, H = 1216, 512                # 默认尺寸：与开屏封面比例一致（2.375:1），直出不裁切
+ASPECT = 1216 / 512             # 开屏封面长宽比；改宽度时按它算高度
 STEPS = 60                      # 单次出图步数
 CFG = 5.5                       # 稍微降 CFG，减少过饱和/halo 伪影
 DEFAULT_CKPT = "NoobAI-XL-v1.1.safetensors"   # 角色还原/构图跟随能力比 Animagine 强
@@ -182,11 +186,15 @@ def wait_and_save(pid: str, dst: Path) -> bool:
 
 
 def main() -> int:
+    global W, H
     OUT.mkdir(parents=True, exist_ok=True)
     args = sys.argv[1:]
     ckpt = args[0] if args else DEFAULT_CKPT
     variants = int(args[1]) if len(args) > 1 else 2
     only = [s.strip() for s in (args[2].split(",") if len(args) > 2 and args[2] else []) if s.strip()]
+    if len(args) > 3 and args[3]:
+        W = max(512, int(args[3]))
+        H = int(round(W / ASPECT / 8)) * 8
     try:
         names = api("/object_info/CheckpointLoaderSimple")["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
         if ckpt not in names:
