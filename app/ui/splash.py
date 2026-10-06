@@ -190,7 +190,11 @@ def draw_splash(p: QPainter, cover: QPixmap | None, app_name: str, version: str,
         scaled = cover.scaled(max(1, int(round(w * dpr))), max(1, int(round(cover_h * dpr))),
                               Qt.KeepAspectRatio, Qt.SmoothTransformation)
         scaled.setDevicePixelRatio(dpr)
-        p.drawPixmap(int((w - scaled.width()) / 2), int((cover_h - scaled.height()) / 2), scaled)
+        # setDevicePixelRatio 之后 width()/height() 是"物理像素"，要换回逻辑像素再算居中，
+        # 否则高分屏（125%/150%）下会算出负偏移，图就被推到一边、铺不满。
+        lw = scaled.width() / dpr
+        lh = scaled.height() / dpr
+        p.drawPixmap(int(round((w - lw) / 2)), int(round((cover_h - lh) / 2)), scaled)
     else:
         grad = QLinearGradient(0, 0, w, cover_h)
         grad.setColorAt(0.0, QColor("#1d2434"))
