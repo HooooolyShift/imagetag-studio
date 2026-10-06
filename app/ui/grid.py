@@ -50,6 +50,7 @@ class GridModel(QAbstractListModel):
         self.blur_ids: set[int] = set()
         self._blur_cache: dict[str, QPixmap] = {}      # 真·高斯模糊结果缓存（按缩略图路径）
         self.r18_names: set[str] = set()               # 库里被标记为 R18 的标签名（图谱页可改）
+        self.r18_forced_off: set[str] = set()          # 手动取消 R18 的标签名（优先级高于自动词匹配）
         # 缩略图生成完的通知必须在这里接上。之前这行被挤到 blurred() 的 return 之后成了死代码，
         # 模型永远收不到通知 → 所有缩略图只显示"…"（就是这次缩略图集体失效的根因）
         thumbs.signals.ready.connect(self._on_thumb)
@@ -183,11 +184,14 @@ def is_r18_tag(name: str, zh: str = "") -> bool:
     """R18 相关标签（性行为 / 性玩具 / 裸露…）→ 用来把气泡染成粉色。"""
     if is_rating_tag(name):
         return False                     # 分级标签单独排在最前面，不算"R18 内容标签"
-    n = str(name or "").lower()
     z = str(zh or "")
-    if any(k in z for k in R18_KEYWORDS_ZH):
+    if any(k in z for k in R18_KEYWORDS_ZH):     # 中文按包含匹配（中文没有词边界）
         return True
-    return any(k in n for k in R18_KEYWORDS_EN)
+    # 英文按**词**匹配：analysis / breastfeeding 这种就不会被 anal / breast 误伤
+    import re as _re
+    toks = [t for t in _re.split(r"[^a-z0-9]+", str(name or "").lower()) if t]
+    keys = set(R18_KEYWORDS_EN)
+    return any(t in keys or t.rstrip("s") in keys for t in toks)
 
 
 def is_rating_tag(name: str) -> bool:
@@ -377,7 +381,10 @@ class GridDelegate(QStyledItemDelegate):
                 if chip.bottom() >= box.top() and chip.top() <= box.bottom():
                     painter.setPen(Qt.NoPen)
                     # 优先用"库里标记过的 R18 标签"（图谱页可勾选修改），没标的再用关键词兜底
-                    _r18 = (name in getattr(self.model, "r18_names", ())) or is_r18_tag(name, label)
+                    # 手动标记优先：勾过 = 一定粉；取消过 = 一定不粉（不再被关键词翻回来）；没动过才用词匹配
+                    _on = name in getattr(self.model, "r18_names", ())
+                    _off = name in getattr(self.model, "r18_forced_off", ())
+                    _r18 = True if _on else (False if _off else is_r18_tag(name, label))
                     painter.setBrush(QColor(226, 88, 158, 195) if _r18 else QColor(58, 64, 78, 200))
                     painter.drawRoundedRect(chip, 6, 6)
                     painter.setPen(QColor("#ffffff") if _r18 else QColor("#c9d3e0"))

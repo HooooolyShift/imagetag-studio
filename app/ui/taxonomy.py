@@ -1093,7 +1093,15 @@ class TaxonomyDialog(QDialog):
         lw = QVBoxLayout(left_wrap)
         lw.setContentsMargins(0, 0, 0, 0)
         lw.addWidget(self.tree, 1)
+        # 搜索联想：浮在搜索框上方，宽度与左栏一致；只列**图谱/库里已有**的节点
+        # （故意不用 suggest_tags，免得出现只存在于 Danbooru 词典、图谱里没有的词）
+        self.find_suggest = QListWidget()
+        self.find_suggest.setMaximumHeight(180)
+        self.find_suggest.setVisible(False)
+        self.find_suggest.itemClicked.connect(self._on_suggest_clicked)
+        lw.addWidget(self.find_suggest)
         lw.addLayout(find_row)
+        self.find_edit.textChanged.connect(self._refresh_find_suggest)
         # 左侧两个标签页：体系树 / 标签管理（原来独立的"标签管理"窗口并到这里）
         left_tabs = QTabWidget()
         left_tabs.addTab(left_wrap, "体系树")
@@ -1127,7 +1135,8 @@ class TaxonomyDialog(QDialog):
         self.r18_box = QCheckBox("R18 相关标签（图库气泡染粉）")
         self.r18_box.setToolTip("勾上：图库里的这个标签气泡显示成粉色，并排到其它标签后面\n"
                                 "不勾：普通灰底气泡。改完立即生效，不用重启")
-        self.r18_box.toggled.connect(self.on_r18_toggled)
+        # 用 stateChanged 而不是 toggled：三态框切到"半选"时 toggled 不一定发，会漏写
+        self.r18_box.stateChanged.connect(self.on_r18_toggled)
         self.r18_box.setVisible(False)
         rv.addWidget(self.r18_box)
         b_apply = QPushButton("保存名称/备注")
@@ -1704,7 +1713,11 @@ class TaxonomyDialog(QDialog):
             # R18 相关标签：勾上后图库里的标签气泡会染成粉色（可随时改）
             try:
                 self.r18_box.blockSignals(True)
-                self.r18_box.setChecked(bool(t["r18"]) if "r18" in t.keys() else False)
+                _f = int(t["r18"] or 0) if "r18" in t.keys() else 0
+                # 三态：勾=强制粉 ／ 半选=交给自动判断 ／ 不勾=强制不粉（手动永远优先于自动匹配）
+                self.r18_box.setTristate(True)
+                self.r18_box.setCheckState(Qt.Checked if _f == 1
+                                           else (Qt.Unchecked if _f == -1 else Qt.PartiallyChecked))
                 self.r18_box.blockSignals(False)
                 self.r18_box.setEnabled(True)
                 self.r18_box.setVisible(True)
@@ -1723,12 +1736,69 @@ class TaxonomyDialog(QDialog):
         if not animating and (kind, nid) in self.canvas.items:
             self.canvas.centerOn(self.canvas.items[(kind, nid)].pos())   # 重绘时保持原位，不运镜
 
+    def _refresh_find_suggest(self, text: str) -> None:
+        """图谱搜索框的联想列表：只列库里/图里已有的标签与分类，点击即跳转。"""
+        q = (text or "").strip().lower()
+        if not q:
+            self.find_suggest.setVisible(False)
+            self.find_suggest.clear()
+            return
+        from .. import tag_i18n
+        hits: list[tuple[int, str, str]] = []          # (优先级, 显示名, 搜索用文本)
+        try:
+            for r in self.store.list_tags():
+                nm, zh = str(r["name"]), str(r["zh"] or "")
+                key = f"{nm} {zh}".lower()
+                if q == nm.lower() or q == zh.lower():
+                    pri = 0
+                elif nm.lower().startswith(q) or zh.lower().startswith(q):
+                    pri = 1
+                elif q in key:
+                    pri = 2
+                else:
+                    try:
+                        pri = 3 if q in tag_i18n.pinyin(zh or nm).lower() else 9
+                    except Exception:
+                        pri = 9
+                if pri < 9:
+                    hits.append((pri, tag_i18n.label(nm, zh), nm))
+            for n in self.store.list_nodes():
+                nm = str(n["name"])
+                if q in nm.lower():
+                    hits.append((2, f"分类 · {nm}", nm))
+        except Exception:
+            pass
+        hits.sort(key=lambda x: (x[0], len(x[2])))
+        self.find_suggest.clear()
+        for _p, disp, _raw in hits[:60]:
+            it = QListWidgetItem(disp)
+            it.setData(Qt.UserRole, _raw)
+            self.find_suggest.addItem(it)
+        self.find_suggest.setVisible(bool(hits))
+
+    def _on_suggest_clicked(self, item) -> None:
+        """点联想项 → 直接定位过去（复用原有的回车定位逻辑）。"""
+        name = item.data(Qt.UserRole) if item is not None else None
+        if not name:
+            return
+        self.find_suggest.setVisible(False)
+        self.find_edit.blockSignals(True)
+        self.find_edit.setText(str(name))
+        self.find_edit.blockSignals(False)
+        try:
+            self.goto_first_match()
+        except Exception:
+            pass
+
     def on_r18_toggled(self, on: bool) -> None:
         """图谱页勾选"R18 相关标签"：写进库，图库那边下次刷新就会染粉。"""
         if not self.current or self.current[0] != "tag":
             return
         try:
-            self.store.execute("UPDATE tags SET r18=? WHERE id=?", (1 if on else 0, int(self.current[1])))
+            # 三态：勾=1（强制粉）、不勾=-1（强制不粉，覆盖自动关键词判定）、半选=0（交回自动）
+            state = self.r18_box.checkState()
+            val = 1 if state == Qt.Checked else (-1 if state == Qt.Unchecked else 0)
+            self.store.execute("UPDATE tags SET r18=? WHERE id=?", (val, int(self.current[1])))
             self.status_label.setText("已标记为 R18 相关标签" if on else "已取消 R18 标记") \
                 if hasattr(self, "status_label") else None
         except Exception as exc:
