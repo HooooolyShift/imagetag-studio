@@ -232,6 +232,7 @@ class Store:
             "file_tags": [("status", "TEXT NOT NULL DEFAULT 'confirmed'")],
             "roots": [("is_library", "INTEGER NOT NULL DEFAULT 0"), ("drive", "TEXT")],
             "taxonomy_edges": [("weight", "REAL DEFAULT 1.0")],
+            "tags": [("r18", "INTEGER NOT NULL DEFAULT 0")],   # 手动标记"这是 R18 相关标签"，图库气泡染粉
         }
         for table, cols in wanted.items():
             have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}

@@ -1123,6 +1123,13 @@ class TaxonomyDialog(QDialog):
         self.node_note.setToolTip("标签：这一栏就是它的中文名（写进文件名、界面显示都用它，留空则用内置词典）\n"
                                   "分类节点：这一栏是分类的备注说明")
         rv.addWidget(self.node_note)
+        # 是不是 R18 相关标签（性行为 / 性玩具 / 裸露…）——图库里的标签气泡会据此染粉
+        self.r18_box = QCheckBox("R18 相关标签（图库气泡染粉）")
+        self.r18_box.setToolTip("勾上：图库里的这个标签气泡显示成粉色，并排到其它标签后面\n"
+                                "不勾：普通灰底气泡。改完立即生效，不用重启")
+        self.r18_box.toggled.connect(self.on_r18_toggled)
+        self.r18_box.setVisible(False)
+        rv.addWidget(self.r18_box)
         b_apply = QPushButton("保存名称/备注")
         b_apply.clicked.connect(self.apply_detail)
         rv.addWidget(b_apply)
@@ -1682,6 +1689,10 @@ class TaxonomyDialog(QDialog):
             self.detail.setText(f"<b>分类节点</b>：{row['name']}<br>子分类 {n_nodes} 个 / 标签 {n_tags} 个")
             self.node_name.setText(row["name"])
             self.node_note.setText(row["note"] or "")
+            try:
+                self.r18_box.setVisible(False)      # 只有标签才有"R18 相关"这个属性
+            except Exception:
+                pass
         else:
             t = self.store.one("SELECT * FROM tags WHERE id=?", (nid,))
             if t is None:
@@ -1690,6 +1701,15 @@ class TaxonomyDialog(QDialog):
                                 f"<br>图片数：{t['count']}<br>提示词：{t['prompt'] or '（用标签名）'}")
             self.node_name.setText(t["name"])
             self.node_note.setText((t["zh"] or t["note"] or ""))     # 中文名/备注（二合一）
+            # R18 相关标签：勾上后图库里的标签气泡会染成粉色（可随时改）
+            try:
+                self.r18_box.blockSignals(True)
+                self.r18_box.setChecked(bool(t["r18"]) if "r18" in t.keys() else False)
+                self.r18_box.blockSignals(False)
+                self.r18_box.setEnabled(True)
+                self.r18_box.setVisible(True)
+            except Exception:
+                pass
             for p in self.store.parents_of_tag(nid):
                 it = QListWidgetItem(p["name"])
                 it.setData(Qt.UserRole, int(p["id"]))
@@ -1702,6 +1722,22 @@ class TaxonomyDialog(QDialog):
         animating = pan is not None and pan.state() == QAbstractAnimation.State.Running
         if not animating and (kind, nid) in self.canvas.items:
             self.canvas.centerOn(self.canvas.items[(kind, nid)].pos())   # 重绘时保持原位，不运镜
+
+    def on_r18_toggled(self, on: bool) -> None:
+        """图谱页勾选"R18 相关标签"：写进库，图库那边下次刷新就会染粉。"""
+        if not self.current or self.current[0] != "tag":
+            return
+        try:
+            self.store.execute("UPDATE tags SET r18=? WHERE id=?", (1 if on else 0, int(self.current[1])))
+            self.status_label.setText("已标记为 R18 相关标签" if on else "已取消 R18 标记") \
+                if hasattr(self, "status_label") else None
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", f"{type(exc).__name__}: {exc}")
+            return
+        try:
+            self.changed.emit()          # 通知主窗口刷新图库（气泡颜色/顺序）
+        except Exception:
+            pass
 
     def on_connect_requested(self, src, dst) -> None:
         """连线模式：父必须是分类节点（标签挂在分类下），子可以是分类或标签。"""

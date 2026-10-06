@@ -49,6 +49,7 @@ class GridModel(QAbstractListModel):
         # 还没审核通过的 R18/R18G 也算进来（打标完没审的时候就先遮住，保护性功能不能等审核）
         self.blur_ids: set[int] = set()
         self._blur_cache: dict[str, QPixmap] = {}      # 真·高斯模糊结果缓存（按缩略图路径）
+        self.r18_names: set[str] = set()               # 库里被标记为 R18 的标签名（图谱页可改）
         # 缩略图生成完的通知必须在这里接上。之前这行被挤到 blurred() 的 return 之后成了死代码，
         # 模型永远收不到通知 → 所有缩略图只显示"…"（就是这次缩略图集体失效的根因）
         thumbs.signals.ready.connect(self._on_thumb)
@@ -207,7 +208,7 @@ class GridDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index) -> QSize:
         s = self.model.icon_size
-        return QSize(s + 16, s + 52)
+        return QSize(s + 16, s + 108)      # 和 setGridSize 保持一致：标签区约 4 行
 
     def paint(self, painter: QPainter, option, index) -> None:
         it: GridItem = index.data(GridModel.ItemRole)
@@ -348,13 +349,20 @@ class GridDelegate(QStyledItemDelegate):
             fm = painter.fontMetrics()
             box = QRect(r.left() + 2, img_rect.bottom() + 17, r.width() - 4,
                         max(18, r.height() - (img_rect.height() + 19)))
+            # 标签区自己一层遮罩：滚上去的部分被裁掉，不会盖住上面的文件名，
+            # 也不会因为"画到框外又被裁"而突然出现/消失
+            painter.save()
+            painter.setClipRect(box)
             line_h = fm.height() + 4
+            max_lines = max(1, box.height() // line_h)
+            it.tag_scroll = max(0, int(getattr(it, "tag_scroll", 0)))
             x, y = box.left(), box.top() - int(getattr(it, "tag_scroll", 0))
             # 显示顺序：分级最前 → 非 R18 的健全标签 → 其余 R18 标签垫底
             ordered = sorted(
                 it.tags,
                 key=lambda t: (0 if is_rating_tag(t)
-                               else (2 if is_r18_tag(t, tag_i18n.label(t, "")) else 1)))
+                               else (2 if ((t in getattr(self.model, "r18_names", ()))
+                                           or is_r18_tag(t, tag_i18n.label(t, ""))) else 1)))
             for name in ordered:
                 label = tag_i18n.label(name, "")
                 w = fm.horizontalAdvance(label) + 12
@@ -369,12 +377,14 @@ class GridDelegate(QStyledItemDelegate):
                 chip = QRect(x, y, w, line_h - 3)
                 if chip.bottom() >= box.top() and chip.top() <= box.bottom():
                     painter.setPen(Qt.NoPen)
-                    _r18 = is_r18_tag(name, label)
+                    # 优先用"库里标记过的 R18 标签"（图谱页可勾选修改），没标的再用关键词兜底
+                    _r18 = (name in getattr(self.model, "r18_names", ())) or is_r18_tag(name, label)
                     painter.setBrush(QColor(226, 88, 158, 195) if _r18 else QColor(58, 64, 78, 200))
                     painter.drawRoundedRect(chip, 6, 6)
                     painter.setPen(QColor("#ffffff") if _r18 else QColor("#c9d3e0"))
                     painter.drawText(chip.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
                 x += w + 4
+            painter.restore()
         painter.restore()
 
 
@@ -411,7 +421,7 @@ class GridView(QListView):
     def set_icon_size(self, size: int) -> None:
         self.grid_model.icon_size = size
         self.setIconSize(QSize(size, size))
-        self.setGridSize(QSize(size + 16, size + 52))
+        self.setGridSize(QSize(size + 16, size + 108))   # 标签区加高到约 4 行（原来只有 2 行）
         self.reset()
 
     def wheelEvent(self, event) -> None:

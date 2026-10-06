@@ -852,6 +852,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------ 查询 + 网格
     def refresh_files(self) -> None:
         required, any_of, text = self._filter_args()
+        try:      # 库里标记过 R18 的标签名（图谱页可改），图库气泡据此染粉
+            self.model.r18_names = {str(r["name"]) for r in self.store.query(
+                "SELECT name FROM tags WHERE COALESCE(r18,0)=1")}
+        except Exception:
+            self.model.r18_names = set()
         # R18 打码：除了已生效的分级，**待审**的 R18/R18G 也要遮住
         # （打标完还没审核时也得挡，否则保护性设置形同虚设）
         try:
