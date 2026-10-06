@@ -1722,6 +1722,11 @@ class Library:
         order: list[tuple[int, str]] = []
         cols: list[np.ndarray] = []
         for cat, items in groups.items():
+            if clip is None:
+                # 引擎被卸载/没加载成功时的兜底：别让整条任务崩在 None 上（以前就是这样报的
+                # "NoneType object has no attribute 'encode_texts'"）
+                raise RuntimeError("CLIP 模型还没加载好（可能在设置里切了开关或正在重载）。"
+                                   "请稍等几秒重试；若一直这样，检查「设置 → CLIP」是否为启用、模型是否已下载。")
             texts = []
             per_tag_templates = []
             for _tid, name, prompt in items:

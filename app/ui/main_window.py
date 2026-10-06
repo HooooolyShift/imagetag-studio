@@ -2155,7 +2155,6 @@ class MainWindow(QMainWindow):
         from .. import perf
         try:
             perf.configure(self.settings)
-            self.hub.unload()
         except Exception:
             pass
         try:
@@ -2164,6 +2163,9 @@ class MainWindow(QMainWindow):
             self.thumbs.size = max(320, int(self.settings.thumb_size) * 2)
             self.zoom.setValue(int(self.settings.thumb_size))
             self.grid.set_icon_size(int(self.settings.thumb_size))
+            # 关键：打码判定用的 blur_ids（哪些图要遮）是在 refresh_files 里算的，
+            # 以前改开关只刷了 blur_r18 却没重算 blur_ids → 看着就是"要重启才生效"
+            self.refresh_files()
             self.grid.viewport().update()
             self.grid.repaint()
         except Exception:

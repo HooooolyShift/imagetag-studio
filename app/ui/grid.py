@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import (QAbstractListModel, QMimeData, QModelIndex, QPoint, QRect, QSize, Qt,
                             QUrl, Signal)
-from PySide6.QtGui import QColor, QDrag, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (QColor, QDrag, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate
 
 from .common import ThumbPool, load_pixmap
@@ -48,6 +48,35 @@ class GridModel(QAbstractListModel):
         self.blur_r18 = False
         # 还没审核通过的 R18/R18G 也算进来（打标完没审的时候就先遮住，保护性功能不能等审核）
         self.blur_ids: set[int] = set()
+        self._blur_cache: dict[str, QPixmap] = {}      # 真·高斯模糊结果缓存（按缩略图路径）
+
+    def blurred(self, key: str, pm: QPixmap) -> QPixmap:
+        """对缩略图做一次真正的高斯卷积（PIL），结果缓存起来，别每帧重算。
+
+        以前是"缩小再放大"的假模糊，放大后有明显低分辨率插值的颗粒感；
+        这里用 PIL 的 GaussianBlur 做卷积，再转回 QPixmap。
+        """
+        got = self._blur_cache.get(key)
+        if got is not None:
+            return got
+        try:
+            from PIL import Image, ImageFilter
+            img = pm.toImage().convertToFormat(QImage.Format_RGBA8888)
+            ptr = img.bits()
+            buf = bytes(ptr)
+            pil = Image.frombytes("RGBA", (img.width(), img.height()), buf).convert("RGB")
+            radius = max(6.0, min(img.width(), img.height()) / 14.0)
+            pil = pil.filter(ImageFilter.GaussianBlur(radius))
+            # Qt→PIL→Qt：用 QImage 承载字节
+            data = pil.convert("RGBA").tobytes("raw", "RGBA")
+            qimg = QImage(data, pil.width, pil.height, QImage.Format_RGBA8888).copy()
+            got = QPixmap.fromImage(qimg)
+        except Exception:
+            got = pm
+        if len(self._blur_cache) > 400:                # 别无限涨
+            self._blur_cache.clear()
+        self._blur_cache[key] = got
+        return got
         thumbs.signals.ready.connect(self._on_thumb)
 
     # ---- 基础接口 ----
@@ -180,14 +209,12 @@ class GridDelegate(QStyledItemDelegate):
             clip.addRoundedRect(img_rect, 4, 4)
             painter.setClipPath(clip)
             if isinstance(pm, QPixmap) and not pm.isNull():
-                small = pm.scaled(max(8, img_rect.width() // 14), max(8, img_rect.height() // 14),
-                                  Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                painter.drawPixmap(img_rect, small)
-                small2 = small.scaled(max(4, small.width() // 2), max(4, small.height() // 2),
-                                      Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                painter.setOpacity(0.65)
-                painter.drawPixmap(img_rect, small2)
-                painter.setOpacity(1.0)
+                # 真·高斯卷积（结果按缩略图缓存），不是"缩小再放大"那种假模糊
+                try:
+                    key = str(it.thumb_src())
+                except Exception:
+                    key = str(id(it))
+                painter.drawPixmap(img_rect, self.model.blurred(key, pm))
             else:
                 painter.setBrush(QColor("#241a1e"))
                 painter.setPen(Qt.NoPen)
