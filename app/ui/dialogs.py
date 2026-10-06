@@ -1362,6 +1362,12 @@ class PreviewDialog(QDialog):
         add_row = QHBoxLayout()
         self.new_tag = QLineEdit()
         self.new_tag.setPlaceholderText("输入标签后回车添加")
+        # 这里以前完全没有联想（双击图片进来的标签页就是它）——接到统一的联想引擎上
+        try:
+            from .common import install_tag_suggest
+            install_tag_suggest(self.new_tag, self.store)
+        except Exception:
+            pass
         self.new_tag.returnPressed.connect(self.add_whole_image_tag)
         add_row.addWidget(self.new_tag, 1)
         b_add = QPushButton("添加")
