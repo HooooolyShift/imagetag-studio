@@ -363,20 +363,37 @@ def refresh_tag_completer(line_edit, store, category: str | None = None,
         comp.setFilterMode(Qt.MatchFlag.MatchContains)
         comp.setMaxVisibleItems(20)
         line_edit.setCompleter(comp)
+    try:
+        # 关键：用"不过滤直接展示"模式。默认的 PopupCompletion 会用输入内容再过滤一次，
+        # 于是**输入完整标签名时**（或与某项完全相同时）候选列表被过滤空/自动补全并收起，
+        # 看起来就是"输入完整了就不联想"。
+        from PySide6.QtWidgets import QCompleter as _QC
+        comp.setCompletionMode(_QC.CompletionMode.UnfilteredPopupCompletion)
+        comp.setMaxVisibleItems(20)
+    except Exception:
+        pass
     comp.setModel(QStringListModel(words, comp))
 
 
 def install_tag_suggest(line_edit, store, category=None) -> None:
-    """给普通输入框装"边打边联想"：每次按键都按匹配度重排候选（含 Danbooru 独有的词）。"""
+    """给普通输入框装"边打边联想"：每次按键都按匹配度重排候选（含 Danbooru 独有的词）。
+
+    注意：这里**先把 completer 建好并填上全量候选**，再挂按键刷新 —— 以前只在第一次按键时
+    才建，任何一步抛异常都会被 except 吞掉，结果就是"这个输入框压根没联想"。
+    """
     def _on_text(txt: str) -> None:
         try:
             refresh_tag_completer(line_edit, store, category, query=txt)
             comp = line_edit.completer()
-            if comp is not None and txt:
+            if comp is not None and txt and comp.model() is not None and comp.model().rowCount():
                 comp.setCompletionPrefix("")
                 comp.complete()
         except Exception:
             pass
+    try:
+        refresh_tag_completer(line_edit, store, category)      # 先建好（不含过滤）
+    except Exception:
+        pass
     try:
         line_edit.textEdited.connect(_on_text)
     except Exception:
