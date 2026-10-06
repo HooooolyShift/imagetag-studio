@@ -2084,6 +2084,77 @@ class TaxonomyDialog(QDialog):
         QTimer.singleShot(0, _animate)                # 等布局/重建完成再开始运镜
 
     # ================= 右键菜单 =================
+    def move_node_to(self, item) -> None:
+        """右键「移动到…」：弹出可搜索的目标选择框，选中后把它挂到新父级下。
+
+        标签多的时候拖拽定位很难（一屏几十上百个节点），这个入口用"搜名字选目标"代替拖拽。
+        """
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
+        cur_name = item.name
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"把「{cur_name}」移动到…")
+        dlg.resize(520, 620)
+        v = QVBoxLayout(dlg)
+        info = QLabel("选一个目标（分类或标签），它会挂到目标下面；可输入中文/英文/拼音过滤。")
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#8f96a3;")
+        v.addWidget(info)
+        search = QLineEdit()
+        search.setPlaceholderText("输入名字过滤，例如：明日方舟 / arknights / mingrizhou")
+        v.addWidget(search)
+        lst = QListWidget()
+        v.addWidget(lst, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("移动到这里")
+        bb.button(QDialogButtonBox.Cancel).setText("取消")
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+
+        from .common import suggest_tags
+
+        def fill(text: str = "") -> None:
+            lst.clear()
+            # 1) 分类节点（作品/服装…都在这类里）
+            for n in self.store.list_nodes():
+                nm = n["name"]
+                if text and text.lower() not in str(nm).lower():
+                    continue
+                it = QListWidgetItem(f"分类 · {nm}")
+                it.setData(Qt.UserRole, ("node", int(n["id"])))
+                lst.addItem(it)
+            # 2) 标签（含 Danbooru 词典里、库里还没有的 —— 选中会顺手建出来再挂上去）
+            from .. import tag_i18n
+            for _s, name, zh in suggest_tags(text, self.store, None, 400):
+                if (item.kind, int(item.nid)) == ("tag", int(self.store.tag_id(name) or -1)):
+                    continue                       # 别把自己挂到自己下面
+                it = QListWidgetItem("标签 · " + tag_i18n.display(name, zh))
+                it.setData(Qt.UserRole, ("tag", name))
+                lst.addItem(it)
+
+        search.textChanged.connect(fill)
+        fill("")
+        if dlg.exec() != dlg.Accepted or lst.currentItem() is None:
+            return
+        kind, target = lst.currentItem().data(Qt.UserRole)
+        try:
+            if kind == "tag":
+                tid = self.store.tag_id(str(target))
+                if tid is None:
+                    tid = self.store.ensure_tag(str(target))
+                pid = int(tid)
+            else:
+                pid = int(target)
+            if item.kind == "node":
+                self.store.link(pid, "node", int(item.nid), relation="sub_of")
+            else:
+                self.store.link(pid, "tag", int(item.nid), relation="sub_of")
+            self.store.refresh_counts()
+            self.rebuild()
+            self.detail.setText(f"已把「{cur_name}」移动到所选目标下")
+        except Exception as exc:
+            QMessageBox.warning(self, "移动失败", f"{type(exc).__name__}: {exc}")
+
     def canvas_menu(self, pos) -> None:
         item = self.canvas.itemAt(pos)
         while item is not None and not isinstance(item, NodeItem):
@@ -2097,12 +2168,16 @@ class TaxonomyDialog(QDialog):
                 a_fold = menu.addAction("折叠/展开其下方所有子节点") if has_child else None
             a_tag = menu.addAction("在此新建标签")
             a_link = menu.addAction("关联已有标签…")
+            a_move = menu.addAction("移动到…（选目标位置）")
             a_ren = menu.addAction("重命名…")
             a_del = menu.addAction("删除")
         else:
-            a_tag = a_link = a_ren = a_del = None
+            a_tag = a_link = a_move = a_ren = a_del = None
         act = menu.exec(self.canvas.mapToGlobal(pos))
         if act is None:
+            return
+        if act is not None and isinstance(item, NodeItem) and act == a_move:
+            self.move_node_to(item)
             return
         if isinstance(item, NodeItem):
             self.current = (item.kind, item.nid)
