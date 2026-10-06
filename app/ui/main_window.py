@@ -641,6 +641,14 @@ class MainWindow(QMainWindow):
         self.b_back.setVisible(False)
         head.addWidget(self.b_back)
         head.addWidget(QLabel("缩略图"))
+        # 备用开关：设置窗口里那个勾选框在某些缩放/DPI 下点不动（命中偏移），
+        # 这里放一个工具栏上的同款开关，随时能拨、立即生效。
+        self.blur_switch = QCheckBox("R18打码")
+        self.blur_switch.setChecked(bool(self.settings.rating_blur))
+        self.blur_switch.setToolTip("勾上后：R18/R18G 的缩略图用高斯模糊遮住，右下角留分级角标\n"
+                                    "（和「设置 → R18 打码」是同一个开关，拨动立即生效）")
+        self.blur_switch.toggled.connect(self.on_blur_toggled)
+        head.addWidget(self.blur_switch)
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(90, 360)
         self.zoom.setValue(self.settings.thumb_size)
@@ -2100,6 +2108,16 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.refresh_tags()
         self.update_selection()
+
+    def on_blur_toggled(self, on: bool) -> None:
+        """工具栏上的 R18 打码开关：写设置 + 立即刷新（不依赖设置窗口和确定按钮）。"""
+        self.settings.rating_blur = bool(on)
+        try:
+            self.settings.save()                 # 立刻落盘，别等退出
+        except Exception:
+            pass
+        self.apply_settings_live()
+        self.status_label.setText("R18 打码：" + ("已开启（R18/R18G 缩略图将模糊处理）" if on else "已关闭"))
 
     def on_perf_changed(self) -> None:
         """工具栏切性能挡位：立即生效（重载引擎，正在跑的任务会在下个批次用新挡位）。"""
