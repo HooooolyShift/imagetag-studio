@@ -958,8 +958,12 @@ class Store:
             conds.append(f"f.root_id IN ({ph})")
             args.extend(root_ids)
         if rel_prefix:
-            conds.append("f.rel LIKE ?")
-            args.append(rel_prefix.replace("\\", "/").rstrip("/") + "/%")
+            # 只显示**这一层**的图片，不把子文件夹里的也带出来：
+            # 前缀命中之后再要求"剩余部分里没有目录分隔符"（以前 LIKE 'a/%' 会把 a/b/c 里的图一起列出来）
+            _p = rel_prefix.replace("\\", "/").rstrip("/")
+            conds.append("(f.rel LIKE ? AND INSTR(SUBSTR(f.rel, ?), '/') = 0)")
+            args.append(_p + "/%")
+            args.append(len(_p) + 2)
         if rating:
             conds.append("f.rating=?")
             args.append(rating)
