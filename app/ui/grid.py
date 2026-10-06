@@ -180,11 +180,22 @@ R18_KEYWORDS_EN = (
 
 def is_r18_tag(name: str, zh: str = "") -> bool:
     """R18 相关标签（性行为 / 性玩具 / 裸露…）→ 用来把气泡染成粉色。"""
+    if is_rating_tag(name):
+        return False                     # 分级标签单独排在最前面，不算"R18 内容标签"
     n = str(name or "").lower()
     z = str(zh or "")
     if any(k in z for k in R18_KEYWORDS_ZH):
         return True
     return any(k in n for k in R18_KEYWORDS_EN)
+
+
+def is_rating_tag(name: str) -> bool:
+    """是不是分级标签（全年龄 / R15 / R18 / R18G 及其别名）。"""
+    n = str(name or "").strip().lower().replace("-", "")
+    return n in {"r15", "r18", "r18g", "all_ages", "allages", "全年龄", "g级", "健全"} \
+        or n.startswith(("r15", "r18", "全年龄"))
+
+
 
 
 class GridDelegate(QStyledItemDelegate):
@@ -339,7 +350,12 @@ class GridDelegate(QStyledItemDelegate):
                         max(18, r.height() - (img_rect.height() + 19)))
             line_h = fm.height() + 4
             x, y = box.left(), box.top() - int(getattr(it, "tag_scroll", 0))
-            for name in it.tags:
+            # 显示顺序：分级最前 → 非 R18 的健全标签 → 其余 R18 标签垫底
+            ordered = sorted(
+                it.tags,
+                key=lambda t: (0 if is_rating_tag(t)
+                               else (2 if is_r18_tag(t, tag_i18n.label(t, "")) else 1)))
+            for name in ordered:
                 label = tag_i18n.label(name, "")
                 w = fm.horizontalAdvance(label) + 12
                 if x + w > box.right() and x > box.left():
