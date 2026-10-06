@@ -1268,6 +1268,11 @@ class MainWindow(QMainWindow):
 
     def on_task_failed(self, msg: str) -> None:
         self.progress.setVisible(False)
+        if moved_pairs:            # 批量改库：只查一次库根，不再每张图各查一遍（这是拖拽卡顿的主因）
+            try:
+                self.library.reindex_after_move_many(moved_pairs)
+            except Exception:
+                pass
         self.status_label.setText("任务失败")
         QMessageBox.warning(self, "任务失败", msg.split("\n\n")[0][:2000])
 
@@ -1686,12 +1691,13 @@ class MainWindow(QMainWindow):
                 + "· 库内索引会跟着更新，不用重新扫描") != QMessageBox.Yes:
             return
         ok = failed = 0
+        moved_pairs: list[tuple] = []
         self.progress.setVisible(True)
         self.progress.setRange(0, len(plan))
         for i, (src, dst, _r) in enumerate(plan, 1):
             try:
                 shutil.move(str(src), str(dst))
-                self.library.reindex_after_move(src, dst)
+                moved_pairs.append((src, dst))
                 ok += 1
             except Exception:
                 failed += 1

@@ -56,6 +56,16 @@ def main() -> int:
             break
 
     settings = Settings.load()
+    # 启动过渡窗口（类似 Adobe 系列的开屏）：先显示封面，窗口就绪后再收掉
+    splash = None
+    if getattr(settings, "splash_enabled", True):
+        try:
+            from .ui.splash import AppSplash
+            splash = AppSplash(settings, APP_NAME, VERSION)
+            splash.show()
+            QApplication.processEvents()
+        except Exception:
+            splash = None
     model_lib.setup_env(settings.models_path())
     perf.configure(settings)
     from . import singleton
@@ -65,9 +75,14 @@ def main() -> int:
                             "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
         return 1
     store = Store()
+    if splash is not None:
+        splash.set_status("正在读取图库…")
     win = MainWindow(store, settings)
     win.statusBar().showMessage(f"性能挡位：{perf.describe()}", 8000)
     win.show()
+    if splash is not None:
+        splash.finish(win)
+        splash = None
 
     # 一次性数据整理挪到窗口显示之后跑，避免启动卡在"没窗口"的几秒里
     def housekeeping() -> None:

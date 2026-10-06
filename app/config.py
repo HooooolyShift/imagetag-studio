@@ -158,6 +158,8 @@ class Settings:
     library_dir_name: str = "ImageTags"    # 每个盘下的图库目录名，例如 E:\ImageTags
     library_only_search: bool = True       # 检索是否只在图库内（不包含扫描来源）
     import_subdir: str = ""                # 审核通过后自动入库到图库下的哪个子目录（空=用原文件夹名）
+    splash_enabled: bool = True            # 启动时显示过渡窗口（类似 Adobe 那种开屏）
+    splash_dir: str = ""                   # 开屏封面图所在文件夹（每次启动随机取一张；空=用内置图）
     auto_import_after_review: bool = False # 审核完成后自动把图片收进图库
     dup_threshold: int = 6                 # 感知哈希汉明距离阈值（越小越严格）
     dup_use_clip: bool = True              # 是否用 CLIP 再兜一层

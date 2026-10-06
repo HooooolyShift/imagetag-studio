@@ -965,6 +965,14 @@ class SettingsDialog(QDialog):
         for w in line_edits:
             w.editingFinished.connect(fire)
 
+    def _pick_splash_dir(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "选择开屏封面图文件夹",
+                                             self.splash_dir.text().strip() or "")
+        if d:
+            self.splash_dir.setText(d)
+            self._live_apply()
+
     def _live_apply(self) -> None:
         try:
             self.apply_to(self.s)
@@ -1046,6 +1054,19 @@ class SettingsDialog(QDialog):
         self.g_drag.setValue(int(getattr(settings, "graph_drag_limit", 240)))
         self.g_drag.setToolTip("拖拽节点最多能拉离原位多少像素（松开弹回原位）")
         f1.addRow("图谱：拖拽极限(px)", self.g_drag)
+        # 开屏（启动过渡窗口）
+        self.splash_on = QCheckBox("启动时显示开屏（过渡窗口）")
+        self.splash_on.setChecked(bool(getattr(settings, "splash_enabled", True)))
+        f1.addRow("", self.splash_on)
+        self.splash_dir = QLineEdit(getattr(settings, "splash_dir", "") or "")
+        self.splash_dir.setPlaceholderText("开屏封面图文件夹（每次启动随机取一张；留空用内置图）")
+        b_splash = QPushButton("选择文件夹…")
+        b_splash.clicked.connect(self._pick_splash_dir)
+        row_sp = QHBoxLayout()
+        row_sp.addWidget(self.splash_dir, 1)
+        row_sp.addWidget(b_splash)
+        w_sp = QWidget(); w_sp.setLayout(row_sp)
+        f1.addRow("开屏封面", w_sp)
         tabs.addTab(w1, "常规")
 
         # WD14
@@ -1198,6 +1219,11 @@ class SettingsDialog(QDialog):
         settings.graph_ring_radius = float(self.g_ring.value())
         settings.graph_anim_ms = int(self.g_anim.value())
         settings.graph_drag_limit = float(self.g_drag.value())
+        try:
+            settings.splash_enabled = bool(self.splash_on.isChecked())
+            settings.splash_dir = self.splash_dir.text().strip()
+        except Exception:
+            pass
         settings.dup_threshold = int(self.dup_th.value())
         settings.dup_use_clip = self.dup_clip.isChecked()
         settings.rating_enabled = self.rating_on.isChecked()

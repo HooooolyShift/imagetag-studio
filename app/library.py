@@ -2033,25 +2033,37 @@ class Library:
         return {"categorized": n_cat, "zh": n_zh, "total": len(rows)}
 
     def reindex_after_move(self, src, dst) -> int:
+        return self.reindex_after_move_many([(src, dst)])
+
+    def reindex_after_move_many(self, pairs) -> int:
+        """批量版：一次移动很多文件时只查一次库根、只算一遍归属。
+
+        以前每移一张都调一次 reindex_after_move，每次都重新 list_roots + 逐条 UPDATE，
+        几十张图叠起来就是明显卡顿。这里把库根只取一次，剩下的都是纯计算。
+        """
+        from pathlib import Path as _P
+        all_roots = [(int(r["id"]), str(r["path"])) for r in self.store.list_roots()]
+        total = 0
+        for src, dst in pairs:
+            total += self._reindex_one(str(_P(src)), str(_P(dst)), all_roots)
+        self.store.refresh_counts()
+        return total
+
+    def _reindex_one(self, src_s: str, dst_s: str, all_roots) -> int:
         """磁盘上的文件/文件夹被移动或改名后，把库里的路径跟着改掉（不用重新扫描）。
 
         src / dst 可以是文件也可以是文件夹；文件夹会连带它下面所有已索引的图片一起改。
         找不到的（还没索引的）忽略。
         """
         from pathlib import Path as _P
-        src_p, dst_p = _P(src), _P(dst)
-        src_s = str(src_p)
         rows = self.store.query(
             "SELECT id, path, root_id FROM files WHERE path=? OR path LIKE ?",
             (src_s, src_s + os.sep + "%"))
         n = 0
         root_paths: dict[int, str] = {}
-        # 目标可能落到**另一个库根**下（比如从来源目录拖进图库目录），
-        # 这时 root_id 也必须跟着改，否则图库里永远看不到它（以前就漏了这一步）。
-        all_roots = [(int(r["id"]), str(r["path"])) for r in self.store.list_roots()]
         for r in rows:
             old = str(r["path"])
-            new = str(dst_p) + old[len(src_s):]
+            new = dst_s + old[len(src_s):]
             rid = int(r["root_id"])
             best = None
             for cand_id, cand_path in all_roots:
