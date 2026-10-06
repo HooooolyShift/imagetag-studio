@@ -110,7 +110,8 @@ class GridModel(QAbstractListModel):
         return None
 
     def flags(self, index):
-        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        # 少了 ItemIsDragEnabled，Qt 根本不会发起拖拽 —— 这就是"只能框选、拖不动"的原因
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled
 
     # ---- 缩略图 ----
     def ensure_thumb(self, it: GridItem) -> None:
