@@ -251,10 +251,18 @@ class GridDelegate(QStyledItemDelegate):
             _rl = "R18"
         if _rl and it.kind != "series":
             badge = QRect(img_rect.left() + 4, img_rect.bottom() - 22, 44, 18)
-            painter.setBrush(QColor(200, 40, 40, 205) if _rl != "全年龄" else QColor(40, 120, 60, 205))
+            # 分级角标配色：全年龄=绿、R15=黄、R18=粉、R18G=红
+            _badge_color = {
+                "全年龄": QColor(46, 140, 74, 210),
+                "R15": QColor(214, 170, 32, 220),
+                "R18": QColor(226, 88, 158, 215),
+                "R18G": QColor(200, 36, 36, 215),
+            }.get(_rl, QColor(120, 120, 130, 205))
+            painter.setBrush(_badge_color)
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(badge, 4, 4)
-            painter.setPen(QColor("#ffffff"))
+            # 黄色底配深色字更清楚，其余用白字
+            painter.setPen(QColor("#2b2200") if _rl == "R15" else QColor("#ffffff"))
             f = QFont(painter.font())
             f.setPointSizeF(8.0)
             f.setBold(True)
