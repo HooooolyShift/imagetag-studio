@@ -263,7 +263,20 @@ class ReviewDialog(QDialog):
                                 f"图片文件没有改动。")
 
     def reload_queue(self) -> None:
+        # 「只看还有待审标签的图片」这个复选框以前根本没生效（列表永远按"有待审标签 或 没定级"
+        # 来列，所以清空队列后那批"没定级"的图还赖在列表里，看着就像没清掉）。现在按它对上。
         rows = self.store.pending_files(400)
+        if self.only_pending.isChecked():
+            # 必须在 SQL 里筛，不能拿回来再过滤：pending_files 的排序是"没定级的排前面"，
+            # 库里几千张没定级的图会把真正有待审标签的那几张挤出前 400 条 ——
+            # 这就是"清空队列后缩略图还在"的原因（列表里全是没定级的备用图）。
+            rows = self.store.query(
+                "SELECT f.*, "
+                "  (SELECT COUNT(*) FROM file_tags ft WHERE ft.file_id=f.id AND ft.status='pending') "
+                "    AS n_pending, 0 AS no_rating "
+                "FROM files f WHERE f.missing=0 AND EXISTS("
+                "  SELECT 1 FROM file_tags ft WHERE ft.file_id=f.id AND ft.status='pending') "
+                "ORDER BY n_pending DESC, f.rel LIMIT 400")
         self.queue = [dict(r) for r in rows]
         self._q_items: dict[int, QListWidgetItem] = {}
         self._q_pending = 0
@@ -299,6 +312,12 @@ class ReviewDialog(QDialog):
             self._thumb_timer.start()
 
     def _visible_range(self) -> tuple[int, int]:
+        try:
+            return self._visible_range_impl()
+        except Exception:              # 网格尺寸为 0 等边界情况，别让除零把整个刷新打断
+            return (0, -1)
+
+    def _visible_range_impl(self) -> tuple[int, int]:
         """当前可见条目区间（上下各留一行余量）。
 
         以前用 indexAt(视口右下角) 算，图标网格下那个角经常落在空隙里 → 判定失败后
