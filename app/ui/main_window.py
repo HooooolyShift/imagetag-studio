@@ -376,6 +376,42 @@ class TagPanel(QWidget):
         self.changed.emit(list(self.file_ids))
 
 
+class DirTree(QTreeWidget):
+    """左侧库/文件夹树：额外支持把网格里选中的图片拖进来 → 移动到该文件夹。"""
+
+    filesDropped = Signal(object, list)          # (目标节点的 UserRole 数据, [绝对路径])
+
+    def _accepts(self, mime) -> bool:
+        return bool(mime.hasUrls()) or mime.hasFormat("application/x-imtag-rows")
+
+    def dragEnterEvent(self, event) -> None:
+        if self._accepts(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._accepts(event.mimeData()):
+            item = self.itemAt(event.position().toPoint())
+            self.setCurrentItem(item)
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if not self._accepts(event.mimeData()):
+            super().dropEvent(event)
+            return
+        item = self.itemAt(event.position().toPoint())
+        data = item.data(0, Qt.UserRole) if item else None
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        if data and paths:
+            self.filesDropped.emit(data, paths)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, store: Store, settings: Settings):
         super().__init__()
@@ -560,9 +596,10 @@ class MainWindow(QMainWindow):
         w_dirs = QWidget()
         dl = QVBoxLayout(w_dirs)
         dl.setContentsMargins(6, 6, 6, 6)
-        self.dir_tree = QTreeWidget()
+        self.dir_tree = DirTree()
         self.dir_tree.setHeaderHidden(True)
         self.dir_tree.itemClicked.connect(self.on_dir_clicked)
+        self.dir_tree.filesDropped.connect(self.move_files_to)
         self.dir_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.dir_tree.customContextMenuRequested.connect(self.dir_menu)
         self.dir_tree.itemDoubleClicked.connect(lambda _i, _c: None)
@@ -622,6 +659,10 @@ class MainWindow(QMainWindow):
         self.b_explorer.setToolTip("在 Windows 资源管理器里打开当前文件夹")
         self.b_explorer.clicked.connect(self.open_in_explorer)
         crumb_lay.addWidget(self.b_explorer)
+        self.b_up = QPushButton("↑ 上一级")
+        self.b_up.setToolTip("回到上一层文件夹")
+        self.b_up.clicked.connect(self.go_up_one_level)
+        crumb_lay.addWidget(self.b_up)
         cl.addWidget(self.crumb_row)
         self.model = GridModel(self.thumbs, self.settings.thumb_size)
         self.model.blur_r18 = bool(self.settings.rating_blur)
@@ -1422,6 +1463,70 @@ class MainWindow(QMainWindow):
         self.refresh_files()
 
     # ------------------------------------------------ 文件夹操作（像资源管理器那样）
+    def go_up_one_level(self) -> None:
+        """地址栏的「上一级」。"""
+        if self.root_filter is None or not self.dir_filter:
+            return
+        parts = [p for p in Path(self.dir_filter).parts][:-1]
+        self.dir_filter = "/".join(parts)
+        self.current_series = None
+        self.refresh_files()
+        self._update_breadcrumb()
+
+    def move_files_to(self, data, paths) -> None:
+        """把拖过来的图片移动进某个库/文件夹（拖到左树松手就走这里）。"""
+        import shutil
+        from PySide6.QtWidgets import QApplication
+        dest = self._dir_abs(data)
+        if dest is None:
+            return
+        if not dest.exists():
+            QMessageBox.warning(self, "移动图片", f"目标文件夹不在了：\n{dest}")
+            return
+        plan: list[tuple[Path, Path, bool]] = []      # (源, 目标, 是否改过名)
+        skipped = 0
+        for p in paths:
+            src = Path(p)
+            if not src.exists() or src.parent == dest:
+                skipped += 1
+                continue
+            dst, renamed = dest / src.name, False
+            n = 2
+            while dst.exists():
+                dst = dest / f"{src.stem}_{n}{src.suffix}"
+                renamed, n = True, n + 1
+            plan.append((src, dst, renamed))
+        if not plan:
+            self.status_label.setText(f"没有需要移动的图片（跳过 {skipped} 张）")
+            return
+        if QMessageBox.question(
+                self, "移动图片",
+                f"把 {len(plan)} 张图片移动到：\n{dest}\n\n"
+                + (f"· 其中 {sum(1 for _s, _d, r in plan if r)} 张因为重名会自动改名\n" if any(r for _s, _d, r in plan) else "")
+                + (f"· 跳过 {skipped} 张（已在目标目录或文件不存在）\n" if skipped else "")
+                + "· 库内索引会跟着更新，不用重新扫描") != QMessageBox.Yes:
+            return
+        ok = failed = 0
+        self.progress.setVisible(True)
+        self.progress.setRange(0, len(plan))
+        for i, (src, dst, _r) in enumerate(plan, 1):
+            try:
+                shutil.move(str(src), str(dst))
+                self.library.reindex_after_move(src, dst)
+                ok += 1
+            except Exception:
+                failed += 1
+            self.progress.setValue(i)
+            QApplication.processEvents()
+        self.progress.setVisible(False)
+        self.status_label.setText(
+            f"已移动 {ok} 张到「{dest.name}」"
+            + (f"，改名 {sum(1 for _s, _d, r in plan if r)} 张" if any(r for _s, _d, r in plan) else "")
+            + (f"，失败 {failed} 张" if failed else "")
+            + (f"，跳过 {skipped} 张" if skipped else ""))
+        self.refresh_roots()
+        self.refresh_files()
+
     def _dir_abs(self, data) -> Path | None:
         """把树节点（"root"/"dir"）换算成磁盘上的绝对路径。"""
         if not data:

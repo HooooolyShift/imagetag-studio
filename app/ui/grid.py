@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import (QAbstractListModel, QMimeData, QModelIndex, QPoint, QRect, QSize, Qt,
+                            QUrl, Signal)
 from PySide6.QtGui import QColor, QDrag, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate
 
@@ -272,6 +273,9 @@ class GridView(QListView):
         self.verticalScrollBar().valueChanged.connect(self._request_visible)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.reorder_enabled = False
+        # 允许把选中的图片拖到别处（左侧文件夹树等）；拖的是真实文件路径
+        self.setDragEnabled(True)
+        self.setDragDropMode(QListView.DragOnly)
         self._press_pos: QPoint | None = None
         self._press_row: int | None = None
         self._drop_row: int | None = None
@@ -288,6 +292,31 @@ class GridView(QListView):
             it = self.grid_model.item_at(idx)
             if it:
                 self.grid_model.ensure_thumb(it)
+
+    def mimeData(self, indexes) -> QMimeData:
+        """把选中的图片打包成拖动数据：既有真实文件路径（资源管理器式），
+        也带一份行号（万一以后要拖出去做别的用途）。"""
+        md = QMimeData()
+        rows = sorted({i.row() for i in indexes if i.isValid()})
+        md.setData(self.MIME, (",".join(str(r) for r in rows)).encode("ascii"))
+        urls = []
+        for r in rows:
+            it = self.grid_model.item_at(self.model().index(r, 0))
+            if it is not None and getattr(it, "path", ""):
+                urls.append(QUrl.fromLocalFile(str(it.path)))
+        if urls:
+            md.setUrls(urls)
+        return md
+
+    def startDrag(self, actions) -> None:
+        """默认拖拽动作是「移动」：拖到左侧文件夹松手就是移动文件。"""
+        md = self.mimeData(self.selectedIndexes())
+        if md is None or not md.hasUrls():
+            return
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        pix = self.grid_model.item_at(self.currentIndex())
+        drag.exec(Qt.MoveAction | Qt.CopyAction, Qt.MoveAction)
 
     def visible_indexes(self) -> list[QModelIndex]:
         """当前可见区域对应的行索引（含上下各几行余量）。"""
