@@ -12,7 +12,12 @@ APP_ID = "ImageTagStudio"
 VERSION = "1.4.0"
 
 # 支持的图片后缀
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".avif"}
+IMAGE_EXTS = {
+    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".apng", ".webp", ".bmp", ".dib", ".gif",
+    ".tif", ".tiff", ".avif", ".heic", ".heif", ".hif", ".jxl", ".jp2", ".j2k", ".jpf",
+    ".psd", ".ico", ".cur", ".tga", ".dds", ".pcx", ".ppm", ".pgm", ".pbm", ".pnm",
+    ".sgi", ".ras", ".xbm", ".xpm", ".wbmp", ".svg",
+}
 
 # 标签分类（分类只影响界面分组与默认阈值，不影响检索）
 TAG_CATEGORIES = {

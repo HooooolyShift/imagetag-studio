@@ -8,6 +8,30 @@ from PIL import Image, ImageOps
 
 from .config import thumbs_dir
 
+
+def register_pillow_extras() -> None:
+    """注册 Pillow 的扩展解码器：HEIC/HEIF（iPhone 默认）、AVIF（装了对应包才生效）。
+
+    Pillow 的插件是进程级全局注册，注册一次之后所有 Image.open 都能认这些格式。
+    放在模块顶部（只加在这里，不碰任何已有函数），避免插入位置不对破坏原逻辑。
+    """
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+    try:
+        import pillow_avif                # noqa: F401  导入即注册
+    except Exception:
+        pass
+    try:
+        Image.init()                      # 让 PIL 重新扫描一遍已注册的解码器
+    except Exception:
+        pass
+
+
+register_pillow_extras()
+
 try:
     Image.MAX_IMAGE_PIXELS = None
 except Exception:
