@@ -48,10 +48,18 @@ def build_pixmap(settings, app_name: str, version: str, status: str = "正在启
     fam = "Microsoft YaHei UI"
     if fam not in QFontDatabase.families():
         fam = "Microsoft YaHei" if "Microsoft YaHei" in QFontDatabase.families() else ""
-    pm = QPixmap(W, H)
+    # 按屏幕缩放比渲染（高分屏下直接画 1x 位图会被拉伸 → 文字发虚）
+    try:
+        dpr = float(QApplication.primaryScreen().devicePixelRatio()) or 1.0
+    except Exception:
+        dpr = 1.0
+    pm = QPixmap(int(W * dpr), int(H * dpr))
+    pm.setDevicePixelRatio(dpr)
     pm.fill(QColor("#16171b"))
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpr, dpr)                      # 之后都用"逻辑像素"坐标
+    p.setRenderHint(QPainter.TextAntialiasing)
     # 上半部分：封面图（按比例裁切填满）
     cover = pick_cover(getattr(settings, "splash_dir", ""))
     area = QRectF(0, 0, W, COVER_H)
@@ -102,6 +110,12 @@ class AppSplash(QSplashScreen):
         super().__init__(build_pixmap(settings, app_name, version))
         self.setWindowFlag(Qt.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        # 不要"忙"光标：悬停在开屏上转圈是启动期间残留的等待光标造成的
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        self.setCursor(Qt.ArrowCursor)
 
     def set_status(self, text: str) -> None:
         self.setPixmap(build_pixmap(self._settings, self._app_name, self._version, text))
