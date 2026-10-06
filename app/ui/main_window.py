@@ -1630,6 +1630,19 @@ class MainWindow(QMainWindow):
             return
         plan: list[tuple[Path, Path, bool]] = []      # (源, 目标, 是否改过名)
         skipped = 0
+        # 拖的是"系列"时要把整组都带上：以前只拿到封面那一个文件，于是只移动了一页
+        expanded: list[str] = []
+        for p in paths:
+            expanded.append(p)
+            try:
+                row = self.store.one("SELECT id,series_id FROM files WHERE path=?", (str(p),))
+                if row and row["series_id"]:
+                    for f in self.store.series_files(int(row["series_id"])):
+                        if str(f["path"]) not in expanded:
+                            expanded.append(str(f["path"]))
+            except Exception:
+                pass
+        paths = expanded
         for p in paths:
             src = Path(p)
             if not src.exists() or src.parent == dest:

@@ -1327,7 +1327,8 @@ class Library:
                       order: Sequence[int] | None = None, mode: str | None = None,
                       digits: int | None = None, start: int = 1,
                       page_names: dict[int, str] | None = None,
-                      progress: Callable[[str, float], None] | None = None) -> dict:
+                      progress: Callable[[str, float], None] | None = None,
+                      use_parent: bool = False) -> dict:
         files = self.store.files_by_ids(file_ids)
         if not files:
             return {"ok": False, "msg": "没有选中文件"}
@@ -1349,7 +1350,20 @@ class Library:
         mode = mode or self.settings.series_move_mode
 
         dirname = naming.build_series_dirname(name, self.dir_tags(tags))
-        target = parent / dirname
+        if use_parent:
+            # 直接把**当前文件夹**当成系列文件夹（适合"一个文件夹就是一部漫画"的情况）：
+            # 把文件夹改名为「系列名 [标签]」，内页原地编号，不再多套一层子文件夹
+            newdir = parent.parent / dirname
+            if newdir != parent:
+                try:
+                    parent.rename(newdir)
+                    # 文件夹改名后，库里这些文件的路径前缀也要同步（重新取一次最新路径）
+                    self.reindex_after_move(parent, newdir)
+                except Exception:
+                    pass
+            files = self.store.files_by_ids(file_ids)      # 路径已更新，重新取
+            parent = newdir if newdir.exists() else parent
+        target = parent if use_parent else (parent / dirname)
         i = 2
         while target.exists() and not target.is_dir():
             target = parent / f"{dirname} ({i})"
