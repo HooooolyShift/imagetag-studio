@@ -172,6 +172,7 @@ class Settings:
     show_model_tip: bool = True            # 启动时是否提示"模型未下载"（可勾选不再提示）
     graph_show_all_tags: bool = False      # 图谱是否画出全部标签（默认只画常用的前 600 个）
     graph_expand_reset_done: bool = False  # 是否已清掉老版本"自动折叠"留下的标记（一次性）
+    zh_housekeeping_done: bool = False     # 标签整理/中文名补齐是否已跑过（一次性，跑过就不必每次启动重来）
     # 图谱可调参数
     graph_ring_radius: float = 900.0       # 第一层中心所在的圆半径（越大越松）
     graph_anim_ms: int = 340               # 布局变化/拖拽回弹的动画时长（毫秒）
@@ -195,10 +196,19 @@ class Settings:
             except Exception:
                 raw = {}
         known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        obj = cls(**{k: v for k, v in raw.items() if k in known})
+        for k, v in raw.items():            # 老版本留下的"字段外"键也读回来，别丢
+            if k not in known:
+                setattr(obj, k, v)
+        return obj
 
     def save(self) -> None:
-        self.path().write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
+        # 用 __dict__ 而不是 asdict()：asdict 只序列化**声明过的数据类字段**，
+        # 以前代码里给设置对象挂的非字段属性（如 zh_housekeeping_done）会被悄悄丢掉，
+        # 于是"下次不再显示"这类选项每次重启都回到默认。
+        data = dict(asdict(self))
+        data.update({k: v for k, v in vars(self).items() if k not in data})
+        self.path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def models_path(self) -> Path:
         p = Path(self.models_dir) if self.models_dir else default_models_dir()
