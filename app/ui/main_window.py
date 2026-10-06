@@ -2136,8 +2136,19 @@ class MainWindow(QMainWindow):
         from .. import perf
         perf.configure(self.settings)
         self.hub.unload()
+        # 这些是启动时"抄"了一份设置值的地方，改完设置必须一起刷新，否则界面看着改了、实际还用旧值
         self.model.icon_size = self.settings.thumb_size
+        self.model.blur_r18 = bool(self.settings.rating_blur)
+        try:
+            self.thumbs.size = max(320, int(self.settings.thumb_size) * 2)
+        except Exception:
+            pass
+        try:
+            self.zoom.setValue(int(self.settings.thumb_size))
+        except Exception:
+            pass
         self.grid.set_icon_size(self.settings.thumb_size)
+        self.grid.viewport().update()
 
     # ------------------------------------------------ 关闭
     def closeEvent(self, event) -> None:
