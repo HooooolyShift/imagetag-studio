@@ -1724,7 +1724,10 @@ class MainWindow(QMainWindow):
         item = self.dir_tree.itemAt(pos)
         menu = QMenu(self)
         data = item.data(0, Qt.UserRole) if item else None
-        a_remove = None
+        # 这几个必须先全部置 None：根节点的分支只会赋值一部分，
+        # 下面的 `if act == a_ren:` 一旦读到未定义的名字就会抛 NameError，
+        # pythonw 没有控制台 → 异常被吞掉 → 表现就是"右键点了没反应"。
+        a_remove = a_new = a_ren = a_del = a_open = None
         if data and data[0] == "root":
             a_remove = menu.addAction(f"移除这个库（只删索引，不删文件）")
             a_new = menu.addAction("在这个库里新建文件夹…")
