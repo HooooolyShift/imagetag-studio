@@ -174,15 +174,37 @@ class GridDelegate(QStyledItemDelegate):
             y = img_rect.top() + (img_rect.height() - scaled.height()) // 2
             painter.drawPixmap(x, y, scaled)
         elif blur:
-            painter.setBrush(QColor("#2a1c20"))
-            painter.setPen(Qt.NoPen)
-            painter.drawRect(img_rect)
-            painter.setPen(QColor("#ff8a5c"))
+            # 高斯模糊：把缩略图缩到很小再用平滑插值放大回来（等效强模糊，比真卷积快得多）
+            painter.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(img_rect, 4, 4)
+            painter.setClipPath(clip)
+            if isinstance(pm, QPixmap) and not pm.isNull():
+                small = pm.scaled(max(8, img_rect.width() // 14), max(8, img_rect.height() // 14),
+                                  Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                painter.drawPixmap(img_rect, small)
+                small2 = small.scaled(max(4, small.width() // 2), max(4, small.height() // 2),
+                                      Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                painter.setOpacity(0.65)
+                painter.drawPixmap(img_rect, small2)
+                painter.setOpacity(1.0)
+            else:
+                painter.setBrush(QColor("#241a1e"))
+                painter.setPen(Qt.NoPen)
+                painter.drawRect(img_rect)
+            # 只留一个通用的分级角标，不再盖住整张图写字
+            label = "R18G" if (it.rating or "").lower().startswith("r18g") else "R18"
             f = QFont(painter.font())
-            f.setPointSizeF(11)
+            f.setPointSizeF(8.0)
             f.setBold(True)
             painter.setFont(f)
-            painter.drawText(img_rect, Qt.AlignCenter, "R18\n已打码")
+            badge = QRect(img_rect.right() - 44, img_rect.bottom() - 22, 40, 18)
+            painter.setBrush(QColor(200, 40, 40, 210))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(badge, Qt.AlignCenter, label)
+            painter.restore()
         else:
             painter.setPen(QColor("#5a5f6b"))
             painter.drawText(img_rect, Qt.AlignCenter, "…")

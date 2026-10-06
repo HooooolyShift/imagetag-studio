@@ -961,6 +961,13 @@ class SettingsDialog(QDialog):
             self.s.save()
         except Exception:
             pass
+        # 立刻让主窗口应用（R18 打码、缩略图尺寸等）：以前要关窗口甚至重启才生效
+        try:
+            par = self.parent()
+            if hasattr(par, "apply_settings_live"):
+                par.apply_settings_live()
+        except Exception:
+            pass
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)

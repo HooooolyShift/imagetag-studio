@@ -2148,22 +2148,26 @@ class MainWindow(QMainWindow):
             % ("是" if back.rename_keep_original else "否",
                "是" if getattr(back, "tag_most_specific_on_disk", True) else "否",
                int(back.thumb_size), back.perf_mode))
+        self.apply_settings_live()
+
+    def apply_settings_live(self) -> None:
+        """把「启动时抄下来的那份设置值」重新灌一遍 —— 开关一改就立刻生效，不用关窗口、更不用重启。"""
         from .. import perf
-        perf.configure(self.settings)
-        self.hub.unload()
-        # 这些是启动时"抄"了一份设置值的地方，改完设置必须一起刷新，否则界面看着改了、实际还用旧值
-        self.model.icon_size = self.settings.thumb_size
-        self.model.blur_r18 = bool(self.settings.rating_blur)
         try:
+            perf.configure(self.settings)
+            self.hub.unload()
+        except Exception:
+            pass
+        try:
+            self.model.blur_r18 = bool(self.settings.rating_blur)     # R18 打码：立刻生效
+            self.model.icon_size = int(self.settings.thumb_size)
             self.thumbs.size = max(320, int(self.settings.thumb_size) * 2)
-        except Exception:
-            pass
-        try:
             self.zoom.setValue(int(self.settings.thumb_size))
+            self.grid.set_icon_size(int(self.settings.thumb_size))
+            self.grid.viewport().update()
+            self.grid.repaint()
         except Exception:
             pass
-        self.grid.set_icon_size(self.settings.thumb_size)
-        self.grid.viewport().update()
 
     # ------------------------------------------------ 关闭
     def closeEvent(self, event) -> None:

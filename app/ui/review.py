@@ -69,6 +69,11 @@ class ReviewDialog(QDialog):
             b = QPushButton(text)
             b.clicked.connect(slot)
             top.addWidget(b)
+        b_clear = QPushButton("清空审核队列")
+        b_clear.setToolTip("把待审队列里所有还没判过的标签一次性删掉（只动数据库索引，不碰图片文件）。\n"
+                           "已生效/已否决的标签不受影响；想重新来一遍打标就先点这个。")
+        b_clear.clicked.connect(self.clear_queue)
+        top.addWidget(b_clear)
         v.addLayout(top)
         bottom_bar = QHBoxLayout()
         hint = QLabel("「审核完毕」= 按你的判断通过/否决，<b>其余未决的标签直接丢弃</b>"
@@ -234,6 +239,29 @@ class ReviewDialog(QDialog):
         v.addWidget(split, 1)
 
     # ------------------------------------------------------------ 队列
+    def clear_queue(self) -> None:
+        """清空审核队列：只删数据库里的待审标签，图片文件一个都不动。"""
+        from PySide6.QtWidgets import QMessageBox
+        info = self.store.pending_summary()
+        if not info["pending_tags"]:
+            QMessageBox.information(self, "清空审核队列", "队列里已经没有待审标签了。")
+            return
+        if QMessageBox.question(
+                self, "清空审核队列",
+                f"要清空待审队列吗？\n\n"
+                f"· 待审标签 {info['pending_tags']} 个（涉及 {info['pending_files']} 张图）会被全部删除\n"
+                f"· **只删数据库记录，磁盘上的图片一个都不会动**\n"
+                f"· 已生效、已否决的标签不受影响\n"
+                f"· 之后可以重新跑打标，命中的会重新进队列") != QMessageBox.Yes:
+            return
+        res = self.store.clear_pending_queue()
+        self.index = 0
+        self.decisions.clear()
+        self.reload_queue()
+        QMessageBox.information(self, "清空审核队列",
+                                f"已清空：删掉 {res['tags']} 个待审标签（涉及 {res['files']} 张图）。\n"
+                                f"图片文件没有改动。")
+
     def reload_queue(self) -> None:
         rows = self.store.pending_files(400)
         self.queue = [dict(r) for r in rows]

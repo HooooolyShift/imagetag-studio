@@ -595,6 +595,17 @@ class Store:
             self.execute("UPDATE files SET reviewed=1 WHERE id=?", (file_id,))
         return cur.rowcount
 
+    def clear_pending_queue(self) -> dict:
+        """清空审核队列：删掉所有 status='pending' 的标签关联（**只动数据库，不碰图片文件**）。
+
+        返回清掉的行数；已生效/已否决的标签不受影响。
+        """
+        n = self.one("SELECT COUNT(*) c FROM file_tags WHERE status='pending'")["c"]
+        f = self.one("SELECT COUNT(DISTINCT file_id) c FROM file_tags WHERE status='pending'")["c"]
+        self.execute("DELETE FROM file_tags WHERE status='pending'")
+        self.refresh_counts()
+        return {"tags": int(n), "files": int(f)}
+
     def set_all_pending_status(self, file_id: int, status: str) -> int:
         cur = self.execute("UPDATE file_tags SET status=?, updated_at=? WHERE file_id=? AND status='pending'",
                            (status, time.time(), file_id))
