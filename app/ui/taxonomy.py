@@ -2194,8 +2194,16 @@ class TaxonomyDialog(QDialog):
         """右键「移动到…」：弹出可搜索的目标选择框，选中后把它挂到新父级下。
 
         标签多的时候拖拽定位很难（一屏几十上百个节点），这个入口用"搜名字选目标"代替拖拽。
+        画布节点和左侧体系树的节点都能用（树节点会先换算成 (kind, nid)）。
         """
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
+        if not isinstance(item, NodeItem):          # 从左侧体系树点进来的
+            data = item.data(0, Qt.UserRole) if item is not None else None
+            if not data:
+                return
+            kind, nid = str(data[0]), int(data[1])
+            name = item.text(0)
+            item = type("Shim", (), {"kind": kind, "nid": nid, "name": name})()
         cur_name = item.name
         dlg = QDialog(self)
         dlg.setWindowTitle(f"把「{cur_name}」移动到…")
@@ -2315,10 +2323,14 @@ class TaxonomyDialog(QDialog):
         a_new = menu.addAction("新建分类（在此分类下）" if item else "新建分类（根目录）")
         a_tag = menu.addAction("新建标签")
         a_link = menu.addAction("关联已有标签…")
+        a_move = menu.addAction("移动到…（选更具体的位置）")
         menu.addSeparator()
         a_ren = menu.addAction("重命名…")
         a_del = menu.addAction("删除")
         act = menu.exec(self.tree.mapToGlobal(pos))
+        if act == a_move:
+            self.move_node_to(item)
+            return
         if act == a_new:
             self.new_group_under(self._selected_node_id() if item else None)
         elif act == a_tag:
