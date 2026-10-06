@@ -1769,7 +1769,11 @@ class MainWindow(QMainWindow):
                     f"· 该库的标签、系列、人脸、框选记录也会一并从库里清掉\n"
                     f"· 之后想恢复，重新「添加文件夹」再扫描即可（文件名里的标签会读回来）") != QMessageBox.Yes:
                 return
-            self.store.remove_root(int(data[1]))
+            try:
+                self.store.remove_root(int(data[1]))
+            except Exception as exc:                 # 以前这里出错是"静默失败"，看着就像删不掉
+                QMessageBox.warning(self, "移除失败", f"移除这个库/来源失败了：\n{exc}")
+                return
         else:
             root_id, rel = int(data[1]), data[2]
             if QMessageBox.question(
@@ -1777,7 +1781,11 @@ class MainWindow(QMainWindow):
                     f"把「{rel}」下的所有图片从索引里移除？\n\n"
                     f"· 只删数据库记录，**磁盘文件不动**\n· 之后可重新扫描恢复") != QMessageBox.Yes:
                 return
-            self.store.remove_dir_index(root_id, rel)
+            try:
+                self.store.remove_dir_index(root_id, rel)
+            except Exception as exc:
+                QMessageBox.warning(self, "移除失败", f"移除这个目录索引失败了：\n{exc}")
+                return
         self.refresh_roots()
         self.refresh_tags()
         self.refresh_files()

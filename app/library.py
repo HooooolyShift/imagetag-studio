@@ -1966,6 +1966,28 @@ class Library:
         self.store.refresh_counts()
         return n
 
+    def recheck_missing(self, progress=None, only_when_disk_changed: bool = False) -> dict:
+        """把「标记为缺失、但文件其实还在」的图片恢复回库里。
+
+        场景：换盘符、把文件夹拖回原位、从回收站还原之后，库里还挂着 missing=1，
+        于是图库/检索里什么都看不到（导入时也会被当成"已存在"而跳过）——就是"导入没反应"的根因。
+        这里只做一次 os.path.exists 抽查，8474 条记录大约几十毫秒。
+        """
+        from pathlib import Path as _P
+        rows = self.store.query("SELECT id, path FROM files WHERE missing=1")
+        restored = gone = 0
+        for i, r in enumerate(rows):
+            if _P(r["path"]).exists():
+                self.store.execute("UPDATE files SET missing=0 WHERE id=?", (int(r["id"]),))
+                restored += 1
+            else:
+                gone += 1
+            if progress and i % 500 == 0:
+                progress(f"检查文件是否还在 {i + 1}/{len(rows)}", (i + 1) / max(1, len(rows)))
+        if restored:
+            self.store.refresh_counts()
+        return {"checked": len(rows), "restored": restored, "still_missing": gone}
+
     def cleanup_missing(self, progress=None) -> dict:
         """清理失效路径（修：删掉的文件夹/库不再留在界面里）。
 

@@ -92,6 +92,25 @@ def main() -> int:
             except Exception:
                 pass
 
+    def recheck_files() -> None:
+        """启动时把「标记缺失、但文件其实还在」的图片恢复回库里。
+
+        换盘符、把文件夹拖回原位、从回收站还原之后经常出现这种情况：文件明明在，
+        库里还是 missing=1 —— 于是图库和检索里什么都看不到，导入也会被当成"已存在"跳过。
+        """
+        try:
+            res = lib.recheck_missing()
+            if res["restored"]:
+                print(f"恢复图片 {res['restored']} 张（之前被标成缺失，其实文件还在）")
+                try:
+                    win.refresh_roots()
+                    win.refresh_files()
+                except Exception:
+                    pass
+        except Exception as exc:
+            print("检查缺失文件失败:", exc)
+
+    QTimer.singleShot(300, recheck_files)
     QTimer.singleShot(600, housekeeping)
 
     # ---------------- 托盘图标：关窗口不退出，托盘菜单里退出 ----------------
