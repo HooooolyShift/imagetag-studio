@@ -2103,10 +2103,15 @@ class MainWindow(QMainWindow):
         self.hub.unload()
 
     def open_settings(self) -> None:
-        dlg = SettingsDialog(self.settings, self)
+        # 打开设置窗口时**以磁盘上的 settings.json 为准**，别用内存里那份：
+        # 之前主窗口持有的对象如果被别处改成旧副本，就会出现"改完确定、再打开又变回去"的假象。
+        from ..config import Settings as _Settings
+        fresh = _Settings.load()
+        dlg = SettingsDialog(fresh, self)
         if dlg.exec() == dlg.Accepted:
-            dlg.apply_to(self.settings)
-            self.settings.save()
+            dlg.apply_to(fresh)
+            fresh.save()
+            self.settings = fresh            # 之后主窗口统一用这份新对象
             from .. import perf
             perf.configure(self.settings)
             self.hub.unload()
