@@ -1347,8 +1347,10 @@ class MainWindow(QMainWindow):
             # 但还没进图库**的图收进去（同盘是改名操作，很快）。
             try:
                 ids = [int(r["id"]) for r in self.store.query(
-                    "SELECT DISTINCT f.id FROM files f JOIN file_tags ft ON ft.file_id=f.id "
-                    "WHERE f.missing=0 AND ft.status='confirmed' "
+                    # 判据必须是 files.reviewed=1（你在审核台点了「审核完毕」的那批）：
+                    # 用"有已生效标签"会把文件名读回来的标签也算进去 → 没审的图也被入库（上次就是这么错的）
+                    "SELECT DISTINCT f.id FROM files f "
+                    "WHERE f.missing=0 AND COALESCE(f.reviewed,0)=1 "
                     "AND f.root_id NOT IN (SELECT id FROM roots WHERE is_library=1)")]
                 if ids:
                     res = self.library.import_to_library(ids, progress=None)
