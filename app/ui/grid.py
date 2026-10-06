@@ -253,11 +253,11 @@ class GridDelegate(QStyledItemDelegate):
             badge = QRect(img_rect.left() + 4, img_rect.bottom() - 22, 44, 18)
             # 分级角标配色：全年龄=绿、R15=黄、R18=粉、R18G=红
             _badge_color = {
-                "全年龄": QColor(46, 140, 74, 210),
-                "R15": QColor(214, 170, 32, 220),
-                "R18": QColor(226, 88, 158, 215),
-                "R18G": QColor(200, 36, 36, 215),
-            }.get(_rl, QColor(120, 120, 130, 205))
+                "全年龄": QColor(46, 140, 74, 175),
+                "R15": QColor(214, 170, 32, 180),
+                "R18": QColor(226, 88, 158, 178),
+                "R18G": QColor(200, 36, 36, 180),
+            }.get(_rl, QColor(120, 120, 130, 170))
             painter.setBrush(_badge_color)
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(badge, 4, 4)
@@ -288,17 +288,7 @@ class GridDelegate(QStyledItemDelegate):
             f.setPointSizeF(8)
             painter.setFont(f)
             painter.drawText(badge, Qt.AlignCenter, f"待审{it.pending}")
-        if it.rating:
-            from ..config import RATING_COLOR, RATING_TAG
-            badge = QRect(img_rect.left() + 4, img_rect.bottom() - 22, 52, 18)
-            painter.setBrush(QColor(0, 0, 0, 190))
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(badge, 4, 4)
-            painter.setPen(QColor(RATING_COLOR.get(it.rating, "#cccccc")))
-            f = QFont(painter.font())
-            f.setPointSizeF(8)
-            painter.setFont(f)
-            painter.drawText(badge, Qt.AlignCenter, RATING_TAG.get(it.rating, it.rating))
+        # 旧的分级角标（黑底 + 彩字，半透明盖在新角标上面）已删除，统一用上面那套四色角标
         if it.page_no:
             badge = QRect(img_rect.left() + 4, img_rect.bottom() - 44, 52, 18)
             painter.setBrush(QColor(20, 40, 70, 200))
