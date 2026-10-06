@@ -156,7 +156,9 @@ class ReviewDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.itemSelectionChanged.connect(self.on_row_selected)
         self.table.cellDoubleClicked.connect(self.edit_tag_zh)
-        rv.addWidget(self.table, 2)
+        self.table.setMinimumHeight(430)      # 词条面板太矮一次只看得到 3 条，加到能看十几条
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        rv.addWidget(self.table, 3)
 
         rv.addWidget(label("已生效的标签（灰掉的不参与文件名写回）", "#9fd0ff", True))
         self.confirmed_list = QListWidget()
@@ -173,6 +175,8 @@ class ReviewDialog(QDialog):
         self.new_tag.setMaxVisibleItems(30)
         self.new_tag.lineEdit().setPlaceholderText("点这里看全部已有标签，或输入新标签")
         self.new_tag.lineEdit().returnPressed.connect(self.add_manual_tag)
+        # 边打边筛：输入就按匹配度重排候选（含 Danbooru 词典里、库里还没有的标签）
+        self.new_tag.editTextChanged.connect(self._suggest_new_tag)
         self.new_tag.activated.connect(lambda _i: self.add_manual_tag())
         add_row.addWidget(self.new_tag, 1)
         self.new_cat = category_combo(self.store, "", include_all=True)   # 默认"全部"，可切分类过滤
@@ -239,6 +243,27 @@ class ReviewDialog(QDialog):
         v.addWidget(split, 1)
 
     # ------------------------------------------------------------ 队列
+    def _suggest_new_tag(self, text: str) -> None:
+        """审核台"新增标签"框的联想：按匹配度重排，含 Danbooru 独有词。"""
+        try:
+            from .common import suggest_tags
+            cat = self.new_cat.currentData() or None if hasattr(self, "new_cat") else None
+            items = suggest_tags(text, self.store, cat, 200)
+            if not items:
+                return
+            from .. import tag_i18n
+            self.new_tag.blockSignals(True)
+            cur = self.new_tag.currentText()
+            self.new_tag.clear()
+            for _s, name, zh in items:
+                self.new_tag.addItem(tag_i18n.display(name, zh), name)
+            self.new_tag.setEditText(cur)
+            self.new_tag.blockSignals(False)
+            if text:
+                self.new_tag.showPopup()
+        except Exception:
+            pass
+
     def clear_queue(self) -> None:
         """清空审核队列：只删数据库里的待审标签，图片文件一个都不动。"""
         from PySide6.QtWidgets import QMessageBox

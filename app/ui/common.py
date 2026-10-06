@@ -304,34 +304,106 @@ def tag_words(store, category: str | None = None) -> list[str]:
     return sorted(set(words))
 
 
-def refresh_tag_completer(line_edit, store, category: str | None = None) -> None:
+def suggest_tags(text: str, store, category: str | None = None, limit: int = 200) -> list:
+    """按匹配度返回建议（库里有的 + Danbooru 词典里有但库里没有的）。
+
+    排序：完全一样 → 前缀命中 → 包含命中 → 拼音命中；同级按名字长度，短的在前面。
+    """
+    from .. import tag_i18n
+    q = (text or "").strip().lower()
+    lib = {str(t["name"]): str(t["zh"] or "") for t in store.list_tags(category=category) if t["name"]}
+
+    def sc(name: str, zh: str):
+        n, z = name.lower(), (zh or "").lower()
+        if not q:
+            return (0, len(n), n)
+        if n == q or z == q:
+            return (0, 0, n)
+        if n.startswith(q) or z.startswith(q):
+            return (1, len(n), n)
+        if q in n or q in z:
+            return (2, len(n), n)
+        try:
+            p = tag_i18n.pinyin(zh or name).lower()
+            if q in p:
+                return (3, len(n), n)
+        except Exception:
+            pass
+        return None
+
+    out = []
+    for name, zh in lib.items():
+        s = sc(name, zh)
+        if s:
+            out.append((s, name, zh))
+    for name, zh in getattr(tag_i18n, "WHOLE", {}).items():
+        if name in lib or not isinstance(zh, str):
+            continue
+        s = sc(str(name), zh)
+        if s:
+            out.append((s, str(name), zh))
+    out.sort(key=lambda x: (x[0], x[1]))
+    return out[:limit]
+
+
+def refresh_tag_completer(line_edit, store, category: str | None = None,
+                          query: str | None = None) -> None:
     """按当前分类重建某个输入框的联想词表。"""
     from PySide6.QtCore import QStringListModel, Qt
     from PySide6.QtWidgets import QCompleter
-    words = tag_words(store, category)
+    if query is None:
+        words = tag_words(store, category)
+    else:
+        from .. import tag_i18n
+        words = [tag_i18n.display(n, zh) for _s, n, zh in suggest_tags(query, store, category)]
     comp = line_edit.completer()
     if comp is None:
         comp = QCompleter([], line_edit)
         comp.setCaseSensitivity(Qt.CaseInsensitive)
         comp.setFilterMode(Qt.MatchFlag.MatchContains)
-        comp.setMaxVisibleItems(14)
+        comp.setMaxVisibleItems(20)
         line_edit.setCompleter(comp)
     comp.setModel(QStringListModel(words, comp))
 
 
-def fill_tag_combo(combo, store, category: str | None = None) -> None:
+def install_tag_suggest(line_edit, store, category=None) -> None:
+    """给普通输入框装"边打边联想"：每次按键都按匹配度重排候选（含 Danbooru 独有的词）。"""
+    def _on_text(txt: str) -> None:
+        try:
+            refresh_tag_completer(line_edit, store, category, query=txt)
+            comp = line_edit.completer()
+            if comp is not None and txt:
+                comp.setCompletionPrefix("")
+                comp.complete()
+        except Exception:
+            pass
+    try:
+        line_edit.textEdited.connect(_on_text)
+    except Exception:
+        pass
+
+
+def fill_tag_combo(combo, store, category: str | None = None, query: str | None = None) -> None:
     """按分类填充一个可编辑下拉框（用于审核台/导入等"点开看标签"的框）。"""
     from .. import tag_i18n
     cur = combo.currentText()
     combo.blockSignals(True)
     combo.clear()
     try:
-        for t in store.list_tags(category=category):
-            combo.addItem(tag_i18n.display(t["name"], t["zh"] or ""), t["name"])
+        if query:                       # 边打边筛：按匹配度排，含 Danbooru 独有的词
+            for _s, name, zh in suggest_tags(query, store, category):
+                combo.addItem(tag_i18n.display(name, zh), name)
+        else:
+            for t in store.list_tags(category=category):
+                combo.addItem(tag_i18n.display(t["name"], t["zh"] or ""), t["name"])
     except Exception:
         pass
     combo.setEditText(cur)
     combo.blockSignals(False)
+    try:
+        combo.setMaxVisibleItems(20)
+    except Exception:
+        pass
 
 
 def bind_category_filter(cat_combo, tag_input, store, combo_mode: bool = False):
@@ -348,6 +420,7 @@ def bind_category_filter(cat_combo, tag_input, store, combo_mode: bool = False):
             fill_tag_combo(tag_input, store, cat)
         else:
             refresh_tag_completer(tag_input, store, cat)
+            install_tag_suggest(tag_input, store, cat)
     cat_combo.currentIndexChanged.connect(_apply)
     _apply()
     return _apply

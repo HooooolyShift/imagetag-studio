@@ -1229,6 +1229,8 @@ class ImageCanvas(QWidget):
             return QRectF()
         avail = self.size()
         pw, ph = self.pm.width(), self.pm.height()
+        if pw <= 0 or ph <= 0 or avail.width() <= 0 or avail.height() <= 0:
+            return QRectF()      # 空图/还没布局时别除零（否则大图区直接画不出来）
         scale = min(avail.width() / pw, avail.height() / ph) * self.zoom
         scale = max(scale, 0.02)
         w, h = pw * scale, ph * scale
