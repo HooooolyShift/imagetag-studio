@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QIcon, QImageReader, QPixmap
+from PySide6.QtGui import QImage, QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QPushButton
 
 from .. import imaging
@@ -93,7 +93,22 @@ def load_pixmap(path: str | Path) -> QPixmap:
     reader = QImageReader(str(path))
     reader.setAutoTransform(True)
     img = reader.read()
-    return QPixmap.fromImage(img) if not img.isNull() else QPixmap()
+    if not img.isNull():
+        return QPixmap.fromImage(img)
+    # 最后一道兜底：用 PIL 解（部分 webp/heic、CMYK 的 JPG、超大图 Qt 会读不出来，
+    # 但缩略图是 PIL 生成的 → 于是出现"缩略图有、大图空白"这种看着不相干的现象）
+    try:
+        from PIL import Image, ImageOps
+        im = Image.open(str(path))
+        im = ImageOps.exif_transpose(im)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        im.thumbnail((4096, 4096))            # 超大图先降到 4K，避免一次性吃掉几百 MB
+        data = im.convert("RGBA").tobytes("raw", "RGBA")
+        qimg = QImage(data, im.width, im.height, QImage.Format_RGBA8888).copy()
+        return QPixmap.fromImage(qimg)
+    except Exception:
+        return QPixmap()
 
 
 def thumb_pixmap(file_id: int, src: str | Path, mtime: float = 0.0, size: int = 320) -> QPixmap | None:

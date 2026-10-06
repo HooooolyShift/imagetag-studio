@@ -365,7 +365,13 @@ class ReviewDialog(QDialog):
             return
         r = self.queue[self.index]
         self.path = r["path"]
-        self.canvas.set_pixmap(load_pixmap(self.path))
+        pm = load_pixmap(self.path)
+        self.canvas.set_pixmap(pm)
+        if pm.isNull():     # 读不出来就给个说法，别让大图区莫名其妙空着
+            try:
+                self.status.setText(f"⚠ 这张图读不出来（文件损坏或格式不支持）：{self.path}")
+            except Exception:
+                pass
         self.decisions = {}
         self.selected_tag = None
         self.box_mode = False
