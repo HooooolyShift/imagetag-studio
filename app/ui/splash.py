@@ -18,6 +18,11 @@ COVER_H = 236
 def pick_cover(folder: str | Path | None) -> QPixmap | None:
     """从封面文件夹里随机取一张图，读成 QPixmap（读不出来就返回 None 用内置图）。"""
     if not folder:
+        # 没设置就优先用随程序分发的 assets/splash/（把授权允许的图放这里即可）
+        here = Path(__file__).resolve().parent.parent.parent / "assets" / "splash"
+        if here.is_dir():
+            folder = here
+    if not folder:
         return None
     p = Path(folder)
     if not p.exists() or not p.is_dir():
