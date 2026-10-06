@@ -2182,6 +2182,16 @@ class MainWindow(QMainWindow):
             self.grid.repaint()
         except Exception:
             pass
+        # 留一行日志：以后"点了确定到底有没有触发刷新"不用再猜
+        try:
+            from ..config import data_dir
+            import time as _t
+            with open(data_dir() / "blur.log", "a", encoding="utf-8") as fh:
+                fh.write("%s  apply_settings_live: 打码开关=%s ｜ 打码名单=%d 张 ｜ 网格条目=%d\n" % (
+                    _t.strftime("%Y-%m-%d %H:%M:%S"), bool(self.settings.rating_blur),
+                    len(self.model.blur_ids), self.model.rowCount()))
+        except Exception:
+            pass
 
     # ------------------------------------------------ 关闭
     def closeEvent(self, event) -> None:
