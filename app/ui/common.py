@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage, QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QPushButton
 
@@ -75,6 +75,119 @@ class _ThumbJob(QRunnable):
             self.signals.ready.emit(self.file_id, path)
         except RuntimeError:
             pass
+
+
+class SeriesOrderList(QListWidget):
+    """系列页码排序控件（合并系列 / 重排系列 共用）。
+
+    - 缩略图列表，直接拖动改顺序（InternalMove）
+    - 双击看大图
+    - F2 或右键「重命名单页文件名」→ 发 renameRequested 信号
+    """
+
+    renameRequested = Signal(object)
+
+    def __init__(self, parent=None, size: int = 140):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QAbstractItemView
+        self.setViewMode(QListWidget.IconMode)
+        self.setIconSize(QSize(size, size))
+        self.setGridSize(QSize(size + 20, size + 50))
+        self.setResizeMode(QListWidget.Adjust)
+        self.setMovement(QListWidget.Snap)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
+        self.itemDoubleClicked.connect(self._preview)
+        self._rows: dict[int, object] = {}
+        self._items: dict[int, QListWidgetItem] = {}
+        self._pool = ThumbPool(size=size + 40)
+        self._pool.signals.ready.connect(self._on_thumb)
+
+    def set_files(self, rows) -> None:
+        """rows: 数据库行，至少要有 id / name / path / mtime / page_no。"""
+        self.clear()
+        self._rows.clear()
+        self._items.clear()
+        for r in rows:
+            fid = int(r["id"])
+            label = (f"{int(r['page_no'] or 0):03d}  {r['name']}"
+                     if "page_no" in r.keys() else str(r["name"]))
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, fid)
+            it.setToolTip(str(r["path"]))
+            self.addItem(it)
+            self._rows[fid] = r
+            self._items[fid] = it
+            try:
+                mt = 0.0
+                try:
+                    mt = float(r["mtime"] or 0)
+                except Exception:
+                    mt = 0.0
+                self._pool.request(fid, str(r["path"]), mt)
+            except Exception:
+                pass
+
+    def _on_thumb(self, file_id: int, path: str) -> None:
+        it = self._items.get(int(file_id))
+        if it is None or not path:
+            return
+        pm = load_pixmap(path)
+        if not pm.isNull():
+            it.setIcon(QIcon(pm.scaled(self.iconSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+
+    def ordered_ids(self) -> list[int]:
+        out = []
+        for i in range(self.count()):
+            fid = self.item(i).data(Qt.UserRole)
+            if fid:
+                out.append(int(fid))
+        return out
+
+    def _key_event(self, e) -> None:
+        if e.key() == Qt.Key_F2 and self.currentItem() is not None:
+            self.renameRequested.emit(self.currentItem())
+        else:
+            super().keyPressEvent(e)
+
+    keyPressEvent = _key_event
+
+    def _menu(self, pos) -> None:
+        item = self.itemAt(pos)
+        if item is None:
+            return
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        a_pre = menu.addAction("查看大图")
+        a_ren = menu.addAction("重命名单页文件名")
+        act = menu.exec(self.mapToGlobal(pos))
+        if act == a_pre:
+            self._preview(item)
+        elif act == a_ren:
+            self.renameRequested.emit(item)
+
+    def _preview(self, item) -> None:
+        fid = int(item.data(Qt.UserRole) or 0)
+        r = self._rows.get(fid)
+        if r is None:
+            return
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+        dlg = QDialog(self)
+        dlg.setWindowTitle(str(r["name"]))
+        dlg.resize(900, 700)
+        lay = QVBoxLayout(dlg)
+        lab = QLabel()
+        lab.setAlignment(Qt.AlignCenter)
+        lab.setPixmap(load_pixmap(str(r["path"])).scaled(860, 640, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        lay.addWidget(lab, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText("关闭")
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        dlg.exec()
 
 
 class ThumbPool:

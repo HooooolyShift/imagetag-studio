@@ -858,16 +858,26 @@ class SeriesDialog(QDialog):
         form.addRow("页码", w)
         v.addLayout(form)
 
-        v.addWidget(label("顺序（可拖动 / 双击修改单页文件名）", "#8f96a3"))
-        self.list = QListWidget()
-        self.list.setDragDropMode(QAbstractItemView.InternalMove)
-        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.list.itemDoubleClicked.connect(self.edit_page_label)
+        v.addWidget(label("顺序（拖动排序 · 双击看大图 · F2/右键改单页文件名）", "#8f96a3"))
+        # 与「调整系列顺序」共用同一个可视化排序控件（缩略图 + 拖动 + 双击看大图）
+        from .common import SeriesOrderList
+        self.list = SeriesOrderList()
+        self.list.renameRequested.connect(self.edit_page_label)
+        rows = []
         for f in files:
-            it = QListWidgetItem(f["name"] if isinstance(f, dict) else str(f))
-            it.setData(Qt.UserRole, f.get("id") if isinstance(f, dict) else None)
-            it.setData(Qt.UserRole + 1, "")
-            self.list.addItem(it)
+            if isinstance(f, dict):
+                rows.append({"id": f.get("id"), "name": f.get("name") or "",
+                             "path": f.get("path") or "", "mtime": f.get("mtime") or 0,
+                             "page_no": 0})
+            else:
+                rows.append({"id": None, "name": str(f), "path": "", "mtime": 0, "page_no": 0})
+        if all(r["id"] for r in rows):
+            self.list.set_files(rows)
+        else:                       # 没有 id/path 的老调用方式：退回纯文本列表
+            for r in rows:
+                it = QListWidgetItem(r["name"])
+                it.setData(Qt.UserRole, r["id"])
+                self.list.addItem(it)
         v.addWidget(self.list, 1)
         self.preview = QLabel("")
         self.preview.setWordWrap(True)
@@ -1353,20 +1363,14 @@ class SeriesOrderDialog(QDialog):
         self.resize(820, 620)
         from .common import ThumbPool, load_pixmap
         self._load_pixmap = load_pixmap
+        from .common import SeriesOrderList
         v = QVBoxLayout(self)
         tip = QLabel("拖动缩略图调整页面顺序；双击看大图。点「保存顺序」后按新顺序重命名页码（原地改名，不移动文件）。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#8f96a3;")
         v.addWidget(tip)
-        self.list = QListWidget()
-        self.list.setViewMode(QListWidget.IconMode)
-        self.list.setIconSize(QSize(140, 140))
-        self.list.setGridSize(QSize(160, 190))
-        self.list.setResizeMode(QListWidget.Adjust)
-        self.list.setMovement(QListWidget.Snap)
-        self.list.setDragDropMode(QAbstractItemView.InternalMove)     # 拖自己人 = 改顺序
-        self.list.setDefaultDropAction(Qt.MoveAction)
-        self.list.itemDoubleClicked.connect(self._preview)
+        # 和「合并为系列」共用同一个可视化排序控件（缩略图 + 拖动 + 双击看大图）
+        self.list = SeriesOrderList()
         v.addWidget(self.list, 1)
         self.thumbs = ThumbPool(size=160)
         self.thumbs.signals.ready.connect(self._on_thumb)
@@ -1379,16 +1383,7 @@ class SeriesOrderDialog(QDialog):
             pass
 
     def reload(self) -> None:
-        self.list.clear()
-        self._items.clear()
-        rows = self.store.series_files(self.series_id)
-        for r in rows:
-            it = QListWidgetItem(f"{int(r['page_no'] or 0):03d}  {Path(r['path']).name}")
-            it.setData(Qt.UserRole, int(r["id"]))
-            it.setToolTip(r["path"])
-            self.list.addItem(it)
-            self._items[int(r["id"])] = it
-            self.thumbs.request(int(r["id"]), str(r["path"]), float(r["mtime"] or 0))
+        self.list.set_files(self.store.series_files(self.series_id))
 
     def _on_thumb(self, file_id: int, path: str) -> None:
         it = self._items.get(int(file_id))
