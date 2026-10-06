@@ -372,8 +372,7 @@ class GridDelegate(QStyledItemDelegate):
                 if y + line_h < box.top() - line_h:
                     x, y = box.left(), y + line_h     # 滚过头了也要继续往下算（用于裁剪）
                     continue
-                if y > box.bottom():
-                    break
+                # 超出可见区的照样继续排版（只是不画），这样能算出整段标签的总高度
                 chip = QRect(x, y, w, line_h - 3)
                 if chip.bottom() >= box.top() and chip.top() <= box.bottom():
                     painter.setPen(Qt.NoPen)
@@ -384,6 +383,8 @@ class GridDelegate(QStyledItemDelegate):
                     painter.setPen(QColor("#ffffff") if _r18 else QColor("#c9d3e0"))
                     painter.drawText(chip.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
                 x += w + 4
+            # 记下整段标签的完整高度：滚轮据此夹住上下限，不会滚到"全看不见"
+            it.tag_content_h = int(y - box.top() + int(getattr(it, "tag_scroll", 0)) + line_h)
             painter.restore()
         painter.restore()
 
@@ -434,8 +435,15 @@ class GridView(QListView):
                 rect = self.visualRect(idx)
                 tag_top = rect.top() + int(self.grid_model.icon_size) + 19
                 if pos.y() >= tag_top:
-                    step = -3 if event.angleDelta().y() > 0 else 3
-                    it.tag_scroll = max(0, int(getattr(it, "tag_scroll", 0)) + step)
+                    # 一次滚一行（以前一次 3px，滚到底很费劲），并且夹在 [0, 内容高-可见高]
+                    line_h = self.fontMetrics().height() + 4
+                    step = -line_h if event.angleDelta().y() > 0 else line_h
+                    box_h = max(1, rect.height() - int(self.grid_model.icon_size) - 19)
+                    content_h = int(getattr(it, "tag_content_h", 0) or 0)
+                    if content_h <= 0:      # 还没画过（拿不到真实高度）时按标签数估一个上限
+                        content_h = box_h + len(it.tags) * 22
+                    it.tag_scroll = min(max(0, int(getattr(it, "tag_scroll", 0)) + step),
+                                        max(0, content_h - box_h))
                     self.update(idx)
                     event.accept()
                     return
