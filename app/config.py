@@ -209,6 +209,16 @@ class Settings:
         data = dict(asdict(self))
         data.update({k: v for k, v in vars(self).items() if k not in data})
         self.path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 每次写盘都留一行日志：以后"设置到底存没存"直接看这个文件，不用再猜
+        try:
+            from datetime import datetime
+            line = "%s  写入 %d 项  保留原文件名=%s  缩略图=%s  性能档=%s\n" % (
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), len(data),
+                data.get("rename_keep_original"), data.get("thumb_size"), data.get("perf_mode"))
+            with open(self.path().with_name("settings.log"), "a", encoding="utf-8") as fh:
+                fh.write(line)
+        except Exception:
+            pass
 
     def models_path(self) -> Path:
         p = Path(self.models_dir) if self.models_dir else default_models_dir()

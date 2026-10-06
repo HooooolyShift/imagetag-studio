@@ -2112,6 +2112,13 @@ class MainWindow(QMainWindow):
             dlg.apply_to(fresh)
             fresh.save()
             self.settings = fresh            # 之后主窗口统一用这份新对象
+            # 写完立刻回读校验：把"确实存进去了"直接摆在状态栏上，避免又是"看着没生效"
+            back = _Settings.load()
+            self.status_label.setText(
+                "设置已保存并校验回读：保留原文件名=%s ｜ 只写最具体标签=%s ｜ 缩略图=%dpx ｜ 性能=%s"
+                % ("是" if back.rename_keep_original else "否",
+                   "是" if getattr(back, "tag_most_specific_on_disk", True) else "否",
+                   int(back.thumb_size), back.perf_mode))
             from .. import perf
             perf.configure(self.settings)
             self.hub.unload()
