@@ -1027,6 +1027,14 @@ class Library:
         out: list[str] = []
         for tok in tokens or []:
             key = (tok or "").strip().lower()
+            # 15禁 / 18禁 / R-18 这类别名也归到规范分级（否则每次扫描都会新建一个野标签）
+            alias_rating = {"15禁": RATING_TAG["r15"], "15+": RATING_TAG["r15"], "r-15": RATING_TAG["r15"],
+                            "18禁": RATING_TAG["r18"], "18+": RATING_TAG["r18"], "r-18": RATING_TAG["r18"],
+                            "18禁猎奇": RATING_TAG["r18g"], "r-18g": RATING_TAG["r18g"],
+                            "健全": RATING_TAG["all_ages"], "g级": RATING_TAG["all_ages"]}
+            if key in alias_rating:
+                out.append(alias_rating[key])
+                continue
             if key in rating_alias:                  # 分级标签固定用我们自己的名字
                 name = rating_alias[key]
                 if name not in out:
