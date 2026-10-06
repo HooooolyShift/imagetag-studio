@@ -923,6 +923,45 @@ class SeriesDialog(QDialog):
 
 # --------------------------------------------------------------------------- 设置
 class SettingsDialog(QDialog):
+    # ---------- 改动即存 ----------
+    # 以前必须点「确定」才写盘，一旦按钮/焦点/焦点丢失等任何环节出问题，
+    # 用户看到的就是"勾了没反应、关掉就丢"。现在任何一处改动都会立刻写进 settings.json
+    # （带 150ms 防抖），「确定」只是关窗口。
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_live_wired", False):
+            self._live_wired = True
+            self._wire_live()
+
+    def _wire_live(self) -> None:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox
+        if not hasattr(self, "_live_timer"):
+            self._live_timer = QTimer(self)
+            self._live_timer.setSingleShot(True)
+            self._live_timer.setInterval(150)
+            self._live_timer.timeout.connect(self._live_apply)
+
+        def fire(*_a) -> None:
+            self._live_timer.start()
+
+        for w in self.findChildren(QCheckBox):
+            w.toggled.connect(fire)
+        for w in self.findChildren(QComboBox):
+            w.currentIndexChanged.connect(fire)
+        for w in self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox):
+            w.valueChanged.connect(fire)
+        line_edits = [w for w in self.findChildren(QLineEdit) if w.text().strip() != ""]
+        for w in line_edits:
+            w.editingFinished.connect(fire)
+
+    def _live_apply(self) -> None:
+        try:
+            self.apply_to(self.s)
+            self.s.save()
+        except Exception:
+            pass
+
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.s = settings
