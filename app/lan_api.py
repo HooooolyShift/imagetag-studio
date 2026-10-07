@@ -12,6 +12,18 @@
   GET  /api/image?id=                   → 原图（支持 HTTP Range，方便大图/断点）
   GET  /api/tags                        → 标签词典（name / zh / category）
   GET  /api/graph                       → 图谱数据（节点/边/热度/折叠状态，移动端照它画）
+  GET  /api/library?root=&dir=          → **和图库界面一样**的条目（系列算一条 + 散图），系列带封面/页数
+  GET  /api/series                      → 系列列表（名字/标签/页数/封面）
+  GET  /api/series/detail?id=           → 某个系列的页（按页码排好）
+  POST /api/series/create               → 把若干张合并成系列 {ids, name?, mode?, digits?}
+  POST /api/series/reorder              → 重排页序并重命名 {series_id, order:[ids]}
+  POST /api/series/rename               → 改系列名（同时刷文件夹名）{series_id, name}
+  POST /api/series/dissolve             → 拆开系列 {series_id}
+  GET  /api/dupes                       → 最近一次查重结果（重复图分组）
+  POST /api/dupes/scan                  → 开始查重（后台跑，进度走 SSE）
+  POST /api/dupes/resolve               → 保留一张、其余隔离/删除
+  POST /api/dupes/not_dup               → 误判反馈（这一组不再提示）
+  POST /api/dupes/as_series             → 判为系列（合并成一个系列文件夹）
   GET  /api/events                      → SSE 事件流（tag/库变更实时推送）
   POST /api/file_tags                   → 远程改标签 {file_id, add:[...], remove:[...]}
 
@@ -71,6 +83,8 @@ class LanApi:
         self._clients: list = []          # SSE 客户端队列
         self._client_devices: dict[int, str] = {}   # SSE 客户端 → 设备号
         self._lock = threading.Lock()
+        self._dupes: list = []            # 最近一次查重结果（内存缓存，供移动端取）
+        self._dupes_scanning = False
 
     # ---------- 生命周期 ----------
     def start(self) -> bool:
@@ -210,6 +224,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._tags()
         elif path == "/api/graph":
             self._graph()
+        elif path == "/api/dupes":
+            self._dupes_list()
+        elif path == "/api/library":
+            self._library(q)
+        elif path == "/api/series":
+            self._series_list()
+        elif path == "/api/series/detail":
+            self._series_detail(q)
         elif path == "/api/events":
             self._events()
         else:
@@ -233,6 +255,22 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._review_apply(body)
         elif path == "/api/review/undo":
             self._review_undo(body)
+        elif path == "/api/dupes/scan":
+            self._dupes_scan(body)
+        elif path == "/api/dupes/resolve":
+            self._dupes_resolve(body)
+        elif path == "/api/dupes/not_dup":
+            self._dupes_not_dup(body)
+        elif path == "/api/dupes/as_series":
+            self._dupes_as_series(body)
+        elif path == "/api/series/create":
+            self._series_create(body)
+        elif path == "/api/series/reorder":
+            self._series_reorder(body)
+        elif path == "/api/series/rename":
+            self._series_rename(body)
+        elif path == "/api/series/dissolve":
+            self._series_dissolve(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -561,6 +599,241 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self.api.bump("review_undone", file_id=res.get("file"))
             res["remaining"] = self.api.library.review_undo_count(fid)
         self._json(res, 200 if res.get("ok") else 404)
+
+    # ---------- 查重（重复 / 近似重复）----------
+
+    # ---------- 图库条目（系列算一条）+ 系列管理 ----------
+    def _file_brief(self, r) -> dict:
+        fid = int(r["id"])
+        return {"id": fid, "name": r["name"] if "name" in r.keys() else Path(r["path"]).name,
+                "path": r["path"], "rel": r["rel"] if "rel" in r.keys() else "",
+                "mtime": r["mtime"], "rating": (r["rating"] if "rating" in r.keys() else "") or "",
+                "series_id": (r["series_id"] if "series_id" in r.keys() else None),
+                "page_no": (r["page_no"] if "page_no" in r.keys() else None),
+                "tags": [t["name"] for t in self.api.store.tags_for_file(fid, statuses=("confirmed",))][:12],
+                "thumb_sizes": self._present_thumbs(fid, r["mtime"] or 0)}
+
+    def _series_brief(self, s) -> dict:
+        """系列条目：和图库界面一样——**封面用第一页**，显示页数，文件夹名就是系列名。"""
+        first = self.api.store.one("SELECT * FROM files WHERE id=?", (int(s["first_file_id"] or 0),))
+        cover = self._file_brief(first) if first is not None else None
+        return {"type": "series", "series_id": int(s["id"]), "name": s["name"],
+                "dir": s["dir"], "tags": [t for t in str(s["tags"] or "").split() if t],
+                "page_count": int(s["page_count"] or 0), "root_id": int(s["root_id"] or 0),
+                "cover": cover}
+
+    def _library(self, q: dict) -> None:
+        """**移动端要和 PC 图库表现一致**：系列作为一条（封面=第一页、带页数），
+        同一目录下的散图照常一条一条列；点开系列再调 /api/series/detail 拿内页。"""
+        root = q.get("root") or ""
+        rel = (q.get("dir") or "").strip("\\/")
+        limit = min(1000, max(1, int(q.get("limit") or 300)))
+        entries: list[dict] = []
+        # 1) 本层的系列（series.dir 的父目录正好是当前目录）
+        series_rows = []
+        for s in self.api.store.series_list():
+            d = str(s["dir"] or "")
+            parent = d.rsplit("/", 1)[0] if "/" in d else ""
+            if root and str(root).isdigit() and int(s["root_id"] or 0) != int(root):
+                continue
+            if (parent or "") != rel:
+                continue
+            series_rows.append(s)
+        entries.extend(self._series_brief(s) for s in series_rows)
+        # 2) 本层的散图（属于系列的图不在这里重复出现）
+        where = ["f.missing=0", "f.series_id IS NULL"]
+        args: list = []
+        if root and str(root).isdigit():
+            where.append("f.root_id=?")
+            args.append(int(root))
+        if rel:
+            where.append("(f.rel LIKE ? OR f.rel LIKE ?)")
+            args += [rel + "\\%", rel + "/%"]
+        rows = self.api.store.query(
+            "SELECT f.* FROM files f WHERE " + " AND ".join(where) + " ORDER BY f.rel LIMIT ?",
+            (*args, limit))
+        entries.extend({"type": "file", **self._file_brief(r)} for r in rows)
+        self._json({"ok": True, "dir": rel, "count": len(entries), "entries": entries})
+
+    def _series_list(self) -> None:
+        self._json({"ok": True, "count": len(self.api.store.series_list()),
+                    "series": [self._series_brief(s) for s in self.api.store.series_list()]})
+
+    def _series_detail(self, q: dict) -> None:
+        try:
+            sid = int(q.get("id") or 0)
+        except ValueError:
+            sid = 0
+        s = self.api.store.one("SELECT * FROM series WHERE id=?", (sid,))
+        if s is None:
+            self._json({"ok": False, "error": "no_such_series"}, 404)
+            return
+        pages = [self._file_brief(r) for r in self.api.store.series_files(sid)]
+        self._json({"ok": True, "series": self._series_brief(s), "pages": pages})
+
+    def _series_create(self, body: dict) -> None:
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if len(ids) < 2:
+            self._json({"ok": False, "error": "need_at_least_two"}, 400)
+            return
+        res = self.api.library.merge_into_series(
+            ids, name=str(body.get("name") or ""),
+            mode=str(body.get("mode") or getattr(self.api.settings, "series_move_mode", "copy")),
+            digits=body.get("digits") or None)
+        self.api.bump("series_changed", ids=ids, result=res)
+        self._json({"ok": bool(res.get("ok", True)), "result": res})
+
+    def _series_reorder(self, body: dict) -> None:
+        try:
+            sid = int(body.get("series_id") or 0)
+        except Exception:
+            sid = 0
+        order = [int(x) for x in (body.get("order") or [])]
+        if not sid or not order:
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        res = self.api.library.reorder_series(sid, order, digits=body.get("digits") or None)
+        self.api.bump("series_changed", series_id=sid, result=res)
+        self._json({"ok": bool(res.get("ok", True)), "result": res})
+
+    def _series_rename(self, body: dict) -> None:
+        try:
+            sid = int(body.get("series_id") or 0)
+        except Exception:
+            sid = 0
+        name = str(body.get("name") or "").strip()
+        if not sid or not name:
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        self.api.library.update_series(sid, name=name)
+        renamed = self.api.library.rename_series_dir(sid)     # 文件夹名一起改（和 PC 一样）
+        self.api.bump("series_changed", series_id=sid, name=name)
+        self._json({"ok": True, "renamed_dir": bool(renamed)})
+
+    def _series_dissolve(self, body: dict) -> None:
+        try:
+            sid = int(body.get("series_id") or 0)
+        except Exception:
+            sid = 0
+        if not sid:
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        res = self.api.library.dissolve_series(sid, keep_in_place=bool(body.get("keep_in_place", True)))
+        self.api.bump("series_changed", series_id=sid)
+        self._json({"ok": bool(res.get("ok", True)), "result": res})
+    def _dupes_payload(self, groups) -> list:
+        """把 library 的查重结果整理成移动端好用的结构（含缩略图边长与标签）。"""
+        out = []
+        for g in groups:
+            files = []
+            for f in g.get("files", []):
+                fid = int(f["id"])
+                tags = [t["name"] for t in self.api.store.tags_for_file(fid, statuses=("confirmed",))][:8]
+                files.append({"id": fid, "name": f["name"] if "name" in f.keys() else "",
+                              "path": f["path"], "mtime": f["mtime"], "size": f["size"],
+                              "tags": tags,
+                              "thumb_sizes": self._present_thumbs(fid, f["mtime"] or 0)})
+            out.append({"key": g.get("key"), "size": g.get("size"), "max_dist": g.get("max_dist"),
+                        "mixed_series": g.get("mixed_series"), "series_ids": g.get("series_ids") or [],
+                        "files": files})
+        return out
+
+    def _dupes_list(self) -> None:
+        api = self.api
+        self._json({"ok": True, "scanning": bool(api._dupes_scanning),
+                    "threshold": int(getattr(api.settings, "dup_threshold", 6)),
+                    "use_clip": bool(getattr(api.settings, "dup_use_clip", True)),
+                    "count": len(api._dupes), "groups": self._dupes_payload(api._dupes)})
+
+    def _dupes_scan(self, body: dict) -> None:
+        """开始查重：后台线程跑（感知哈希 + 可选 CLIP 兜底），进度/结果通过 SSE 推。"""
+        api = self.api
+        if api.library is None:
+            self._json({"ok": False, "error": "dupes_not_available"}, 503)
+            return
+        if api._dupes_scanning:
+            self._json({"ok": True, "started": False, "reason": "already_scanning"})
+            return
+        try:
+            threshold = int(body.get("threshold") or getattr(api.settings, "dup_threshold", 6))
+        except Exception:
+            threshold = 6
+        use_clip = bool(body.get("use_clip", getattr(api.settings, "dup_use_clip", True)))
+        roots = [int(r["id"]) for r in api.store.library_roots()]
+        api._dupes_scanning = True
+        api.bump("dupes_started", threshold=threshold)
+
+        def job() -> None:
+            try:
+                api.library.ensure_hashes(None,
+                                          progress=lambda t, f=0.0: api.bump("dupes_progress", text=t, frac=f),
+                                          cancel=lambda: False)
+                groups = api.library.find_duplicate_groups(
+                    threshold=threshold, only_roots=roots, use_clip=use_clip,
+                    progress=lambda t, f=0.0: api.bump("dupes_progress", text=t, frac=f),
+                    cancel=lambda: False)
+                api._dupes = list(groups)
+                api.bump("dupes_done", count=len(groups))
+            except Exception as exc:
+                api.bump("dupes_failed", error=str(exc))
+            finally:
+                api._dupes_scanning = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-dupes").start()
+        self._json({"ok": True, "started": True})
+
+    def _dupes_resolve(self, body: dict) -> None:
+        """保留一张、其余隔离（默认）或永久删除；顺带把这一组从缓存里去掉。"""
+        api = self.api
+        if api.library is None:
+            self._json({"ok": False, "error": "dupes_not_available"}, 503)
+            return
+        try:
+            keep = int(body.get("keep_id") or 0)
+            others = [int(x) for x in (body.get("remove_ids") or []) if int(x) != keep]
+        except Exception:
+            self._json({"ok": False, "error": "bad_ids"}, 400)
+            return
+        if not keep or not others:
+            self._json({"ok": False, "error": "need_keep_and_remove"}, 400)
+            return
+        action = str(body.get("action") or "quarantine")     # quarantine（进 .removed 可恢复） / delete
+        res = api.library.resolve_duplicate(keep, others, action=action,
+                                            merge_tags=bool(body.get("merge_tags", True)))
+        ids = {keep, *others}
+        api._dupes = [g for g in api._dupes
+                      if not (ids & {int(f["id"]) for f in g.get("files", [])})]
+        api.bump("dupes_resolved", keep=keep, removed=others, action=action)
+        self._json({"ok": bool(res.get("ok", True)), "result": res})
+
+    def _dupes_not_dup(self, body: dict) -> None:
+        """误判反馈：这一组以后不再作为重复提示（PC 与移动端共用同一份反馈表）。"""
+        api = self.api
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if len(ids) < 2:
+            self._json({"ok": False, "error": "need_at_least_two"}, 400)
+            return
+        api.library.mark_group_not_duplicate(ids, note="mobile_feedback")
+        api._dupes = [g for g in api._dupes
+                      if not (set(ids) & {int(f["id"]) for f in g.get("files", [])})]
+        api.bump("dupes_not_dup", ids=ids)
+        self._json({"ok": True, "ids": ids})
+
+    def _dupes_as_series(self, body: dict) -> None:
+        """判为系列：把这一组合并成一个系列（默认移动；可传 name 指定系列名）。"""
+        api = self.api
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if len(ids) < 2:
+            self._json({"ok": False, "error": "need_at_least_two"}, 400)
+            return
+        name = str(body.get("name") or "")
+        mode = str(body.get("mode") or getattr(api.settings, "series_move_mode", "copy"))
+        res = api.library.merge_into_series(ids, name=name, mode=mode)
+        api.library.mark_group_as_series(ids)
+        api._dupes = [g for g in api._dupes
+                      if not (set(ids) & {int(f["id"]) for f in g.get("files", [])})]
+        api.bump("dupes_as_series", ids=ids, result=res)
+        self._json({"ok": bool(res.get("ok", True)), "result": res})
 
     def _events(self) -> None:
         """SSE：移动端连上后，tag/库有变化就会收到一行 JSON。"""
