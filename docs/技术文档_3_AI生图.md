@@ -94,6 +94,8 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
 | 头发（钻头马尾） | **平铺写法** `twintails, drill hair`，给头发加权重或堆同义词（drill twintails/spiral curls/ringlets）会长出 4~6 个钻头；靠负向 `extra hair, multiple twintails, four twintails, extra drills` 压 |
 | 网袜 | 画不好（糊成白块），改 `black thighhighs` 并把 `fishnet` 写进负向 |
 | 兔女郎服 | 要 `strapless`（无肩带抹胸）+ `high-cut leotard` + `rabbit tail`，并把 `shoulder straps/halterneck` 写进负向 |
+| ComfyUI 自定义节点 | 秋叶包里的 Advanced-ControlNet / AnimateDiff / Impact-Pack 会 monkey-patch 采样链，**连续出图时硬崩过一次**（faulthandler 堆栈停在采样函数里）。批量出图请用 `--disable-all-custom-nodes` 干净模式（`tools\batch_gen.py` 默认就这么拉起） |
+| 1536×648 出图耗时 | 实测 **39~45 秒/张**（RTX 4070 Laptop 8 GB，60 步）；1216×512 是 27~33 秒，按需选 |
 
 ## 五、当前成品
 
@@ -125,6 +127,21 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   关二段放大与锐化）：`NoobAI .splash_gen_smoke\smoke_01_a.png`（33s）、
   `WAI .splash_gen_smoke\wai_01_a.png`（27s）——均正常出图，WAI 线条更干净、色调更"冷"更平，
   NoobAI 观感更暖更"厚"一点。此外 WAI 只需再请求一次 `/object_info` 就被 ComfyUI 识别（无需重启）。
+- 2026-10-07（双底模全量 A/B）：按用户"并行出图、由我挑图"的要求，7 个题材 × 2 版 × 2 底模 = **28 张**，
+  全部 **1536×648**（最终规格，挑中的可直接进 `assets\splash\`）。参数同固化值（60 步、CFG 5.5、
+  dpmpp_2m/karras、关二段放大与锐化），seed = `20261006 + 题材号*977 + 版号*41`（**跨底模同 seed**，便于 A/B）。
+  产物：`.splash_gen\NoobAI-XL-v1.1\`（14 张）+ `.splash_gen\WAI-illustrious-SDXL-v17\`（14 张）；
+  对比大图 `montage_对比_NoobAI_vs_WAI.png`（2088×1818，每行 4 格 = NoobAI a/b、WAI a/b）。
+  耗时 39~45 秒/张、总计约 19 分钟；跑完已 `POST /free` 还显存。
+  **观察（供挑图参考）**：WAI 线条更细、脸和手更稳、背景（海滩/货架/看板）更"像样"，整体更精致干净；
+  NoobAI 更暖、更有体积感，但更容易把双马尾画爆（01-a）或比例夸张。两个底模对
+  "character on the left half" 的跟随都偏弱，人物普遍居中偏右——**后续想让主体偏左，得改提示词策略**
+  （比如换 `character on the right` + 明确留白，或干脆接受居中，挑图时注意左侧留白是否够放文字）。
+  过程中的坑与修复：第一批出到第 10 张时 **ComfyUI 硬崩**（stderr 里有 faulthandler 致命堆栈，
+  停在自定义节点打补丁的采样链上）。修复 ①`gen_splash.py` 连续 5 次连不上就快速失败并返回 2，
+  不再傻等 300 秒；②`tools\batch_gen.py` 负责"缺 ComfyUI 就拉起、崩了就重启重跑"，**已存在的图跳过**；
+  ③批量出图改用 `--disable-all-custom-nodes` 干净模式——改完后 28 张一次跑完没有崩。
+  另：长任务一律走 Windows 计划任务（见上文"批量出图"），会话进程被打断会连坐杀掉子进程。
 
 ## 七、项目规矩（2026-10-07 起，来自用户与 PC 端主程序会话）
 
@@ -136,3 +153,6 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
    把线索报给用户或 PC 端会话即可。**裁剪（`trim-rollout-images.ps1 -Apply`）只能由用户在 PC 端会话同意后执行。**
    ——出图对比**不要在本会话反复贴大图**（base64 会把历史撑爆），图一律落盘再引用路径：
    工作图 `.splash_gen\<底模名>\`，成品 `assets\splash\`。
+3. **22:30 起不要再起新的出图批次**（这台机器**每晚 23:00 断电**）：批次要么能在 22:30 前收尾，
+   要么拆小分批跑；模型下载必须能续传（`tools\fetch_model.py` 已支持）；
+   22:30 前把当天结论写进本文档并**本地 commit**；不要留下改了一半、跑不起来的脚本。
