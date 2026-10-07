@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,8 +37,9 @@ class LanApi:
     """局域网 HTTP 服务：随设备发现一起启动。"""
 
     def __init__(self, store, settings, code: str, name: str, version: str, port: int = API_PORT,
-                 is_trusted=None, require_pair: bool = True):
+                 is_trusted=None, require_pair: bool = True, library=None):
         self.store = store
+        self.library = library          # 审核转发要用 Library.finish_review
         self.settings = settings
         self.code = code
         self.name = name
@@ -48,6 +50,7 @@ class LanApi:
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._clients: list = []          # SSE 客户端队列
+        self._client_devices: dict[int, str] = {}   # SSE 客户端 → 设备号
         self._lock = threading.Lock()
 
     # ---------- 生命周期 ----------
@@ -64,6 +67,11 @@ class LanApi:
         except Exception:
             self._httpd = None
             return False
+        # 长连接保活：移动端挂机/息屏也尽量别被中间设备掐断
+        try:
+            self._httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except Exception:
+            pass
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True,
                                         name="imtag-lan-api")
@@ -80,16 +88,23 @@ class LanApi:
             self._httpd = None
 
     # ---------- 事件推送 ----------
-    def subscribe(self):
+    def subscribe(self, device_id: str = ""):
         q: list = []
         with self._lock:
             self._clients.append(q)
+            self._client_devices[id(q)] = str(device_id or "")
         return q
 
     def unsubscribe(self, q) -> None:
         with self._lock:
             if q in self._clients:
                 self._clients.remove(q)
+            self._client_devices.pop(id(q), None)
+
+    def connected_devices(self) -> set[str]:
+        """当前挂着 SSE 长连接的设备号（界面上显示"已连接"）。"""
+        with self._lock:
+            return {d for d in self._client_devices.values() if d}
 
     def bump(self, kind: str, **data) -> None:
         """数据有变化时喊一声，所有连着的移动端立刻知道。"""
@@ -152,6 +167,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/roots":
             self._roots()
+        elif path == "/api/review/queue":
+            self._review_queue(q)
         elif path == "/api/list":
             self._list(q)
         elif path == "/api/thumb":
@@ -181,6 +198,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/file_tags":
             self._file_tags(body)
+        elif path == "/api/review/apply":
+            self._review_apply(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -363,6 +382,12 @@ class _ApiHandler(BaseHTTPRequestHandler):
                               "relation": r["relation"] or "is_a"})
         except Exception:
             pass
+        # 每个节点的父节点列表：移动端据此把标签摆到所属分类周围，不用自己算层级
+        parents: dict[str, list[str]] = {}
+        for e in edges:
+            parents.setdefault(e["to"], []).append(e["from"])
+        for n in nodes:
+            n["parents"] = parents.get(n["id"], [])
         self._json({"ok": True, "nodes": nodes, "edges": edges,
                     "heat_scale": [0, 1, 5, 20, 100, 400, 1000]})
 
@@ -381,6 +406,47 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.api.bump("tags_changed", file_id=fid, add=add, remove=rm)
         self._json({"ok": True, "file_id": fid, "added": add, "removed": rm})
 
+    def _review_queue(self, q: dict) -> None:
+        """待审队列（平板遥控审核用）：和 PC 端审核台同一份数据。"""
+        limit = min(500, max(1, int(q.get("limit") or 200)))
+        rows = self.api.store.pending_files(limit)
+        out = []
+        for r in rows:
+            fid = int(r["id"])
+            tags = []
+            for t in self.api.store.tags_for_file(fid, statuses=("pending", "confirmed")):
+                tags.append({"name": t["name"], "source": t["source"],
+                             "score": float(t["score"] or 0), "status": t["status"]})
+            out.append({"id": fid, "name": r["name"] if "name" in r.keys() else "",
+                        "path": r["path"], "n_pending": int(r["n_pending"] or 0),
+                        "no_rating": bool(r["no_rating"]) if "no_rating" in r.keys() else False,
+                        "rating": (r["rating"] if "rating" in r.keys() else "") or "",
+                        "tags": tags, "thumb_sizes": self._present_thumbs(fid, r["mtime"] or 0)})
+        summary = self.api.store.pending_summary()
+        self._json({"ok": True, "count": len(out), "summary": summary, "files": out})
+
+    def _review_apply(self, body: dict) -> None:
+        """提交一张图的审核结果：confirmed / rejected / drop（丢弃不参与模型反馈）+ 可选 rating。"""
+        if self.api.library is None:
+            self._json({"ok": False, "error": "review_not_available"}, 503)
+            return
+        try:
+            fid = int(body.get("file_id") or 0)
+        except Exception:
+            self._json({"ok": False, "error": "bad_file_id"}, 400)
+            return
+        conf = [str(t) for t in (body.get("confirmed") or []) if str(t).strip()]
+        rej = [str(t) for t in (body.get("rejected") or []) if str(t).strip()]
+        drop = [str(t) for t in (body.get("drop") or []) if str(t).strip()]
+        rating = body.get("rating") or None
+        try:
+            res = self.api.library.finish_review(fid, conf, rej, drop, rating)
+        except Exception as exc:
+            self._json({"ok": False, "error": "apply_failed", "detail": str(exc)}, 500)
+            return
+        self.api.bump("review_applied", file_id=fid, confirmed=conf, rejected=rej, dropped=drop)
+        self._json({"ok": True, "result": res})
+
     def _events(self) -> None:
         """SSE：移动端连上后，tag/库有变化就会收到一行 JSON。"""
         self.send_response(200)
@@ -389,8 +455,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        q = self.api.subscribe()
+        dev = self.headers.get("X-Imtag-Device") or self._query().get("device") or ""
+        q = self.api.subscribe(dev)
         try:
+            try:                      # SSE 连接也开 keepalive，避免中间设备掐长连接
+                sock = self.connection
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except Exception:
+                pass
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
             last = time.time()

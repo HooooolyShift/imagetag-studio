@@ -12,9 +12,10 @@ from ..devices import local_ip
 class DevicesDialog(QDialog):
     """设备管理：给平板/手机端"选中即连接"用（连接 API 后续接入，这里先做发现与配对码）。"""
 
-    def __init__(self, service, parent=None):
+    def __init__(self, service, api=None, parent=None):
         super().__init__(parent)
         self.service = service
+        self.api = api
         self.setWindowTitle("已连接设备 / 局域网设备")
         self.resize(720, 420)
         v = QVBoxLayout(self)
@@ -29,8 +30,9 @@ class DevicesDialog(QDialog):
                      "配对码用于首次连接授权（移动端会让你核对这 4 位数字）。")
         tip.setStyleSheet("color:#8f96a3;")
         v.addWidget(tip)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["设备名", "类型", "地址", "版本"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["设备名", "类型", "地址", "状态", "已授权", "版本"])
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -45,6 +47,9 @@ class DevicesDialog(QDialog):
         b_copy_ip = QPushButton("复制本机地址")
         b_copy_ip.clicked.connect(lambda: QGuiApplication.clipboard().setText(str(info["ip"])))
         row.addWidget(b_copy_ip)
+        b_forget = QPushButton("移除信任（断开该设备）")
+        b_forget.clicked.connect(self.forget_selected)
+        row.addWidget(b_forget)
         row.addStretch(1)
         b_close = QPushButton("关闭")
         b_close.clicked.connect(self.accept)
@@ -59,13 +64,43 @@ class DevicesDialog(QDialog):
 
     def reload(self) -> None:
         peers = self.service.peers() if self.service is not None else []
-        self.table.setRowCount(len(peers))
-        for r, p in enumerate(peers):
+        connected = self.api.connected_devices() if self.api is not None else set()
+        trust = {str(t.get("device_id")): t for t in (self.service.trusted if self.service else [])}
+        rows = list(peers)
+        # 已授权但当前没广播的设备也列出来（显示"离线"），别让用户以为授权丢了
+        seen = {str(p.get("device_id", "")) for p in peers}
+        for did, t in trust.items():
+            if did not in seen:
+                rows.append({"device_id": did, "name": t.get("name", "?"), "role": t.get("role", "?"),
+                             "ip": "", "port": "", "version": "", "online": False,
+                             "trusted": True, "seen": 0})
+        self.table.setRowCount(len(rows))
+        for r, p in enumerate(rows):
             role = {"pc": "PC", "tablet": "平板", "phone": "手机"}.get(str(p.get("role")), str(p.get("role")))
-            for c, text in enumerate((p.get("name", "?"), role,
-                                      f"{p.get('ip', '')}:{p.get('port', '')}",
-                                      p.get("version", ""))):
+            did = str(p.get("device_id", ""))
+            if did and did in connected:
+                state = "在线 · 已连接"
+            elif p.get("online"):
+                state = "在线"
+            else:
+                state = "离线"
+            addr = f"{p.get('ip', '')}:{p.get('api') or p.get('port') or ''}" if p.get("ip") else ""
+            for c, text in enumerate((p.get("name", "?"), role, addr, state,
+                                      "是" if (did in trust) else "否", p.get("version", ""))):
                 self.table.setItem(r, c, QTableWidgetItem(str(text)))
+                if c == 0:
+                    self.table.item(r, c).setData(Qt.UserRole, did)
+
+    def forget_selected(self) -> None:
+        r = self.table.currentRow()
+        if r < 0 or self.service is None:
+            QMessageBox.information(self, "提示", "先在上表里选一行设备。")
+            return
+        did = self.table.item(r, 0).data(Qt.UserRole) if self.table.item(r, 0) else ""
+        if not did:
+            return
+        self.service.forget(str(did))
+        self.reload()
 
     def copy_code(self) -> None:
         code = self.service.self_info()["code"] if self.service is not None else "----"

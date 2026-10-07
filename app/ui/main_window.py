@@ -1258,7 +1258,8 @@ class MainWindow(QMainWindow):
                              name=(svc.name if svc is not None else "PC"),
                              version=VERSION,
                              is_trusted=(svc.is_trusted if svc is not None else None),
-                             require_pair=bool(getattr(self.settings, "lan_require_pair", True)))
+                             require_pair=bool(getattr(self.settings, "lan_require_pair", True)),
+                             library=getattr(self, "library", None))
                 if not api.start():
                     api = None
             except Exception:
@@ -1309,7 +1310,7 @@ class MainWindow(QMainWindow):
 
     def open_devices(self) -> None:
         from .devices_ui import DevicesDialog
-        dlg = DevicesDialog(self.lan_service(), self)
+        dlg = DevicesDialog(self.lan_service(), self.lan_api(), self)
         dlg.exec()
 
     def open_preview_by_id(self, file_id: int) -> None:
