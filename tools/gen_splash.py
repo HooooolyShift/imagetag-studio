@@ -1,4 +1,7 @@
-"""用本机 ComfyUI 出开屏封面图（初音未来 / 重音テト），成品放到 .splash_gen/ 供挑选。
+"""用本机 ComfyUI 出开屏封面图（初音未来 / 重音テト），成品放到 .splash_gen/<底模名>/ 供挑选。
+
+**每个底模一个子目录**（2026-10-07 起）：多个底模并行出图时产物不互相覆盖，
+同一 seed 在不同底模下构图接近，方便直接对比挑图。
 
 尺寸直接按开屏封面区的比例出（560x236 = 2.3729:1），不减裁：
 1216x512 = 2.375:1，偏差 0.09%，肉眼无差异（画布用 KeepAspectRatioByExpanding，
@@ -9,7 +12,7 @@
   · 不堆 "flat shading / official art style" 之类 SD1.5 时代的玄学词；
   · 构图靠 wide shot / full body / character on the left 这类 tag 控制。
 
-用法： python tools\\gen_splash.py [底模文件名] [每张出几张=2] [只跑指定任务,如 05] [宽度]
+用法： python tools\\gen_splash.py [底模文件名] [每张出几张=2] [只跑指定任务,如 05] [宽度] [输出目录]
 
 宽度默认 1216（对应 1216x512）。高分屏上开屏窗口大约是屏幕 1/3 宽，
 想要更锐利就出更大：python tools\\gen_splash.py NoobAI-XL-v1.1.safetensors 3 "" 1536
@@ -17,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import urllib.parse
@@ -25,6 +29,14 @@ from pathlib import Path
 
 HOST = "http://127.0.0.1:8188"
 OUT = Path(__file__).resolve().parent.parent / ".splash_gen"
+
+
+def out_dir(ckpt: str, override: str = "") -> Path:
+    """底模各自的产物目录：多模型对比时不会互相覆盖（可用第 5 个参数指定）。"""
+    if override:
+        return Path(override).resolve()
+    stem = re.sub(r"[^0-9A-Za-z._-]+", "_", Path(ckpt).stem) or "model"
+    return OUT / stem
 W, H = 1216, 512                # 默认尺寸：与开屏封面比例一致（2.375:1），直出不裁切
 ASPECT = 1216 / 512             # 开屏封面长宽比；改宽度时按它算高度
 STEPS = 60                      # 单次出图步数
@@ -187,7 +199,6 @@ def wait_and_save(pid: str, dst: Path) -> bool:
 
 def main() -> int:
     global W, H
-    OUT.mkdir(parents=True, exist_ok=True)
     args = sys.argv[1:]
     ckpt = args[0] if args else DEFAULT_CKPT
     variants = int(args[1]) if len(args) > 1 else 2
@@ -195,6 +206,7 @@ def main() -> int:
     if len(args) > 3 and args[3]:
         W = max(512, int(args[3]))
         H = int(round(W / ASPECT / 8)) * 8
+    out = out_dir(ckpt, args[4] if len(args) > 4 else "")
     try:
         names = api("/object_info/CheckpointLoaderSimple")["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
         if ckpt not in names:
@@ -203,14 +215,15 @@ def main() -> int:
     except Exception as exc:
         print("连不上 ComfyUI:", exc)
         return 1
-    print(f"底模: {ckpt}  尺寸: {W}x{H}  每张 {variants} 版")
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"底模: {ckpt}  尺寸: {W}x{H}  每张 {variants} 版  产物目录: {out}")
     letters = "abcdefgh"
     for i, (tag, prompt, neg_extra) in enumerate(JOBS, 1):
         if only and not any(tag.startswith(o) or f"{i:02d}" == o for o in only):
             continue
         for v in range(variants):
             seed = 20261006 + i * 977 + v * 41
-            dst = OUT / f"{i:02d}_{tag}_{letters[v]}.png"
+            dst = out / f"{i:02d}_{tag}_{letters[v]}.png"
             try:
                 res = api("/prompt", {"prompt": build(ckpt, prompt, neg_extra, seed)})
                 pid = res["prompt_id"]
@@ -221,7 +234,7 @@ def main() -> int:
             ok = wait_and_save(pid, dst)
             print(f"[{i}/{len(JOBS)}] {tag}_{letters[v]} "
                   f"{'完成' if ok else '失败'} {time.time()-t0:.0f}s → {dst.name}")
-    print("全部完成，产物在:", OUT)
+    print("全部完成，产物在:", out)
     return 0
 
 

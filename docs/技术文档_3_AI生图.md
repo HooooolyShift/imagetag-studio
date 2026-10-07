@@ -26,8 +26,22 @@
 | 文件 | 说明 |
 |---|---|
 | `NoobAI-XL-v1.1.safetensors`（6.61 GB） | **当前主用**：danbooru/e621 语料，角色还原与构图跟随最好 |
+| `WAI-illustrious-SDXL-v17.safetensors`（6.46 GB） | **2026-10-07 新增，与 NoobAI 并行候选**：Illustrious 血统的社区热门合并模型，线条更干净、成图更"精致"，与 NoobAI 风格差异明显，提示词习惯完全兼容（同为 danbooru tag） |
 | `animagine-xl-4.0.safetensors`（6.46 GB） | 备选：更"平涂"，但构图跟随弱一些 |
 | 秋叶包自带若干 SD1.5 底模 | 仅遗留 |
+
+### 怎么加新底模（`tools\fetch_model.py`）
+
+```powershell
+python tools\fetch_model.py <URL> "E:\ComfyUI\ComfyUI-aki-v1.5\ComfyUI-aki-v1.5\models\checkpoints\<文件名>.safetensors" [--sha256 <值>]
+```
+
+- **本机直连 civitai.com 不通**（curl 报 connect timeout），必须走系统代理 `http://127.0.0.1:29758`
+  （和 git push 用的同一个）。`curl.exe` 不读 Windows 系统代理，`Invoke-WebRequest` 又不方便续传，
+  所以自己写了 `tools\fetch_model.py`（urllib 会自动读系统代理 + 断点续传 + 重试 + 进度）。
+- 下载完**必须核对**：文件字节数 == Civitai API 的 `sizeKB*1024`，`Get-FileHash -Algorithm SHA256`
+  == 该文件版本 API 里的 `SHA256`（`AutoV2` 就是它的前 10 位）。6.5 GB 下载约 11 分钟（实测 ~10 MiB/s）。
+- 放进 `models\checkpoints` 后 ComfyUI **不用重启**，再请求 `/object_info/CheckpointLoaderSimple` 就能看到新底模。
 
 ## 三、出图脚本 `tools/gen_splash.py`
 
@@ -37,6 +51,15 @@ python tools\gen_splash.py [底模] [每张几版=2] [只跑某张,如 05 / 可�
 ```
 
 开屏封面规范：**1536×648（≈2.37:1，与开屏图片区同比例直出，不裁切）**，成品放 `assets\splash\`。
+
+**产物目录（2026-10-07 起）**：按底模分子目录 `.splash_gen\<底模名>\`，
+多个底模并行出图时不会互相覆盖；**同一 seed 在不同底模下构图接近，可直接 A/B 对比**。
+想指定目录就再加第 5 个参数。例：
+
+```powershell
+python tools\gen_splash.py NoobAI-XL-v1.1.safetensors 3
+python tools\gen_splash.py WAI-illustrious-SDXL-v17.safetensors 3
+```
 
 ## 四、实测参数与坑（重要）
 
@@ -69,3 +92,16 @@ python tools\gen_splash.py [底模] [每张几版=2] [只跑某张,如 05 / 可�
   产物（临时，勿当成品）：`.splash_gen_smoke\smoke_01_a.png`，被 `.gitignore` 的 `.splash_gen*/` 覆盖。
   出图后调 `/free` 卸模型，显存从 5812 MiB 回落到 **2037 MiB（空闲 5912 MiB）**；
   ComfyUI 仍在 `127.0.0.1:8188` 常驻（不占显存），随时可继续出图。
+- 2026-10-07（新增并行底模）：按用户要求"再弄一个 SDXL 和 NoobAI 并行、由用户挑图"，
+  新增 **WAI-illustrious-SDXL v17**（Civitai 模型页 id `827184`，
+  下载 URL `https://civitai.com/api/download/models/2883731?fileId=2763986`，
+  文件名 `WAI-illustrious-SDXL-v17.safetensors`，6.46 GiB / 6938040682 字节，fp16、base Illustrious），
+  落在 `E:\ComfyUI\ComfyUI-aki-v1.5\ComfyUI-aki-v1.5\models\checkpoints\`。
+  完整性已核对：字节数与 API 的 `sizeKB*1024` 一致，`SHA256=F116B0C78FF441467B0CDC8F1936E1ED18EA31E9997C7B132B1B8DB533F0BD04`
+  与官方一致；safetensors 头可解析（2515 个张量，`conditioner` / `first_stage_model` / `model.diffusion_model` 齐全）。
+  新增工具 `tools\fetch_model.py`（带断点续传、自动走系统代理，详见上文"怎么加新底模"）。
+  `gen_splash.py` 改为按底模输出到 `.splash_gen\<底模名>\`（多模型并行不覆盖，同 seed 可 A/B）。
+  冒烟对比（同一 seed 20261983、job 01 miku_wall、1216×512、60 步、CFG 5.5、dpmpp_2m/karras、
+  关二段放大与锐化）：`NoobAI .splash_gen_smoke\smoke_01_a.png`（33s）、
+  `WAI .splash_gen_smoke\wai_01_a.png`（27s）——均正常出图，WAI 线条更干净、色调更"冷"更平，
+  NoobAI 观感更暖更"厚"一点。此外 WAI 只需再请求一次 `/object_info` 就被 ComfyUI 识别（无需重启）。
