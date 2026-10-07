@@ -57,6 +57,23 @@ def _request(url: str, pos: int) -> urllib.request.Request:
     return urllib.request.Request(url, headers=headers)
 
 
+class _Redirect308Handler(urllib.request.HTTPRedirectHandler):
+    """urllib 默认只处理 301/302/303/307，**不跟 308**——hf-mirror 走的正是 308，
+    不补这一手会一直报 "HTTP Error 308: Permanent Redirect"（2026-10-07 实测）。"""
+
+    def http_error_308(self, req, fp, code, msg, headers):      # noqa: N802
+        # 直接把 308 当成 302 处理：urllib 内部 redirect_request 只白名单 301/302/303/307，
+        # 原样传 308 会被它自己拒掉（实测报 HTTP Error 308）。
+        return self.http_error_302(req, fp, 302, msg, headers)
+
+
+def _opener(proxy: str) -> urllib.request.OpenerDirector:
+    handlers = [_Redirect308Handler()]
+    handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy
+                    else urllib.request.ProxyHandler())
+    return urllib.request.build_opener(*handlers)
+
+
 def _total(resp, pos: int, fallback: int) -> int:
     """返回文件总长度（拿不到就返回 0）。"""
     cr = resp.headers.get("Content-Range")
@@ -83,9 +100,7 @@ def download(url: str, dst: Path, sha256: str = "", proxy: str = "",
         pos = dst.stat().st_size if dst.exists() else 0
         if total and pos >= total:
             break
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy
-            else urllib.request.ProxyHandler())
+        opener = _opener(proxy)
         try:
             resp = opener.open(_request(url, pos), timeout=60)
         except Exception as exc:                       # noqa: BLE001

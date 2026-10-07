@@ -24,6 +24,10 @@ release_parts/
 # 临时排查脚本/临时数据库（不进版本库）
 .fix12/
 .verify_pics/
+
+# SwarmUI 扩展源码备份里的构建中间产物（源码本身要进版本库）
+tools/swarmui_ext/**/obj/
+tools/swarmui_ext/**/bin/
 # 宣传片工程（含 23GB 视频母版与 venv，不进版本库；文件仍在硬盘上）
 promo/
 
