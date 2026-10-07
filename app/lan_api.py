@@ -21,6 +21,12 @@
   POST /api/series/dissolve             → 拆开系列 {series_id}
   POST /api/tag/run                     → 远程打标 {ids|all, kind:"autotag"|"rating"|"rescore"|"face"}
   POST /api/writeback                   → 把标签写回文件名 {ids|all}
+  GET  /api/fs/list?root=&dir=          → 该目录下的子文件夹（含空文件夹）
+  POST /api/fs/mkdir                    → 新建文件夹 {root, dir, name}
+  POST /api/fs/rename                   → 重命名文件夹/文件 {path, new_name}
+  POST /api/fs/delete                   → 删除（**进回收站**）{path}
+  POST /api/fs/move                     → 移动文件 {ids|paths, target}
+  POST /api/import                      → 收录到图库 {ids, subdir?, move?}
   GET  /api/dupes                       → 最近一次查重结果（重复图分组）
   POST /api/dupes/scan                  → 开始查重（后台跑，进度走 SSE）
   POST /api/dupes/resolve               → 保留一张、其余隔离/删除
@@ -267,6 +273,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._series_list()
         elif path == "/api/series/detail":
             self._series_detail(q)
+        elif path == "/api/fs/list":
+            self._fs_list(q)
         elif path == "/api/events":
             self._events()
         else:
@@ -321,6 +329,16 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._tag_run(body)
         elif path == "/api/writeback":
             self._writeback(body)
+        elif path == "/api/fs/mkdir":
+            self._fs_mkdir(body)
+        elif path == "/api/fs/rename":
+            self._fs_rename(body)
+        elif path == "/api/fs/delete":
+            self._fs_delete(body)
+        elif path == "/api/fs/move":
+            self._fs_move(body)
+        elif path == "/api/import":
+            self._import(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -863,6 +881,210 @@ class _ApiHandler(BaseHTTPRequestHandler):
         res = api.library.apply_disk_names(ids)
         api.bump("tags_changed", file_ids=ids, reason="writeback")
         self._json({"ok": True, "result": res})
+
+    # ---------- 目录操作 / 导入（带"必须在已登记的根里"护栏）----------
+    def _guard(self, path) -> bool:
+        from .fsops import inside_roots, roots_paths
+        return inside_roots(path, roots_paths(self.api.store))
+
+    def _fs_list(self, q: dict) -> None:
+        """列子文件夹（含空文件夹）——移动端左侧树用；系列条目走 /api/library。"""
+        root = str(q.get("root") or "")
+        rel = (q.get("dir") or "").strip("\\/")
+        row = self.api.store.one("SELECT path, label FROM roots WHERE id=?", (int(root),)) \
+            if root.isdigit() else None
+        if row is None:
+            self._json({"ok": False, "error": "no_such_root"}, 404)
+            return
+        base = Path(row["path"]) / rel if rel else Path(row["path"])
+        if not base.is_dir():
+            self._json({"ok": False, "error": "no_such_dir"}, 404)
+            return
+        dirs = []
+        try:
+            for p in sorted(base.iterdir(), key=lambda x: x.name.lower()):
+                if not p.is_dir() or p.name.startswith("."):
+                    continue
+                sub_rel = str(Path(rel) / p.name) if rel else p.name
+                n = self.api.store.one(
+                    "SELECT COUNT(*) c FROM files WHERE root_id=? AND series_id IS NULL "
+                    "AND (rel LIKE ? OR rel LIKE ?)",
+                    (int(root), sub_rel + "\\%", sub_rel + "/%"))
+                dirs.append({"name": p.name, "rel": sub_rel,
+                             "files": int((n["c"] if n else 0) or 0)})
+            pads = self.api.store.query(
+                "SELECT name, dir, page_count, first_file_id FROM series WHERE root_id=?", (int(root),))
+            for s in pads:
+                d = str(s["dir"] or "")
+                parent = d.rsplit("/", 1)[0] if "/" in d else ""
+                if (parent or "") == rel:
+                    dirs.append({"name": Path(d).name, "rel": d, "files": int(s["page_count"] or 0),
+                                 "series_id": int(s["id"]) if "id" in s.keys() else None})
+        except Exception as exc:
+            self._json({"ok": False, "error": "list_failed", "detail": str(exc)}, 500)
+            return
+        self._json({"ok": True, "root": int(root), "dir": rel, "count": len(dirs), "dirs": dirs})
+
+    def _fs_mkdir(self, body: dict) -> None:
+        root = str(body.get("root") or "")
+        rel = (str(body.get("dir") or "")).strip("\\/")
+        name = str(body.get("name") or "").strip()
+        if not root.isdigit() or not name or any(ch in name for ch in '\\/:*?"<>|'):
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        row = self.api.store.one("SELECT path FROM roots WHERE id=?", (int(root),))
+        if row is None:
+            self._json({"ok": False, "error": "no_such_root"}, 404)
+            return
+        target = Path(row["path"]) / rel / name
+        if not self._guard(target):
+            self._json({"ok": False, "error": "outside_roots"}, 403)
+            return
+        if target.exists():
+            self._json({"ok": False, "error": "exists"}, 409)
+            return
+        try:
+            target.mkdir(parents=True)
+        except Exception as exc:
+            self._json({"ok": False, "error": "mkdir_failed", "detail": str(exc)}, 500)
+            return
+        new_rel = f"{rel}/{name}" if rel else name
+        self.api.bump("fs_changed", root=int(root), dir=new_rel, action="mkdir")
+        self._json({"ok": True, "rel": new_rel})
+
+    def _fs_rename(self, body: dict) -> None:
+        path = str(body.get("path") or "")
+        new_name = str(body.get("new_name") or "").strip()
+        if not path or not new_name or any(ch in new_name for ch in '\\/:*?"<>|'):
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        src = Path(path)
+        if not src.exists():
+            self._json({"ok": False, "error": "not_exists"}, 404)
+            return
+        if not self._guard(src) or not self._guard(src.parent / new_name):
+            self._json({"ok": False, "error": "outside_roots"}, 403)
+            return
+        dst = src.parent / new_name
+        if dst.exists():
+            self._json({"ok": False, "error": "exists"}, 409)
+            return
+        try:
+            src.rename(dst)
+        except Exception as exc:
+            self._json({"ok": False, "error": "rename_failed", "detail": str(exc)}, 500)
+            return
+        try:                       # 文件：同步库内路径；文件夹：整棵子树重新归属
+            if src.is_file() or dst.is_file():
+                self.api.library.reindex_after_move(str(src), str(dst))
+            else:
+                pairs = []
+                for r in self.api.store.query(
+                        "SELECT path FROM files WHERE path LIKE ? OR path LIKE ?",
+                        (str(src) + "\\%", str(src) + "/%")):
+                    old = str(r["path"])
+                    pairs.append((old, str(dst) + old[len(str(src)):]))
+                self.api.library.reindex_after_move_many(pairs)
+        except Exception:
+            pass
+        self.api.bump("library_changed", action="rename")
+        self._json({"ok": True, "path": str(dst)})
+
+    def _fs_delete(self, body: dict) -> None:
+        """删除（**进回收站**，可还原）。文件夹为空才允许？不——按用户习惯：连带子项一起进回收站。"""
+        path = str(body.get("path") or "")
+        src = Path(path)
+        if not path or not src.exists():
+            self._json({"ok": False, "error": "not_exists"}, 404)
+            return
+        if not self._guard(src):
+            self._json({"ok": False, "error": "outside_roots"}, 403)
+            return
+        from .fsops import recycle
+        ok = recycle(src)
+        if ok:
+            try:
+                if src.is_file() or not src.exists():
+                    self.api.store.execute("UPDATE files SET missing=1 WHERE path=?", (str(src),))
+                else:
+                    self.api.store.execute(
+                        "UPDATE files SET missing=1 WHERE path LIKE ? OR path LIKE ?",
+                        (str(src) + "\\%", str(src) + "/%"))
+                self.api.store.refresh_counts()
+            except Exception:
+                pass
+            self.api.bump("library_changed", action="delete", path=str(src))
+        self._json({"ok": bool(ok), "recycled": bool(ok)}, 200 if ok else 500)
+
+    def _fs_move(self, body: dict) -> None:
+        """把文件（或整个系列）移动到某个文件夹：和 PC 左树拖拽走同一套逻辑（先移动再改库）。"""
+        api = self.api
+        ids = [int(x) for x in (body.get("ids") or [])]
+        paths = [str(x) for x in (body.get("paths") or [])]
+        target = str(body.get("target") or "")
+        if not target or not Path(target).is_dir():
+            self._json({"ok": False, "error": "bad_target"}, 400)
+            return
+        if not self._guard(target):
+            self._json({"ok": False, "error": "outside_roots"}, 403)
+            return
+        if not ids and not paths:
+            self._json({"ok": False, "error": "no_files"}, 400)
+            return
+        # 系列整组移动 + 路径收集
+        want: list[str] = []
+        for fid in ids:
+            row = api.store.one("SELECT path, series_id FROM files WHERE id=?", (fid,))
+            if row is None:
+                continue
+            want.append(str(row["path"]))
+            if row["series_id"]:
+                want += [str(f["path"]) for f in api.store.series_files(int(row["series_id"]))]
+        want += paths
+        plan, skipped = [], 0
+        for p in dict.fromkeys(want):
+            src = Path(p)
+            if not src.exists() or str(src.parent) == str(Path(target)):
+                skipped += 1
+                continue
+            dst, n = Path(target) / src.name, 2
+            while dst.exists():
+                dst = Path(target) / f"{src.stem}_{n}{src.suffix}"
+                n += 1
+            plan.append((src, dst))
+        if not plan:
+            self._json({"ok": True, "moved": 0, "skipped": skipped})
+            return
+        pairs, failed = [], 0
+        for src, dst in plan:
+            try:
+                import shutil
+                shutil.move(str(src), str(dst))
+                pairs.append((str(src), str(dst)))
+            except Exception:
+                failed += 1
+        try:
+            api.library.reindex_after_move_many(pairs)
+        except Exception:
+            pass
+        api.bump("library_changed", action="move", target=target, count=len(pairs))
+        self._json({"ok": True, "moved": len(pairs), "failed": failed, "skipped": skipped})
+
+    def _import(self, body: dict) -> None:
+        """收录到图库（和 PC 的「收录到图库」同一套：同盘 rename、跨盘复制后删除）。"""
+        api = self.api
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if not ids and body.get("all"):
+            ids = [int(r["id"]) for r in api.store.query("SELECT id FROM files WHERE missing=0")]
+        if not ids:
+            self._json({"ok": False, "error": "no_files"}, 400)
+            return
+        res = api.library.import_to_library(
+            ids, move=bool(body.get("move", True)),
+            auto_write_names=bool(body.get("auto_write_names", True)),
+            subdir=str(body.get("subdir") or ""))
+        api.bump("library_changed", action="import", count=len(ids))
+        self._json({"ok": bool(res.get("ok", True)), "result": res})
     def _dupes_payload(self, groups) -> list:
         """把 library 的查重结果整理成移动端好用的结构（含缩略图边长与标签）。"""
         out = []
