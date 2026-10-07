@@ -283,6 +283,24 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 
 ## 六、变更记录
 
+- 2026-10-07（晚·13）：**双 PC 副本的缓存隔离 + 批次七（远程打标 / 写回文件名）接界面**。
+  · **按设备分缓存**（用户专门问"正式版和 Beta 连移动端会不会串"）：本端索引从"一个库"改成
+  **每台 PC 一个独立 IndexedDB** —— `imtag-mobile-local`（离线档）+ `imtag-mobile-<设备号>@<api端口>`
+  （端口用来区分同一台机器上的正式版/测试版两个副本）。实测连上后确实同时存在
+  `imtag-mobile-local` 与 `imtag-mobile-test-device@47834` 两个库，互不复用。
+  连接端口一律取**发现报文里的 `api`**（`device.api || device.port`），没有写死 47824；
+  「清空本地索引与缓存」现在会连当前这台 PC 的库一起清。
+  · PC 端 5xx 会回 `{ok:false,error:"internal",detail:…}`：本端把 **detail 一起抛出来并 `console.warn`**，
+  不再只看到一句 "Remote end closed"。
+  · 打标/写回接上界面（连 PC 后浏览工具栏出现两个按钮）：**打标当前列表**（取当前筛选结果里的 PC 图 id，
+  上限 500，调用 `POST /api/tag/run {ids, kind:"autotag"}`）、**写回文件名**（`POST /api/writeback`，二次确认后执行）。
+  SSE 接进度与提醒：`tag_progress` → 进度条、`tag_done` → 提示"N 条进待审，去审核台看看"并刷新、`tag_failed` → 错误提示。
+  字段约定按新规则实现：**事件名在 `kind`**（本端在 pc-client 里把它映射成 `type`）、**打标类型在 `mode`**。
+  · **验证到什么程度（如实说明）**：UI → 请求链已验证（按钮出现、按筛选结果算 id、POST 正确发出）；
+  **"打标跑完进待审"这一步没验** —— 我的自检服务器只传了 `store/library`、没传 `EngineHub`，
+  服务端按设计回 503 `tag_not_available`（hint 也说清了原因），本端把它当可读错误提示显示；
+  真正跑打标要在**真 PC 程序**上（有模型），或者我明天给自检服务器补 hub。
+  · 写回文件名会改真文件名，**我没在真库上跑**（PC 端也提醒先用 beta 库）——明天在 beta 库联调。
 - 2026-10-07（晚·12）：**查重页做出来了**（PC 点名 + 用户点名那条）。连 PC 后左导航出现「查重」：
   · 顶部：组数 + 状态 + 「开始扫描 / 刷新结果」；扫描是后台任务，进度走 SSE（`dupes_progress` → 进度条、
   `dupes_done` → 提示并刷新、`dupes_failed` → 红字提示）。
