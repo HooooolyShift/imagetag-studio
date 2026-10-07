@@ -112,6 +112,15 @@ public static class BooruDictionary
         {
             return null;
         }
+        // 占位/废话词（bad tag / none / n/a…）永远不要，哪怕词表里真有同名条目
+        if (Junk.Contains(key.Replace('_', ' ')))
+        {
+            return null;
+        }
+        if (Junk.Contains(key))
+        {
+            return null;
+        }
         if (ByName.TryGetValue(key, out string exact))
         {
             return exact;

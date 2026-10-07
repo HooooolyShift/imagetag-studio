@@ -72,7 +72,12 @@ public class PromptHelperExtension : Extension
             ["model"] = OllamaModel,
             ["stream"] = false,
             ["think"] = false,
-            ["options"] = new JObject() { ["temperature"] = 0.4 },
+            ["options"] = new JObject()
+            {
+                ["temperature"] = 0.2,
+                ["repeat_penalty"] = 1.15,
+                ["num_predict"] = 220
+            },
             ["messages"] = new JArray()
             {
                 new JObject() { ["role"] = "system", ["content"] = system },
