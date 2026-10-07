@@ -230,6 +230,36 @@ imagetag-mobile-<yyyymmdd>.zip
 
 ## 九、待确认项
 
+### 【2026-10-07 22:2x 修订】手机端 = 精简版平板端（用户新指示，覆盖本节的路线）
+
+> 用户当天后续指示（PC 端主程序会话转达）：
+> **手机端不再单独开发，改为做「精简版平板端」——重复的功能直接照搬平板端实现，手机端没有的功能不要搬。**
+
+**唯一实现源**：`E:\文档\ChatGPT\图片标签工坊_移动端`（平板端工程）。
+本端目录 `E:\文档\ChatGPT\图片标签工坊-手机端` 里只放**精简配置 / 薄封装**，
+核心代码整文件照搬，**不再维护第二份实现**。对齐账本见本端仓库 `SYNC-FROM-TABLET.md`。
+
+**已完成的对齐（2026-10-07 22:2x）**：平板端 HEAD `6704173`；19 个核心文件里 **17 个逐字节一致**，
+差异只有两处、都已记录：`webui/index.html` 多一行 `phone.css`、`tools/dev-server.py` 端口 5173 → 4273。
+照搬清单（`webui/` 全部 js+css+index.html、`tools/dev-server.py`、`tools/rules-parity.py`、`tools/debug-page.py`）
+与逐文件 SHA256 都在 `SYNC-FROM-TABLET.md` 与 `tools/tablet-sync.sha256` 里。
+
+**手机端唯一的布局适配层**：`webui/css/phone.css` ——
+① ≤620px 网格固定**两列**（平板端 `auto-fill minmax(112px)` 在 412px 手机上会挤成 3 列）；
+② `@media (hover: none)` 让**卡片标签常显**（平板端是 `:hover` 才显形，触摸屏永远看不到）。
+
+**功能范围**：仍只有「图片浏览 + 标签图谱」。平板端的审核台 / 批量操作 / 系列管理 / 打标**不搬**。
+
+**局域网发现协议**（PC 端已在跑，照搬平板端 `webui/js/config.js`）：
+UDP **47823**，JSON `{app:"imagetag", role:"pc|tablet|phone", name, version, port, code}`，
+查询 `{app:"imagetag", query:"who"}`；UDP 只能由 Android 壳发，WebUI 走 `window.imtagNative.discover()`。
+PC 端的连接 API（图库树 / 缩略图 / 原图 Range / 事件流）落地后，直接沿用平板端的调用层。
+
+**缩略图边长探测顺序**（两端统一）：**340 → 320 → 200 → 160**，只登记真实存在的文件。
+(`tools/make-dev-index.py` 已按这个顺序探测。)
+
+---
+
 1. **手机端要不要"连 PC"这条通路**？我按《技术文档 4》理解为：协议共用、手机端也能连，
    但连上也只开放"图片浏览 + 标签图谱"两个功能（不解锁审核台）。请确认。
 2. **C 方案（PC 导出离线快照包）还留吗**？不留就从本文档删掉，避免三端格式分叉。
@@ -265,3 +295,35 @@ imagetag-mobile-<yyyymmdd>.zip
     手机端会话只做两件事：**① 自己控制贴图量**；② 一旦出现"发不出消息 / 一读图就报错"，
     把线索报给用户或 PC 端会话。**裁剪只能由用户在 PC 端会话同意后执行**，本会话绝不裁剪。
     本会话曾误建过一条同名巡检自动化（`413-2`），发现与 PC 端的 `413` 重复后已删除。
+- 2026-10-07 22:2x 【断电前 checkpoint · 本地 commit，未 push】
+  - **路线改为"精简版平板端"**（用户当日新指示）：核心代码**整文件照搬**平板端工程，
+    本端只留薄封装。已完成对齐：平板端 HEAD `6704173`，19 个核心文件 **17 个逐字节一致**；
+    差异只有 `webui/index.html`（+1 行 `phone.css`）与 `tools/dev-server.py`（端口 5173 → 4273）。
+    对齐账本：本端 `SYNC-FROM-TABLET.md` + `tools/tablet-sync.sha256`。
+  - 过程中平板端还修了两处**真 bug**，已同步过来：分级别名改取最长匹配（否则 `r18` 抢在 `r18g` 前）、
+    系列判定收紧（只有"内部大多是页码文件名"的目录才算系列）。
+  - 手机端唯一布局适配 `webui/css/phone.css`：≤620px 固定两列 + `hover:none` 时卡片标签常显。
+  - **验证（可复跑）**：`tools\shot.py` 在 360/412/480 三种手机尺寸、演示数据与真实 PC 库
+    （49 张图库 / 8472 张全量）两种数据源下**全过**：控制台 0 报错、无横向溢出、缩略图解码、
+    大图页打开、图谱有内容、设置页有统计。探针走平板端自己的 `window.__imtag`。
+  - 端口：手机端 dev-server **4273**（平板端 5173）；缩略图探测顺序两端统一 **340→320→200→160**。
+  - **M1 当晚也做完了（壳能出包）**：`android/`（本端独有）+ `tools\build-apk.ps1` 走 `死了么app 2`
+    那套免 Gradle 链路（aapt2 → javac → d8 → 塞 assets → zipalign → apksigner，在 `%TEMP%` 的 ASCII
+    目录里构建，绕开中文路径）。
+    - **虚拟 https 源**：WebView 加载 `https://imtag.local/index.html`，由 `shouldInterceptRequest`
+      从 `assets/web/` 供给；`/orig?p=<绝对路径>` 流式返回真实图片（能看 OTG / 本机原图）。
+      **不用 `file://`** —— 那样 `fetch()` 读词典表会被跨域挡掉。
+    - **桥契约照平板端** `webui/js/data/sources.js`：`window.imtagNative` 的
+      `listRoots() / listDir(path) / storageInfo() / discover(ms)`，都返回 JSON 字符串；
+      `discover` 发 UDP **47823** 广播。平板端以后出自己的 APK 可以直接借这份壳。
+    - 产物：`dist\图片标签工坊-手机端-debug.apk`，**2.3 MB**（含 5.2 MB 词典表，已压缩），
+      包名 `com.imagetag.phone`，minSdk 26 / targetSdk 34，已用 `apksigner` 验签；
+      `aapt2 dump badging` 核过：包名 / 权限 / 启动 Activity / 图标标签都对，包内
+      `assets/web/index.html`、`css/phone.css`、`js/app.js`、`data/zh-tables.json`、`classes.dex` 齐全。
+    - 踩坑记录：这套链路**不能用 lambda**（`-bootclasspath android.jar` 下没有
+      `LambdaMetafactory`）——Java 里一律写匿名内部类。
+    - **未做**：真机安装验证（当时没有设备连着、也没有模拟器在跑）。首次打开会引导去系统设置
+      授予「所有文件访问」。
+  - **下一步（从这里继续）**：① 真机（S24 Ultra / OTG）装 APK，验证「扫描 → 浏览 → 图谱」与
+    大图；② 真机跑通后把壳回赠平板端（同一份 `nativeSource` 契约）；③ M2 连 PC —— 等 PC 端
+    连接 API 落地后照搬平板端调用层。

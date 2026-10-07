@@ -10,6 +10,7 @@
   GET  /api/thumb?id=&size=340          → 缩略图 JPEG（缺失就现生成，带缓存）
   GET  /api/image?id=                   → 原图（支持 HTTP Range，方便大图/断点）
   GET  /api/tags                        → 标签词典（name / zh / category）
+  GET  /api/graph                       → 图谱数据（节点/边/热度/折叠状态，移动端照它画）
   GET  /api/events                      → SSE 事件流（tag/库变更实时推送）
   POST /api/file_tags                   → 远程改标签 {file_id, add:[...], remove:[...]}
 
@@ -159,6 +160,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._image(q)
         elif path == "/api/tags":
             self._tags()
+        elif path == "/api/graph":
+            self._graph()
         elif path == "/api/events":
             self._events()
         else:
@@ -314,6 +317,54 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "count": len(rows),
                     "tags": [{"name": r["name"], "zh": r["zh"], "category": r["category"]}
                              for r in rows]})
+
+    def _graph(self) -> None:
+        """图谱数据：分类节点 + 标签节点（带图片数/坐标/折叠）+ 父子边。
+
+        移动端拿到就能画：分类=大圆、标签=小圆；颜色按 category 色系 + 层级深浅；
+        热度视图直接用 count。坐标 x/y 为 None 表示还没自动布局过（移动端自己跑一次径向布局）。
+
+        数据结构（PC 库里的事实源）：
+          · 分类节点在 `nodes` 表（kind='group'），19~20 条；
+          · 标签节点在 `tags` 表，边在 `taxonomy_edges`
+            （`parent_kind/parent_id` → `child_kind/child_id`，child_kind='tag' 时 id 是 tags.id）；
+          · 节点 id 统一加前缀：分类 `g<id>`、标签 `t<id>`，移动端照着拼就行。
+        """
+        nodes: list[dict] = []
+        counts: dict[str, int] = {}
+        try:
+            for r in self.api.store.query(
+                    "SELECT tag_id AS tid, COUNT(*) c FROM file_tags "
+                    "WHERE status='confirmed' GROUP BY tag_id"):
+                counts[str(r["tid"])] = int(r["c"])
+        except Exception:
+            pass
+        for r in self.api.store.query(
+                "SELECT id, name, note, color, x, y, collapsed FROM nodes WHERE kind='group' ORDER BY id"):
+            nodes.append({"id": f"g{r['id']}", "kind": "group", "raw_id": int(r["id"]),
+                          "name": r["name"], "zh": "", "note": r["note"] or "",
+                          "category": r["name"], "count": 0,
+                          "x": r["x"], "y": r["y"], "collapsed": int(r["collapsed"] or 0)})
+        for r in self.api.store.query(
+                "SELECT id, name, zh, category FROM tags ORDER BY id"):
+            cnt = counts.get(str(r["id"]), 0)
+            nodes.append({"id": f"t{r['id']}", "kind": "tag", "raw_id": int(r["id"]),
+                          "name": r["name"], "zh": r["zh"] or "", "note": "",
+                          "category": r["category"] or "other", "count": cnt,
+                          "x": None, "y": None, "collapsed": 0})
+        edges = []
+        try:
+            for r in self.api.store.query(
+                    "SELECT parent_kind, parent_id, child_kind, child_id, relation FROM taxonomy_edges"):
+                pre = "g" if str(r["parent_kind"]) in ("node", "group") else "t"
+                cre = "g" if str(r["child_kind"]) in ("node", "group") else "t"
+                edges.append({"from": f"{pre}{int(r['parent_id'])}",
+                              "to": f"{cre}{int(r['child_id'])}",
+                              "relation": r["relation"] or "is_a"})
+        except Exception:
+            pass
+        self._json({"ok": True, "nodes": nodes, "edges": edges,
+                    "heat_scale": [0, 1, 5, 20, 100, 400, 1000]})
 
     def _file_tags(self, body: dict) -> None:
         try:
