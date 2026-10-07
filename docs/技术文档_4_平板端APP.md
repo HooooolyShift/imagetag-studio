@@ -283,6 +283,29 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 
 ## 六、变更记录
 
+- 2026-10-07（晚·10）：**产出可安装物（PWA）+ 全功能口径答复**。
+  **① 打包形态：先 PWA（今晚已出），APK 外壳放明天**。理由（不是偷懒）：
+  · PWA 位数无关（跑在浏览器里），今天就能"加到主屏幕"用；产物 `webui/manifest.webmanifest` +
+    `webui/sw.js`（预缓存壳，`/api/*` 一律走网络绝不缓存）+ 4 个图标，构建脚本 `tools/make-pwa.py`
+    会重算 SW 版本并压出 `dist/imtag-tablet-pwa-<版本>.zip`；
+  · 但 **PWA 装不了 OTG 扫描**（浏览器读不到文件系统），而"插盘就能看图库树"是本端需求 2；
+  · 另外 PWA 的"安装"要求**安全上下文**（HTTPS 或 localhost）：局域网上 `http://192.168.x.x` 打开时
+    Chrome 不会给安装提示。所以真正面向平板的分发物仍是 **APK 外壳（arm64-v8a）**，明天做（M1）。
+  **② 64 位**：PWA 与位数无关；APK 版**必须含 `arm64-v8a`**（Google Play 已不收 32 位-only；
+  minSdk 26 / targetSdk 34；局域网 HTTP 需要 `usesCleartextTraffic=true`）。自检里会加一条 ABI 检查
+  （`aapt dump badging` 或查包内 `lib/arm64-v8a/`）。
+  **③ 全功能口径**：按 PC 端给的覆盖清单，**现在还不能算全功能**。已通的：发现/配对、图库列表、
+  缩略图（单张+打包）、原图 Range、标签词典、图谱、SSE 实时同步、审核队列/提交/撤销。
+  有接口未接界面：远程加/删标签（`POST /api/file_tags`，本端正在接）。
+  缺 PC 接口（本端按此优先级要）：**系列名与页数**（`/api/list` 现在只给 `series_id`，浏览体验最缺）→
+  **查重**（保留这张 / 判为系列 / 误判反馈三个按钮已想好）→ **自动打标** → **写回文件名** →
+  **目录操作/导入**。
+  **怎么装 / 怎么升级（PWA）**：① PC 上跑 `tools\\dev-server.cmd`（或以后 PC 端局域网服务里带静态托管）；
+  ② 平板 Chrome 打开该地址 → 菜单「添加到主屏幕 / 安装应用」；③ 升级＝在 PC 上跑
+  `python tools\\make-pwa.py` 重新生成 sw.js/zip（SW 版本变了，平板下次打开自动换新），
+  或直接把 `dist/imtag-tablet-pwa-<版本>.zip` 解到平板上由任意 HTTP 服务托管。
+  ⚠ 平板直接用 `http://<PC IP>:端口` 访问时是**非安全上下文**：能正常用，但装不上、SW 不生效；
+  要"像 App 一样装"，走明天的 APK，或以后给 PC 服务配 HTTPS。
 - 2026-10-07（晚·9）：**图谱间距按用户反馈收紧了，并且重叠真正归零**。
   用户指出"分类圆与标签还是重合；整体又偏散，适当缩小但别贴到看不见连线"。查下来有**两个根因**：
   ① **坐标约定不一致**：`placeGraph` 给的是环上的点，而节点画法/命中判定用"左上角 + size/2"，
