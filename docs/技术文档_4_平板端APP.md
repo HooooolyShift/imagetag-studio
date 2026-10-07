@@ -283,6 +283,21 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 
 ## 六、变更记录
 
+- 2026-10-07（晚·11）：**系列按 PC 同款呈现 + 内页浏览打通**（用户点名那条）。
+  · 客户端补上批次六的接口：`/api/library`、`/api/series`、`/api/series/detail`、
+  `series/create|reorder|rename|dissolve`、`/api/dupes` + `scan|resolve|not_dup|as_series`（统一走 `_post`，text/plain 免预检）。
+  · 库列表：**系列只算一条** —— 封面用第一页缩略图 + 系列名 + 「N 页」角标（点开才是内页），散图照常一条条列。
+  系列走 `/api/series`（**全库**系列，含子目录里的——根目录 `/api/library` 看不到子目录的系列），散图走 `/api/library?dir=`。
+  · 内页：`/api/series/detail?id=` → 按 `page_no` 铺网格，顶部一条「‹ 返回库 / 系列名 / N 页 · 按页码顺序」，
+  大图翻页直接用内页顺序。实测（明日方舟）：库列表 17 条（含 1 张系列卡，角标「33 页」）→ 点开 **33 页**、
+  缩略图 32/33 解码 → 点开大图 `1 / 33` → 返回库 17 条、系列条消失。截图 `shots/graph-pc/library-series.png`、`series-inside.png`。
+  · 实现中踩到并修掉两处：① `indexFromRecords` 复制记录时把 `kind/seriesId/pages` 丢了（系列被当普通图渲染）；
+  ② 内页我没走 `indexFromRecords` 规整，直接塞进索引 → `f.tags is not iterable`（`pcRecord` 给的是 `allTags`）。
+  另外 `_file_brief` 的 `tags` 是**字符串数组**、`/api/list` 是**对象数组**，两处都要兼容。
+  · 小提示（PC 数据侧）：该系列里 `033.jpg` 的 `page_no` 是 1、`001_2.jpg` 是 2 —— 像是这个系列还没跑过
+  `reorder`；本端按接口给的 `page_no` 如实显示，不自己猜。
+  · **下一步**：查重页（扫 + 保留这张 / 判为系列 / 误判反馈 + 进度走 SSE `dupes_progress`）、系列内页拖动排序回传 `reorder`。
+  另外目录树浏览还缺一个"列子目录"的接口（`/api/library` 要 `dir` 参数，本端目前只列根目录 + 全库系列）。
 - 2026-10-07（晚·10）：**产出可安装物（PWA）+ 全功能口径答复**。
   **① 打包形态：先 PWA（今晚已出），APK 外壳放明天**。理由（不是偷懒）：
   · PWA 位数无关（跑在浏览器里），今天就能"加到主屏幕"用；产物 `webui/manifest.webmanifest` +
