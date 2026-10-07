@@ -3,6 +3,18 @@
 
 let promptHelperPanel = null;
 
+// 客户端兜底清理：模型偶尔会吐 "bad tag / none / n/a" 这类占位词，服务端词表校验之外再扫一遍
+const PROMPT_HELPER_JUNK = ['bad tag', 'bad_tag', 'none', 'n/a', 'null', 'unknown', 'todo'];
+
+function promptHelperClean(text) {
+    if (!text) {
+        return text;
+    }
+    let parts = text.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    parts = parts.filter(p => !PROMPT_HELPER_JUNK.includes(p.toLowerCase()));
+    return parts.join(', ');
+}
+
 function promptHelperGetPromptInput() {
     return document.getElementById('input_prompt') || document.getElementById('alt_prompt_textbox');
 }
@@ -53,6 +65,7 @@ async function promptHelperRun(append) {
         if (data.error) {
             out.textContent = data.error;
         } else {
+            data.result = promptHelperClean(data.result);
             out.textContent = data.result;
             if (data.invented) {
                 out.textContent += `\n\n【词表外（已保留，可自行替换）】${data.invented}`;
