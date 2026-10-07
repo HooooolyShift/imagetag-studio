@@ -19,6 +19,8 @@
   POST /api/series/reorder              → 重排页序并重命名 {series_id, order:[ids]}
   POST /api/series/rename               → 改系列名（同时刷文件夹名）{series_id, name}
   POST /api/series/dissolve             → 拆开系列 {series_id}
+  POST /api/tag/run                     → 远程打标 {ids|all, kind:"autotag"|"rating"|"rescore"|"face"}
+  POST /api/writeback                   → 把标签写回文件名 {ids|all}
   GET  /api/dupes                       → 最近一次查重结果（重复图分组）
   POST /api/dupes/scan                  → 开始查重（后台跑，进度走 SSE）
   POST /api/dupes/resolve               → 保留一张、其余隔离/删除
@@ -49,6 +51,15 @@ API_PORT = 47824
 THUMB_RATING_ORDER = ("全年龄", "R15", "R18", "R18G")
 
 
+class _LanHttpServer(ThreadingHTTPServer):
+    """**必须关掉 allow_reuse_address**：Windows 上它允许第二个进程绑同一个端口（端口劫持），
+    那样「正式版 + 测试版」两份程序会抢 47824，移动端连哪一个全凭运气。
+    关掉之后第二个实例 bind 会失败，start() 就会顺延到 47825、47826…"""
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+
 def review_ver(tags, rating: str = "") -> str:
     """审核版本号：标签(名+状态) + 分级 的哈希。用来做乐观并发控制。
 
@@ -68,9 +79,10 @@ class LanApi:
     """局域网 HTTP 服务：随设备发现一起启动。"""
 
     def __init__(self, store, settings, code: str, name: str, version: str, port: int = API_PORT,
-                 is_trusted=None, require_pair: bool = True, library=None):
+                 is_trusted=None, require_pair: bool = True, library=None, hub=None):
         self.store = store
         self.library = library          # 审核转发要用 Library.finish_review
+        self.hub = hub                  # 远程打标要用的模型引擎（EngineHub）
         self.settings = settings
         self.code = code
         self.name = name
@@ -85,6 +97,7 @@ class LanApi:
         self._lock = threading.Lock()
         self._dupes: list = []            # 最近一次查重结果（内存缓存，供移动端取）
         self._dupes_scanning = False
+        self._tag_running = ""            # 正在跑的远程打标类型（空=没跑）
 
     # ---------- 生命周期 ----------
     def start(self) -> bool:
@@ -95,10 +108,19 @@ class LanApi:
         class Handler(_ApiHandler):
             server_api = api
 
-        try:
-            self._httpd = ThreadingHTTPServer(("0.0.0.0", self.port), Handler)
-        except Exception:
-            self._httpd = None
+        # 端口顺延：同一台机器上可能同时跑「正式版」和「测试版」两份程序，
+        # 谁先起来谁占 47824，后来者自动往后找（实际端口会写进 /api/ping 与设备发现广播，
+        # 移动端按发现里的 api 端口连，就不会连错人家）。
+        last_err = None
+        for port in range(int(self.port), int(self.port) + 20):
+            try:
+                self._httpd = _LanHttpServer(("0.0.0.0", port), Handler)
+                self.port = port
+                break
+            except Exception as exc:
+                last_err = exc
+                self._httpd = None
+        if self._httpd is None:
             return False
         # 长连接保活：移动端挂机/息屏也尽量别被中间设备掐断
         try:
@@ -139,9 +161,11 @@ class LanApi:
         with self._lock:
             return {d for d in self._client_devices.values() if d}
 
-    def bump(self, kind: str, **data) -> None:
+    def bump(self, event: str, **data) -> None:
         """数据有变化时喊一声，所有连着的移动端立刻知道。"""
-        msg = {"kind": kind, "at": time.time(), **data}
+        # 注意：参数名不能叫 kind —— 调用方经常要传 `kind=`（比如打标类型），
+        # 撞名会直接 TypeError（2026-10-07 就是这么把 /api/tag/run 打成 500 的）。
+        msg = {"kind": event, "at": time.time(), **data}
         with self._lock:
             for q in list(self._clients):
                 q.append(msg)
@@ -188,6 +212,17 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
     # ---------- 路由 ----------
     def do_GET(self) -> None:                   # noqa: N802
+        try:
+            self._route_get()
+        except Exception as exc:                # 别让异常把连接直接掐断：移动端会只看到
+            import traceback                 # "Remote end closed connection without response"
+            traceback.print_exc()
+            try:
+                self._json({"ok": False, "error": "internal", "detail": str(exc)}, 500)
+            except Exception:
+                pass
+
+    def _route_get(self) -> None:
         q = self._query()
         path = urlparse(self.path).path
         if path == "/api/ping":
@@ -238,6 +273,17 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "not_found"}, 404)
 
     def do_POST(self) -> None:                  # noqa: N802
+        try:
+            self._route_post()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            try:
+                self._json({"ok": False, "error": "internal", "detail": str(exc)}, 500)
+            except Exception:
+                pass
+
+    def _route_post(self) -> None:
         q = self._query()
         if not self._authed(q):
             self._deny()
@@ -271,6 +317,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._series_rename(body)
         elif path == "/api/series/dissolve":
             self._series_dissolve(body)
+        elif path == "/api/tag/run":
+            self._tag_run(body)
+        elif path == "/api/writeback":
+            self._writeback(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -721,6 +771,98 @@ class _ApiHandler(BaseHTTPRequestHandler):
         res = self.api.library.dissolve_series(sid, keep_in_place=bool(body.get("keep_in_place", True)))
         self.api.bump("series_changed", series_id=sid)
         self._json({"ok": bool(res.get("ok", True)), "result": res})
+
+    # ---------- 远程打标 / 写回文件名 ----------
+    def _tag_run(self, body: dict) -> None:
+        """在 PC 上跑打标（算力在 PC）：WD14 + CLIP + 分级，结果照旧进**待审核队列**。
+
+        body: {ids?: [..], all?: true, kind?: "autotag"|"rating"|"rescore"|"face"}
+        进度走 SSE：`tag_progress{text,frac}` → `tag_done{kind,ids,pending}` / `tag_failed{error}`
+        """
+        api = self.api
+        if api.library is None or api.hub is None:
+            self._json({"ok": False, "error": "tag_not_available",
+                        "hint": "PC 端没把模型引擎传进来（EngineHub）"}, 503)
+            return
+        if api._tag_running:
+            self._json({"ok": True, "started": False, "reason": "already_running",
+                        "kind": api._tag_running})
+            return
+        kind = str(body.get("kind") or "autotag")
+        if kind not in ("autotag", "rating", "rescore", "face"):
+            self._json({"ok": False, "error": "bad_kind"}, 400)
+            return
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if not ids and body.get("all"):
+            ids = [int(r["id"]) for r in api.store.query(
+                "SELECT id FROM files WHERE missing=0 ORDER BY id")]
+        if not ids:
+            self._json({"ok": False, "error": "no_files"}, 400)
+            return
+        s = api.settings
+        if kind in ("autotag", "rescore") and not (s.wd14_enabled or s.clip_enabled):
+            self._json({"ok": False, "error": "tagger_disabled",
+                        "hint": "WD14 与 CLIP 都没开"}, 400)
+            return
+        if kind == "rating" and not s.rating_enabled:
+            self._json({"ok": False, "error": "rating_disabled"}, 400)
+            return
+        api._tag_running = kind
+        api.bump("tag_started", mode=kind, count=len(ids))
+
+        def progress(text: str, frac: float = 0.0) -> None:
+            api.bump("tag_progress", mode=kind, text=text, frac=frac)
+
+        def job() -> None:
+            job_id = None
+            try:
+                job_id = api.library.start_job(f"lan-{kind}", ids, {}, note="平板遥控")
+                if kind in ("autotag",) and s.wd14_enabled:
+                    api.library.run_wd14(ids, api.hub, progress, lambda: False)
+                if kind in ("autotag", "rescore") and s.clip_enabled:
+                    api.library.ensure_clip_embeddings(ids, api.hub, progress, lambda: False)
+                    api.library.auto_tags_from_clip(api.hub, ids, progress, lambda: False)
+                if kind == "face":
+                    api.library.run_face(ids, api.hub, progress, lambda: False)
+                    api.library.cluster_faces(None, progress)
+                if kind in ("rating", "autotag") and s.rating_enabled:
+                    api.library.run_rating(ids, api.hub, progress, lambda: False)
+                try:
+                    api.library.finish_job(job_id, "done")
+                except Exception:
+                    pass
+                pend = api.store.pending_summary()
+                api.bump("tag_done", mode=kind, ids=ids,
+                         pending=pend.get("pending_tags"), pending_files=pend.get("pending_files"))
+            except Exception as exc:
+                try:
+                    if job_id:
+                        api.library.finish_job(job_id, "failed")
+                except Exception:
+                    pass
+                api.bump("tag_failed", mode=kind, error=str(exc))
+            finally:
+                api._tag_running = ""
+
+        threading.Thread(target=job, daemon=True, name="imtag-lan-tag").start()
+        self._json({"ok": True, "started": True, "kind": kind, "count": len(ids)})
+
+    def _writeback(self, body: dict) -> None:
+        """把标签写回文件名（和 PC 的「写回文件名」同一套规则：按设置里的中文名/分级/保留原名）。"""
+        api = self.api
+        if api.library is None:
+            self._json({"ok": False, "error": "not_available"}, 503)
+            return
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if not ids and body.get("all"):
+            ids = [int(r["id"]) for r in api.store.query(
+                "SELECT id FROM files WHERE missing=0 ORDER BY id")]
+        if not ids:
+            self._json({"ok": False, "error": "no_files"}, 400)
+            return
+        res = api.library.apply_disk_names(ids)
+        api.bump("tags_changed", file_ids=ids, reason="writeback")
+        self._json({"ok": True, "result": res})
     def _dupes_payload(self, groups) -> list:
         """把 library 的查重结果整理成移动端好用的结构（含缩略图边长与标签）。"""
         out = []

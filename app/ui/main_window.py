@@ -1226,8 +1226,15 @@ class MainWindow(QMainWindow):
                 from ..devices import LanService
                 from ..config import VERSION
                 import socket as _socket
-                name = (getattr(self.settings, "lan_device_name", "") or "").strip() \
+                base = (getattr(self.settings, "lan_device_name", "") or "").strip() \
                     or _socket.gethostname() or "PC"
+                # 同一台机器会同时跑「正式版」和「测试版」两份程序：设备名必须能区分，
+                # 否则移动端的设备列表里会出现两个同名项，用户根本分不清连的是哪一份。
+                try:
+                    from ..config import is_beta
+                    name = base + ("（测试版 Beta）" if is_beta() else "（正式版）")
+                except Exception:
+                    name = base
                 svc = LanService(name, role="pc",
                                  version=VERSION, parent=self,
                                  trusted=list(getattr(self.settings, "lan_trusted", []) or []))
@@ -1264,7 +1271,10 @@ class MainWindow(QMainWindow):
                              version=VERSION,
                              is_trusted=(svc.is_trusted if svc is not None else None),
                              require_pair=bool(getattr(self.settings, "lan_require_pair", True)),
-                             library=getattr(self, "library", None))
+                             library=getattr(self, "library", None),
+                             hub=getattr(self, "hub", None))
+                if svc is not None and api is not None:
+                    svc.api_port = api.port      # 端口顺延后要广播真实端口
                 if not api.start():
                     api = None
             except Exception:

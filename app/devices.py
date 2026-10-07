@@ -50,6 +50,7 @@ class LanService(QObject):
         self.role = role
         self.version = version
         self.pairing_code = f"{random.randint(0, 9999):04d}"
+        self.api_port = API_PORT        # 实际 API 端口（被占用时会在 47824 之后顺延，由 LanApi 回填）
         # 已授权设备：按 device_id 记（IP 会变，不能只认 IP）
         self.trusted: list[dict] = list(trusted or [])
         self._sock: socket.socket | None = None
@@ -155,7 +156,7 @@ class LanService(QObject):
     def self_info(self) -> dict:
         return {"app": APP_KEY, "role": self.role, "name": self.name,
                 "version": self.version, "ip": local_ip(), "port": self.port,
-                "api": API_PORT,
+                "api": int(self.api_port),
                 "code": self.pairing_code}
 
     # ---------- 内部 ----------
