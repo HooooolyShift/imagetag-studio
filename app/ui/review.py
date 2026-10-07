@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QVBoxLayout, QWidget,
 )
 
+from .. import tag_i18n
 from ..config import SOURCE_LABELS
 from .common import bind_category_filter, fill_tag_combo, label, load_pixmap, thumb_icon
 from .dialogs import ImageCanvas, TagEditDialog, category_combo
@@ -525,74 +526,25 @@ class ReviewDialog(QDialog):
         - 有子标签也在待审 → 父标签先不显示（省得同一件事判两遍）；
         - 通过子标签 = 同时通过它的祖先（白裙子成立就说明裙子/服装也成立）；
         - 否决子标签 → 父标签重新出现在列表里，单独judge（子不成立不代表父不成立）。
+
+        **词条从 `library.review_items()` 取**——PC 与平板端共用同一份计算，保证两边看到的完全一致。
         """
-        from .. import tag_i18n
         fid = int(self.queue[self.index]["id"]) if self.queue else None
-        rows = self.store.tags_for_file(fid, statuses=("pending",)) if fid else []
-        child_map = self.store.tag_child_map() if rows else {}
-        parent_map = self.store.tag_parent_map() if rows else {}
-        self._child_map, self._parent_map = child_map, parent_map
-        pending = [t for t in rows if t["name"] not in self.decisions]
-        # CLIP 与 WD14 可能对**同一件事**给出两个词条（典型是"中文标签 + 对应英文标签"，
-        # 例如某个中文名与它的英文原标签同时被提出来），审核时同一件事判两遍很别扭。
-        # 这里按"规范名"合并成一行：中文名归到对应英文标签；英文名按小写比对。
-        # 保留更可信的来源（manual > 系列/文件名 > wd14 > clip），分数取较大者。
-        try:
-            zh2name: dict[str, str] = {}
-            for t in self.store.list_tags():
-                z = str(t["zh"] or "").strip()
-                if z and z not in zh2name:
-                    zh2name[z] = str(t["name"])
-            order = {"manual": 0, "series": 1, "filename": 2, "filename_parent": 2,
-                     "face": 2, "wd14": 3, "clip": 4}
-            merged, seen = [], {}
-            for t in pending:
-                nm = str(t["name"])
-                key = str(zh2name.get(nm, nm)).lower()
-                prev = seen.get(key)
-                if prev is None:
-                    seen[key] = t
-                    merged.append(t)
-                    continue
-                # 同一件事出现两次：留来源更可信的那个，分数取大
-                if order.get(str(t["source"]), 9) < order.get(str(prev["source"]), 9):
-                    merged[merged.index(prev)] = t
-                    seen[key] = t
-                elif float(t["score"] or 0) > float(prev["score"] or 0):
-                    try:
-                        prev = dict(prev)
-                        prev["score"] = t["score"]
-                        merged[merged.index(seen[key])] = prev
-                        seen[key] = prev
-                    except Exception:
-                        pass
-            if len(merged) < len(pending):
-                self.title.setToolTip(f"已把 {len(pending) - len(merged)} 个重复词条（中英同义）合并显示")
-            pending = merged
-        except Exception:
-            pass
-        names = {t["name"] for t in pending}
-        hidden_by: dict[str, str] = {}
-        for t in pending:                                   # 父标签：有后代也在待审就先藏起来
-            stack, seen = list(child_map.get(t["name"], ())), set()
-            while stack:
-                child = stack.pop()
-                if child in seen:
-                    continue
-                seen.add(child)
-                if child in names:
-                    hidden_by[t["name"]] = child
-                    break
-                stack.extend(child_map.get(child, ()))
-        rows = [t for t in pending if t["name"] not in hidden_by]
-        self.pending_all = [t["name"] for t in pending]      # 含被藏起来的父标签，供"全部通过/否决"
-        self._hidden_by = hidden_by
+        items = self.library.review_items(fid, exclude=set(self.decisions)) if fid else {
+            "visible": [], "pending_all": [], "hidden_by": {}, "merged_out": 0}
+        self._child_map = self.store.tag_child_map() if fid else {}
+        self._parent_map = self.store.tag_parent_map() if fid else {}
+        rows = items["visible"]                 # 已经在 review_items 里排除过本地判断
+        self.pending_all = items["pending_all"]
+        self._hidden_by = items["hidden_by"]
+        if items.get("merged_out"):
+            self.title.setToolTip(f"已把 {items['merged_out']} 个重复词条（中英同义）合并显示")
         self.table.setRowCount(0)
         self.cards.clear()
         self.pending_names = [t["name"] for t in rows]
         for i, t in enumerate(rows):
             name = t["name"]
-            zh_hint = self.library.tag_zh(name)
+            zh_hint = t.get("zh") or self.library.tag_zh(name)
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(4, 2, 4, 2)
@@ -623,8 +575,8 @@ class ReviewDialog(QDialog):
             self.table.setCellWidget(i, 0, row)
             self.table.setRowHeight(i, 30)
         extra = ""
-        if hidden_by:
-            pairs = list(hidden_by.items())[:3]
+        if self._hidden_by:
+            pairs = list(self._hidden_by.items())[:3]
             extra = "　（" + "、".join(f"{p} 随 {c} 一起判" for p, c in pairs) + "）"
         self.status.setText(f"第 {self.index + 1}/{len(self.queue)} 张 · 待审 {len(rows)} 个标签"
                             + extra
@@ -1091,6 +1043,9 @@ class ReviewDialog(QDialog):
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
+        if key == Qt.Key_Z and (event.modifiers() & Qt.ControlModifier):
+            self.undo_review()                      # Ctrl+Z 撤销上一次审核
+            return
         if key == Qt.Key_A:
             self.accept_all()
         elif key == Qt.Key_R:

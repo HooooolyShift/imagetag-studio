@@ -178,6 +178,11 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._roots()
         elif path == "/api/review/queue":
             self._review_queue(q)
+        elif path == "/api/review/undo_state":
+            fid = q.get("file_id")
+            n = (self.api.library.review_undo_count(int(fid) if str(fid or "").isdigit() else None)
+                 if self.api.library is not None else 0)
+            self._json({"ok": True, "count": n})
         elif path == "/api/list":
             self._list(q)
         elif path == "/api/thumb":
@@ -211,6 +216,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._file_tags(body)
         elif path == "/api/review/apply":
             self._review_apply(body)
+        elif path == "/api/review/undo":
+            self._review_undo(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -528,6 +535,22 @@ class _ApiHandler(BaseHTTPRequestHandler):
             return
         self.api.bump("review_applied", file_id=fid, confirmed=conf, rejected=rej, dropped=drop)
         self._json({"ok": True, "result": res})
+
+    def _review_undo(self, body: dict) -> None:
+        """撤销最近一次审核（平板端的「撤销」按钮）：还原标签行/分级/已审标记并重算探针。"""
+        if self.api.library is None:
+            self._json({"ok": False, "error": "review_not_available"}, 503)
+            return
+        fid = body.get("file_id")
+        try:
+            fid = int(fid) if fid not in (None, "", 0) else None
+        except Exception:
+            fid = None
+        res = self.api.library.undo_last_review(fid)
+        if res.get("ok"):
+            self.api.bump("review_undone", file_id=res.get("file"))
+            res["remaining"] = self.api.library.review_undo_count(fid)
+        self._json(res, 200 if res.get("ok") else 404)
 
     def _events(self) -> None:
         """SSE：移动端连上后，tag/库有变化就会收到一行 JSON。"""

@@ -121,6 +121,20 @@ JOBS = [
      "character on the left",
      "shoulder straps, halterneck, skirt, solo, 1girl, sleeves, "
      "fishnet, fishnet stockings, netting"),
+    # 08 = 07 的"防克隆"重做版（2026-10-07 用户反馈 07-a/07-b 出现克隆人）：
+    #   · 去掉"背景照片墙"——那些相框里画的是同一个角色，看起来就是一堆克隆人；
+    #   · 两个角色分别明确锚定（水色双马尾 vs 红色钻头双马尾），并给 2girls 加权重；
+    #   · 负向明确压 3girls/4girls/多出来的女孩/克隆/双胞胎/相框里的人像。
+    ("duo_bunny2",
+     "2girls, (hatsune miku:1.1), (kasane teto:1.1), aqua twintails, very long hair, "
+     "red drill twintails, ahoge, bunny girl, black leotard, (high-cut leotard:1.2), "
+     "patent leather leotard, strapless, bare shoulders, rabbit ears, rabbit tail, "
+     "bow tie, black thighhighs, standing side by side, shoulder to shoulder, "
+     "holding hands, interlocked fingers, looking at viewer, upper body, medium shot, "
+     "plain white studio backdrop, even lighting, character pair on the left half of the image",
+     "solo, 1girl, 3girls, 4girls, multiple girls, extra girls, extra person, clone, "
+     "duplicated, twins, crowd, photo, framed picture, picture frame, portrait, "
+     "mirror, reflection, shoulder straps, halterneck, skirt, fishnet"),
 ]
 
 

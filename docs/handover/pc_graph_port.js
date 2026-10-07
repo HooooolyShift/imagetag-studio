@@ -40,8 +40,9 @@
   const SPRING = { limit: 240.0, damp: 0.35, animMs: 340 };
   const EDGE_W = { is_a: 1.6, sub_of: 2.0, parallel: 1.8 };
   const ARROW = { size: 10.0, spread: 0.42 };
-  const LAYOUT = { tagR0: 150.0, tagRingStep: 110.0, tagSpacing: 62.0,
-                   groupFallbackR: 900.0, ringRadius: 900.0 };
+  // tagSpacing 必须 ≥ 节点直径(68) + 间隙，否则同圈节点会互相压住
+  const LAYOUT = { tagR0: 260.0, tagRingStep: 120.0, tagSpacing: 96.0,
+                   groupRadius: 900.0, sectorPad: 0.07, minSector: 0.24 };
 
   // ===== 2. 颜色工具（按 PC 的 darker/lighter 语义实现）=====
   function hex2rgb(h) {
@@ -81,44 +82,59 @@
     return pts[pts.length - 1][1];
   }
 
-  // ===== 3. 径向布局（与 app/graph_layout.py 一致；离线档可用）=====
+  // ===== 3. 扇形分区布局（与 app/graph_layout.py 完全一致；离线档就用它）=====
+  // 关键点：① 每个分类按"标签数"分到一块扇形角度；② 标签只允许摆在自己扇区里
+  // → 不同分类的簇永远不会互相压（旧版按圆圈铺，实测 8000+ 对重叠）。
   function placeGraph(groups, tags) {
     const pos = new Map();
-    const missing = [];
-    groups.forEach(g => {
-      if (g.x === null || g.x === undefined || g.y === null || g.y === undefined) missing.push(g);
-      else pos.set(g.id, [g.x, g.y]);
-    });
-    missing.forEach((g, i) => {
-      const a = -Math.PI / 2 + 2 * Math.PI * i / Math.max(1, missing.length);
-      pos.set(g.id, [LAYOUT.groupFallbackR * Math.cos(a), LAYOUT.groupFallbackR * Math.sin(a)]);
-    });
-    const buckets = new Map(), orphans = [];
+    const buckets = new Map(); groups.forEach(g => buckets.set(g.id, []));
+    const orphans = [];
     tags.forEach(t => {
-      const p = (t.parents || []).find(x => pos.has(x));
-      if (p) { if (!buckets.has(p)) buckets.set(p, []); buckets.get(p).push(t); }
-      else orphans.push(t);
+      const p = (t.parents || []).find(x => buckets.has(x));
+      if (p) buckets.get(p).push(t); else orphans.push(t);
     });
-    const ringPlace = (items, cx, cy, r0, step) => {
+    const entries = [...buckets.entries()];
+    if (orphans.length) entries.push(["__orphan__", orphans]);
+    const weights = entries.map(([, items]) => Math.max(1, items.length));
+    const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+    let spans = weights.map(w => Math.max(LAYOUT.minSector, 2 * Math.PI * w / totalW));
+    const over = spans.reduce((a, b) => a + b, 0) - 2 * Math.PI;
+    if (over > 0) {                       // 保底角度超了 → 从富余的扇区里按比例扣回
+      const room = spans.map(s => Math.max(0, s - LAYOUT.minSector));
+      const roomSum = room.reduce((a, b) => a + b, 0) || 1;
+      spans = spans.map((s, i) => s - over * (room[i] / roomSum));
+    }
+    const byCount = (a, b) => (b.count || 0) - (a.count || 0) || String(a.id).localeCompare(String(b.id));
+    const sectorPlace = (items, a0, a1, rBase) => {
+      const span = Math.max(1e-3, a1 - a0);
       let i = 0, ring = 0;
       while (i < items.length) {
-        const r = r0 + ring * step;
-        const cap = Math.max(6, Math.floor(2 * Math.PI * r / LAYOUT.tagSpacing));
+        const r = rBase + ring * LAYOUT.tagRingStep;
+        const cap = Math.max(1, Math.floor(span * r / LAYOUT.tagSpacing));
         const chunk = items.slice(i, i + cap);
         chunk.forEach((it, k) => {
-          const a = -Math.PI / 2 + 2 * Math.PI * k / Math.max(1, chunk.length);
-          pos.set(it.id, [cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+          const a = a0 + span * (k + 0.5) / Math.max(1, chunk.length);
+          pos.set(it.id, [r * Math.cos(a), r * Math.sin(a)]);
         });
         i += cap; ring++;
       }
     };
-    const byCount = (a, b) => (b.count || 0) - (a.count || 0) || String(a.id).localeCompare(String(b.id));
-    buckets.forEach((items, gid) => {
-      const [cx, cy] = pos.get(gid);
-      ringPlace(items.slice().sort(byCount), cx, cy, LAYOUT.tagR0, LAYOUT.tagRingStep);
+    let ang = -Math.PI / 2;
+    entries.forEach(([gid, items], idx) => {
+      const span = spans[idx];
+      const a0 = ang + LAYOUT.sectorPad, a1 = ang + span - LAYOUT.sectorPad;
+      const mid = (a0 + a1) / 2;
+      const sorted = items.slice().sort(byCount);
+      if (gid === "__orphan__") {
+        sectorPlace(sorted, a0, a1, LAYOUT.groupRadius + 700);
+      } else {
+        const baseR = Math.max(LAYOUT.tagR0, LAYOUT.groupRadius - 1.5 * LAYOUT.tagRingStep);
+        const rGroup = Math.max(120, baseR - LAYOUT.tagRingStep);
+        pos.set(gid, [rGroup * Math.cos(mid), rGroup * Math.sin(mid)]);
+        sectorPlace(sorted, a0, a1, baseR);
+      }
+      ang += span;
     });
-    if (orphans.length) ringPlace(orphans.slice().sort(byCount), 0, 0,
-                                  LAYOUT.groupFallbackR + 700, 120);
     return pos;
   }
 
@@ -300,6 +316,31 @@
     }
     setHeat(on) { this.heat = !!on; this.draw(); }
 
+    // ---- 分区（扇形）背景：PC 的 drawBackground 里每个大类一块扇形 + 边界线 ----
+    _sectors() {
+      const groups = this.nodes.filter(n => n.kind === "group");
+      if (!groups.length) return [];
+      const out = [];
+      groups.forEach(g => {
+        const items = this.nodes.filter(n => n.kind === "tag" && (n.parents || []).includes(g.id));
+        const cx = g.x + SIZES.group / 2, cy = g.y + SIZES.group / 2;
+        let rmax = SIZES.group;
+        items.forEach(t => {
+          const tcx = t.x + t.size / 2, tcy = t.y + t.size / 2;
+          rmax = Math.max(rmax, Math.hypot(tcx, tcy) + t.size);
+        });
+        // 角度范围：取分类中心和它所有标签相对"全局原点"的夹角，两端各留 6°
+        const angs = [Math.atan2(cy, cx), ...items.map(t => Math.atan2(t.y + t.size / 2, t.x + t.size / 2))];
+        angs.sort((a, b) => a - b);
+        let a0 = angs[0] - 0.10, a1 = angs[angs.length - 1] + 0.10;
+        // 跨越 -π/π 时（角度跳变）就整圈，避免画出反方向的怪扇形
+        if (a1 - a0 > Math.PI * 2) { a0 = -Math.PI; a1 = Math.PI; }
+        out.push({ id: g.id, a0, a1, r: rmax + 40, family: g.family, name: this._labelOf(g) });
+      });
+      return out;
+    }
+    _labelOf(n) { return (n.zh && n.zh.length) ? n.zh : n.name; }
+
     // ---- 画 ----
     draw() {
       const cv = this.cv, ctx = this.ctx, dpr = this.dpr;
@@ -315,6 +356,28 @@
       const showText = this.zoom >= ZOOM.textAt;
       const showEdges = this.zoom >= ZOOM.edgeAt;
       const tiny = this.zoom < ZOOM.tinyAt;
+      // 分区背景（在连线与节点之前画）：每个大类一块扇形 + 边界线 + 大类名
+      if (!tiny) {
+        this._sectors().forEach(s => {
+          const base = hex2rgb(FAMILY_COLORS[Math.abs(s.family) % FAMILY_COLORS.length]);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.arc(0, 0, s.r, s.a0, s.a1);
+          ctx.closePath();
+          ctx.fillStyle = rgba(base, this.heat ? 0.035 : 0.075);
+          ctx.fill();
+          ctx.strokeStyle = rgba(base, 0.34);
+          ctx.lineWidth = 1.4 / Math.max(0.6, this.zoom);   // 缩放时线宽保持视觉一致
+          ctx.stroke();
+          if (showText) {                                    // 扇形外缘写大类名
+            const mid = (s.a0 + s.a1) / 2;
+            ctx.font = `${12 * 1.333 / Math.max(0.7, this.zoom)}px "Microsoft YaHei",sans-serif`;
+            ctx.fillStyle = rgb(lighter(base, 165));
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText(s.name, Math.cos(mid) * (s.r + 18), Math.sin(mid) * (s.r + 18));
+          }
+        });
+      }
       // 边（先画，压在节点下面）
       if (showEdges) {
         this.edges.forEach(e => {

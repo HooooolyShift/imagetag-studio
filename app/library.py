@@ -272,6 +272,82 @@ class Library:
     def pending_summary(self) -> dict:
         return self.store.pending_summary()
 
+    def review_items(self, file_id: int, exclude=None) -> dict:
+        """审核台要显示的词条（**PC 与移动端共用这一份**，保证两边完全一致）。
+
+        规则（和审核台原来的内联逻辑一样）：
+          1. 只取 status='pending' 的标签；
+          2. 中英同义合并：中文名归到对应英文标签；同组保留来源更可信的
+             （manual > series/filename/face > wd14 > clip），分数取较大值；
+          3. 父子联动：某父标签**还有后代也在待审**时，先把父藏起来（避免同一件事判两遍），
+             被藏起来的父放进 `pending_all`，供"全部通过/全部否决"用。
+
+        返回：{visible:[{name,zh,source,score}], pending_all:[names], hidden_by:{父:子}, merged_out:int}
+        """
+        rows = self.store.tags_for_file(int(file_id), statuses=("pending",)) if file_id else []
+        if rows and exclude:
+            # 界面上"本地已判过但还没写库"的那些要先排除——否则父标签会一直被它们挡住，
+            # 出现"拒了子标签，父标签却不回到列表"的问题（reviewtagcheck 的 [3] 就是这条）。
+            skip = {str(x) for x in exclude}
+            rows = [t for t in rows if str(t["name"]) not in skip]
+        if not rows:
+            return {"visible": [], "pending_all": [], "hidden_by": {}, "merged_out": 0}
+        child_map = self.store.tag_child_map()
+        pending = list(rows)
+        merged_out = 0
+        # 2) 中英同义合并
+        try:
+            zh2name: dict[str, str] = {}
+            for t in self.store.list_tags():
+                z = str(t["zh"] or "").strip()
+                if z and z not in zh2name:
+                    zh2name[z] = str(t["name"])
+            order = {"manual": 0, "series": 1, "filename": 2, "filename_parent": 2,
+                     "face": 2, "wd14": 3, "clip": 4}
+            merged, seen = [], {}
+            for t in pending:
+                nm = str(t["name"])
+                key = str(zh2name.get(nm, nm)).lower()
+                prev = seen.get(key)
+                if prev is None:
+                    seen[key] = t
+                    merged.append(t)
+                    continue
+                if order.get(str(t["source"]), 9) < order.get(str(prev["source"]), 9):
+                    merged[merged.index(prev)] = t
+                    seen[key] = t
+                elif float(t["score"] or 0) > float(prev["score"] or 0):
+                    try:
+                        fixed = dict(prev)
+                        fixed["score"] = t["score"]
+                        merged[merged.index(seen[key])] = fixed
+                        seen[key] = fixed
+                    except Exception:
+                        pass
+            merged_out = max(0, len(pending) - len(merged))
+            pending = merged
+        except Exception:
+            pass
+        # 3) 父标签有后代待审 → 先藏起来
+        names = {str(t["name"]) for t in pending}
+        hidden_by: dict[str, str] = {}
+        for t in pending:
+            stack, seen_ids = list(child_map.get(str(t["name"]), ())), set()
+            while stack:
+                child = stack.pop()
+                if child in seen_ids:
+                    continue
+                seen_ids.add(child)
+                if child in names:
+                    hidden_by[str(t["name"])] = child
+                    break
+                stack.extend(child_map.get(child, ()))
+        visible = [{"name": str(t["name"]), "zh": self.tag_zh(str(t["name"])),
+                    "source": str(t["source"]), "score": float(t["score"] or 0)}
+                   for t in pending if str(t["name"]) not in hidden_by]
+        return {"visible": visible, "pending_all": [str(t["name"]) for t in pending],
+                "hidden_by": hidden_by, "merged_out": merged_out}
+
     def review_file(self, file_id: int, decisions: dict) -> dict:
         """提交一张图的审核结果。decisions: {标签名: 'confirmed' | 'rejected' | 'delete'}"""
         snap = self._snapshot_for_undo(file_id)
