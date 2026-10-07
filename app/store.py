@@ -679,7 +679,10 @@ class Store:
             "FROM files f WHERE f.missing=0 AND ("
             "  EXISTS(SELECT 1 FROM file_tags ft WHERE ft.file_id=f.id AND ft.status='pending')"
             "  OR f.rating IS NULL OR f.rating='') "
-            "ORDER BY no_rating DESC, n_pending DESC, f.rel LIMIT ?", (limit,))
+            # 排序：**待审标签多的排最前**（审核台文档里就是这么写的），
+            # 没定级的兜底项排在后面——以前是 no_rating DESC 优先，结果 29 张未定级
+            # 的图会把"有几十条待审标签"的图挤到队列很后面（移动端联调时踩到）。
+            "ORDER BY n_pending DESC, no_rating DESC, f.rel LIMIT ?", (limit,))
 
     def pending_summary(self) -> dict:
         row = self.one("SELECT COUNT(*) c, COUNT(DISTINCT file_id) f FROM file_tags WHERE status='pending'")

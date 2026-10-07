@@ -54,8 +54,8 @@ async function promptHelperRun(append) {
             out.textContent = data.error;
         } else {
             out.textContent = data.result;
-            if (data.dropped) {
-                out.textContent += `\n\n【已丢弃（不在 danbooru 词表里）】${data.dropped}`;
+            if (data.invented) {
+                out.textContent += `\n\n【词表外（已保留，可自行替换）】${data.invented}`;
             }
             if (append) {
                 promptHelperAppend(data.result);

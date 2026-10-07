@@ -25,7 +25,11 @@ public class PromptHelperExtension : Extension
         + "detailed background、soft lighting 之类）；角色若为知名角色直接用角色 tag（hatsune miku / kasane teto）；"
         + "4) 用户没说的不要乱加，但可补少量合理画质词：masterpiece, best quality, very aesthetic, absurdres；"
         + "5) 输出控制在 60 个 tag 以内；"
-        + "6) **必须是 danbooru 上真实存在的常见 tag**，不要自己造词、不要写自然语言句子。";
+        + "6) **优先用 danbooru 上真实存在的常见 tag**（宁可换个更常见的说法，也别拼短语/造词）；"
+        + "7) 光线下写 lighting 类 tag（soft lighting / cinematic lighting），视角写 from side / from above，"
+        + "表情写 smiling / open mouth，视线写 looking at viewer / looking away，别写成句子；"
+        + "8) 绝对不要输出 bad tag、none、N/A 这类占位词；"
+        + "9) 实在想不到对应 tag，再用最接近的简短英文描述。";
 
     public static string NegativeSystem =
         "你是 Stable Diffusion 负向提示词助手。根据用户要画的内容，给出简短的英文负向 tag 串（英文逗号+空格分隔，20 个以内），"
@@ -88,20 +92,19 @@ public class PromptHelperExtension : Extension
             {
                 return new JObject() { ["error"] = "本地模型没有返回内容（Ollama 是否在运行？）" };
             }
-            // 用 danbooru 词表校验：只保留词表里真实存在的 tag，模型自己编的会被丢掉并回报
-            (string clean, List<string> dropped) = BooruDictionary.Validate(content);
+            // 用 danbooru 词表校验：能对上的一律换成词表规范写法；对不上的保留但标记出来
+            (string clean, List<string> invented) = BooruDictionary.Validate(content);
             if (string.IsNullOrWhiteSpace(clean))
             {
                 return new JObject()
                 {
-                    ["error"] = "生成的 tag 一个都不在 danbooru 词表里，请把描述写得更具体一点。",
-                    ["dropped"] = string.Join(", ", dropped)
+                    ["error"] = "没能生成有效 tag，请把描述写得更具体一点。"
                 };
             }
             return new JObject()
             {
                 ["result"] = clean,
-                ["dropped"] = dropped.Count == 0 ? "" : string.Join(", ", dropped)
+                ["invented"] = invented.Count == 0 ? "" : string.Join(", ", invented)
             };
         }
         catch (Exception ex)

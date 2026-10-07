@@ -266,3 +266,31 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   参数标签 592/684 中文（剩下的多是 ReVision / IP-Adapter 这类专有名词）。
 - 截图（简易页）：`.verify_pics\swarm_ui.png`；界面为中文，右下角有"提示词助手"面板。
 
+### 8.5 提示词必须落在 danbooru 词表里（2026-10-07 用户要求）
+
+用户明确：**"自然语言生成提示词要优先输出 danbooru 里有的，而不是自己捏造；能匹配上就必须用匹配的，
+实在匹配不到才允许自造"**。做法（`BooruDictionary.cs`）：
+
+1. 词典来源（全部合并，实测 **233,796 个 tag / 143,087 个别名**）：
+   - 项目词表 `app\booru_zh\*.csv`（带中文名与别名 → 中文能直接命中）；
+   - **按模型分的官方/社区 tag 表**（`E:\SwarmUI\Data\Autocompletions\`）：
+     `NoobAIXL1.1_underscore.csv`（141,801）、`illustriousV1.0_underscore.csv`（93,907）、
+     `anima-1.0.csv`（108,256）、`anima-2.9B-preview-V1.csv`，
+     来自 <https://github.com/BetaDoggo/danbooru-tag-list/releases>（就是各模型训练时用的 tag 全集）。
+2. 逐条校验：先去权重括号、统一下划线/空格、转小写；命中词表 → **换成词表里的规范写法**；
+   命中别名/中文名 → 换成对应规范 tag；对不上 → 保留原样并在结果里单独列出"词表外"。
+3. 占位/废话词（bad tag / none / n/a…）直接丢弃；`masterpiece / best quality / absurdres` 这类
+   非 danbooru 但画图要用的质量词走白名单保留。
+4. 实测：一句中文 → `1girl, hatsune miku, smile, looking at viewer, upper body, holding photo,
+   detailed background, soft lighting, absurdres, very aesthetic`（词表外的会单独列出，方便手动替换）。
+
+### 8.6 Anima 模型（2026-10-07 新增，用户要求）
+
+- 用户提到的"anima"= **Anima（CircleStone Labs × Comfy Org 合作，2B 参数，专精二次元）**，
+  本地原先没有（只有 Animagine XL 4.0）→ 已下载：
+  - `models\diffusion_models\anima-aesthetic-v1.1.safetensors`（3.9 GB）
+  - `models\text_encoders\qwen_3_06b_base.safetensors`（1.14 GB）
+  - `models\vae\qwen_image_vae.safetensors`（242 MB）
+  下载脚本 `tools\fetch_anima.py`（走 hf-mirror；urllib 的 308 重定向已在 `fetch_model.py` 里补上）。
+- 官方用法：ComfyUI 原生支持；turbo 版 CFG 1 / 8-12 步，常规版 30-50 步、CFG 4-5。
+

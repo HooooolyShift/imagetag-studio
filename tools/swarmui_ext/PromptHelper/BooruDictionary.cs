@@ -13,7 +13,9 @@ public static class BooruDictionary
     public static string ProjectDictDir = @"E:\文档\ChatGPT\图片标签分类\app\booru_zh";
 
     /// <summary>备用词表（只有英文 tag）。</summary>
-    public static string FallbackCsv = @"E:\SwarmUI\Data\Autocompletions\danbooru_zh.csv";
+    /// <summary>各模型的 danbooru tag 表目录（BetaDoggo/danbooru-tag-list 的
+    /// NoobAIXL1.1 / illustriousV1.0 / anima-1.0 等，列格式 tag,category,count,"alias1,alias2"）。</summary>
+    public static string ModelTagDir = @"E:\SwarmUI\Data\Autocompletions";
 
     /// <summary>规范化后的 tag → 规范写法（下划线形式）。</summary>
     public static Dictionary<string, string> ByName = new();
@@ -29,6 +31,12 @@ public static class BooruDictionary
     {
         "masterpiece", "best quality", "very aesthetic", "absurdres", "highres", "high quality",
         "newest", "year 2024", "year 2025", "official art", "detailed background", "depth of field"
+    };
+
+    /// <summary>明明是废话/占位的，直接丢掉。</summary>
+    public static readonly HashSet<string> Junk = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bad tag", "tag", "unknown", "none", "n/a", "na", "null", "todo", "description"
     };
 
     private static readonly object LoadLock = new();
@@ -58,9 +66,12 @@ public static class BooruDictionary
                         LoadProjectCsv(path);
                     }
                 }
-                if (ByName.Count == 0 && File.Exists(FallbackCsv))
+                if (Directory.Exists(ModelTagDir))
                 {
-                    LoadSimpleCsv(FallbackCsv);
+                    foreach (string csv in Directory.EnumerateFiles(ModelTagDir, "*.csv"))
+                    {
+                        LoadModelTagCsv(csv);
+                    }
                 }
             }
             catch (Exception ex)
@@ -126,27 +137,39 @@ public static class BooruDictionary
         return null;
     }
 
-    /// <summary>把模型给出的一整串提示词逐条校验，只保留词表里有的；返回（干净的串, 被丢掉的列表）。</summary>
-    public static (string Clean, List<string> Dropped) Validate(string tagString)
+    /// <summary>把模型给出的一整串提示词逐条校验：
+    /// **能对上词表的一律换成词表里的规范写法**；对不上的（词表里没有的）按用户要求**保留原样**，
+    /// 但单独列出来提示"词表外"。返回（最终串, 词表外的那些）。</summary>
+    public static (string Clean, List<string> Invented) Validate(string tagString)
     {
         List<string> kept = [];
-        List<string> dropped = [];
+        List<string> invented = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         foreach (string raw in tagString.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            string resolved = Resolve(raw);
-            if (resolved is null)
+            if (Junk.Contains(Normalize(raw)))
             {
-                dropped.Add(raw.Trim());
                 continue;
             }
-            string display = resolved.Replace('_', ' ');
+            string resolved = Resolve(raw);
+            string display;
+            if (resolved is null)
+            {
+                string normalized = Normalize(raw);
+                // 不做"拆单词"处理：拆出来的碎片（cold / wall / camera）反而更差，整条保留并标记即可
+                display = normalized.Replace('_', ' ');
+                invented.Add(display);
+            }
+            else
+            {
+                display = resolved.Replace('_', ' ');
+            }
             if (seen.Add(display))
             {
                 kept.Add(display);
             }
         }
-        return (string.Join(", ", kept), dropped);
+        return (string.Join(", ", kept), invented);
     }
 
     private static void LoadProjectCsv(string path)
@@ -188,23 +211,43 @@ public static class BooruDictionary
         }
     }
 
-    private static void LoadSimpleCsv(string path)
+    /// <summary>读各模型的 tag 表：tag,category,count,"alias1,alias2"（count 用于比大小）。</summary>
+    private static void LoadModelTagCsv(string path)
     {
         foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
         {
-            string[] parts = line.Split(',');
-            if (parts.Length == 0)
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+            string[] parts = SplitCsv(line);
+            if (parts.Length < 3)
             {
                 continue;
             }
             string tag = parts[0].Trim();
-            if (tag.Length == 0)
+            if (tag.Length == 0 || tag.Equals("tag", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
             string key = tag.ToLowerInvariant().Replace(' ', '_');
-            ByName[key] = key;
-            Counts[key] = parts.Length > 2 && long.TryParse(parts[2].Trim(), out long c) ? c : 0;
+            long count = long.TryParse(parts[2].Trim(), out long c) ? c : 0;
+            if (!ByName.ContainsKey(key))
+            {
+                ByName[key] = key;
+            }
+            Counts[key] = Math.Max(GetCount(key), count);
+            if (parts.Length > 3)
+            {
+                foreach (string alias in parts[3].Split([',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    string aliasKey = alias.ToLowerInvariant().Replace(' ', '_');
+                    if (aliasKey.Length > 1 && (!ByAlias.TryGetValue(aliasKey, out string old) || GetCount(key) >= GetCount(old)))
+                    {
+                        ByAlias[aliasKey] = key;
+                    }
+                }
+            }
         }
     }
 
