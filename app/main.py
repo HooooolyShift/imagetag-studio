@@ -40,17 +40,22 @@ def main() -> int:
 
     from . import models as model_lib
     from . import perf
-    from .config import APP_NAME, Settings, VERSION, data_dir, project_root
+    from .config import APP_NAME, Settings, VERSION, data_dir, is_beta, project_root
     from .store import Store
     from .ui.common import STYLE
     from .ui.dialogs import ModelsDialog
     from .ui.main_window import MainWindow
 
     app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationDisplayName(f"{APP_NAME} {VERSION}")
+    BETA = is_beta()
+    DISPLAY_NAME = f"{APP_NAME} Beta" if BETA else APP_NAME
+    app.setApplicationName(DISPLAY_NAME)
+    app.setApplicationDisplayName(f"{DISPLAY_NAME} {VERSION}")
     app.setStyleSheet(STYLE)
-    for ico in (project_root() / "assets" / "icon.ico", project_root() / "assets" / "icon.png"):
+    # 测试版（程序目录有 beta.flag）：图标用带 BETA 角标的，桌面/任务栏一眼能区分
+    icon_names = ("icon_beta.ico", "icon_beta.png") if BETA else ("icon.ico", "icon.png")
+    for name in icon_names:
+        ico = project_root() / "assets" / name
         if ico.exists():
             app.setWindowIcon(QIcon(str(ico)))
             break
@@ -72,7 +77,7 @@ def main() -> int:
     if getattr(settings, "splash_enabled", True):
         try:
             from .ui.splash import AppSplash
-            splash = AppSplash(settings, APP_NAME, VERSION, "正在准备运行环境…", 1, SPLASH_STEPS)
+            splash = AppSplash(settings, DISPLAY_NAME, VERSION, "正在准备运行环境…", 1, SPLASH_STEPS)
             splash.show()
             QApplication.processEvents()
         except Exception:
@@ -82,7 +87,7 @@ def main() -> int:
     splash_step(2, "正在加载模型与性能挡位…")
     from . import singleton
     if not singleton.acquire(data_dir()):
-        QMessageBox.warning(None, f"{APP_NAME} 已在运行",
+        QMessageBox.warning(None, f"{DISPLAY_NAME} 已在运行",
                             "检测到已经有一个「图片标签工坊」在运行。\n\n"
                             "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
         return 1
@@ -151,7 +156,7 @@ def main() -> int:
                                               project_root() / "assets" / "icon.png") if p.exists()),
                     win.windowIcon())
         tray = QSystemTrayIcon(icon, win)
-        tray.setToolTip(f"{APP_NAME} {VERSION}（在后台运行）")
+        tray.setToolTip(f"{DISPLAY_NAME} {VERSION}（在后台运行）")
         menu = QMenu()
         a_show = menu.addAction("显示主窗口")
         a_show.triggered.connect(lambda: (win.showNormal(), win.raise_(), win.activateWindow()))

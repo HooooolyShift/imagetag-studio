@@ -92,9 +92,23 @@ def project_root() -> Path:
 def data_dir() -> Path:
     """用户数据目录：数据库、缩略图缓存、日志。"""
     env = os.environ.get("IMGTAG_DATA")
-    base = Path(env) if env else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / APP_ID
+    if env:
+        base = Path(env)
+    else:
+        # 便携模式：程序目录下存在 data/ 就用它（这样同一台机器上可以有互相隔离的
+        # 正式版 / 测试版：各用自己的库和设置，互不干扰；都没有才落到 LOCALAPPDATA）。
+        portable = project_root() / "data"
+        base = portable if portable.is_dir() else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / APP_ID
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def is_beta() -> bool:
+    """程序目录下有 beta.flag 就是测试版（图标带 BETA 角标、标题后缀 Beta）。"""
+    try:
+        return (project_root() / "beta.flag").exists()
+    except Exception:
+        return False
 
 
 def default_models_dir() -> Path:
