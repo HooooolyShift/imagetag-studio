@@ -8,6 +8,7 @@
   GET  /api/roots                       → 库/来源根列表
   GET  /api/list?root=&dir=&offset=&limit=  → 目录里的图片（带标签、分级、系列）
   GET  /api/thumb?id=&size=340          → 缩略图 JPEG（缺失就现生成，带缓存）
+  GET  /api/thumbs?ids=1,2,3&size=340   → 打包下载多张缩略图（zip，省往返、吃满带宽）
   GET  /api/image?id=                   → 原图（支持 HTTP Range，方便大图/断点）
   GET  /api/tags                        → 标签词典（name / zh / category）
   GET  /api/graph                       → 图谱数据（节点/边/热度/折叠状态，移动端照它画）
@@ -20,9 +21,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
 import socket
 import threading
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -158,9 +162,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
         q = self._query()
         path = urlparse(self.path).path
         if path == "/api/ping":
+            import datetime as _dt
             self._json({"ok": True, "app": "imagetag", "role": "pc", "name": self.api.name,
                         "version": self.api.version, "api_port": self.api.port,
-                        "need_code": True})
+                        "need_code": True,
+                        # 服务端时间：移动端可以拿它校准自己的时钟/时区
+                        "server_time": time.time(),
+                        "server_iso": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "server_tz": "UTC+08:00"})
             return
         if not self._authed(q):
             self._deny()
@@ -173,6 +182,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._list(q)
         elif path == "/api/thumb":
             self._thumb(q)
+        elif path == "/api/thumbs":
+            self._thumbs_zip(q)
         elif path == "/api/image":
             self._image(q)
         elif path == "/api/tags":
@@ -254,6 +265,15 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 pass
         return have
 
+    @staticmethod
+    def _review_ver(tags, rating: str = "") -> str:
+        """审核版本号：标签(名+状态) + 分级 的哈希。用来做乐观并发控制。"""
+        h = hashlib.md5()
+        for t in sorted(tags, key=lambda x: str(x.get("name"))):
+            h.update(f"{t.get('name')}|{t.get('status')}\n".encode("utf-8", "ignore"))
+        h.update(f"rating={rating}".encode("utf-8", "ignore"))
+        return h.hexdigest()[:16]
+
     def _thumb(self, q: dict) -> None:
         try:
             fid = int(q.get("id") or 0)
@@ -276,6 +296,40 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _thumbs_zip(self, q: dict) -> None:
+        """一次请求打包多张缩略图（zip）。移动端拉一屏时用它，别一张张请求。"""
+        raw = str(q.get("ids") or "")
+        ids = [int(x) for x in raw.replace(" ", "").split(",") if x.isdigit()][:400]
+        if not ids:
+            self._json({"ok": False, "error": "no_ids"}, 400)
+            return
+        try:
+            size = int(q.get("size") or 340)
+        except ValueError:
+            size = 340
+        buf = io.BytesIO()
+        n = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+            for fid in ids:
+                row = self.api.store.one("SELECT path, mtime FROM files WHERE id=?", (fid,))
+                if row is None:
+                    continue
+                p = thumb_path(fid, row["mtime"] or 0, size)
+                if not p.exists() or p.stat().st_size == 0:
+                    p = make_thumb(row["path"], fid, row["mtime"] or 0, size=size) or p
+                if p.exists() and p.stat().st_size:
+                    zf.write(p, arcname=f"{fid}.jpg")
+                    n += 1
+        data = buf.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Thumb-Count", str(n))
+        self.send_header("Cache-Control", "public, max-age=3600")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
@@ -388,6 +442,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
             parents.setdefault(e["to"], []).append(e["from"])
         for n in nodes:
             n["parents"] = parents.get(n["id"], [])
+        # 坐标下放：PC 端算好（分类用库里的真实坐标，标签按父分类做环形分布），
+        # 移动端直接用，不用自己跑布局，也就不会和 PC 摆得不一样。
+        try:
+            from .graph_layout import place_graph
+            groups = [{"id": n["id"], "x": n["x"], "y": n["y"], "name": n["name"]}
+                      for n in nodes if n["kind"] == "group"]
+            tags_ = [{"id": n["id"], "count": n["count"], "parents": n["parents"]}
+                     for n in nodes if n["kind"] == "tag"]
+            pos = place_graph(groups, tags_)
+            for n in nodes:
+                p = pos.get(n["id"])
+                if p:
+                    n["x"], n["y"] = round(float(p[0]), 1), round(float(p[1]), 1)
+        except Exception:
+            pass
         self._json({"ok": True, "nodes": nodes, "edges": edges,
                     "heat_scale": [0, 1, 5, 20, 100, 400, 1000]})
 
@@ -421,6 +490,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                         "path": r["path"], "n_pending": int(r["n_pending"] or 0),
                         "no_rating": bool(r["no_rating"]) if "no_rating" in r.keys() else False,
                         "rating": (r["rating"] if "rating" in r.keys() else "") or "",
+                        "ver": self._review_ver(tags, (r["rating"] if "rating" in r.keys() else "")),
                         "tags": tags, "thumb_sizes": self._present_thumbs(fid, r["mtime"] or 0)})
         summary = self.api.store.pending_summary()
         self._json({"ok": True, "count": len(out), "summary": summary, "files": out})
@@ -439,6 +509,18 @@ class _ApiHandler(BaseHTTPRequestHandler):
         rej = [str(t) for t in (body.get("rejected") or []) if str(t).strip()]
         drop = [str(t) for t in (body.get("drop") or []) if str(t).strip()]
         rating = body.get("rating") or None
+        # 乐观并发：客户端提交它读到的版本号；不一致说明这张图在别处（PC 审核台或其
+        # 它设备）已经被改过，回 409 让它重新拉一次，避免两边的判断互相覆盖。
+        want_ver = str(body.get("ver") or "")
+        if want_ver:
+            tags_now = [{"name": t["name"], "status": t["status"]}
+                        for t in self.api.store.tags_for_file(fid, statuses=("pending", "confirmed"))]
+            row = self.api.store.one("SELECT rating FROM files WHERE id=?", (fid,))
+            now_ver = self._review_ver(tags_now, (row["rating"] if row else "") or "")
+            if now_ver != want_ver:
+                self._json({"ok": False, "error": "stale", "ver": now_ver,
+                            "hint": "这张图已被别处改过，请重新拉取队列再提交"}, 409)
+                return
         try:
             res = self.api.library.finish_review(fid, conf, rej, drop, rating)
         except Exception as exc:
