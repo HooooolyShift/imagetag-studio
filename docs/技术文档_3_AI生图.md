@@ -111,9 +111,8 @@ python tools\gen_splash.py WAI-illustrious-SDXL-v17.safetensors 3
 1. **只有用户明确说"正式更新 / 推送 / 发版"时，才允许 `git push`、更新 GitHub release、
    同步 D 盘正式版副本（`D:\图片标签分类`）**。平时改完、验证完只做**本地 commit** 记录改动，
    然后把结果汇报给用户等指示。（此条覆盖早期"每版做完主动发布"的旧约定。）
-2. **留意 413（请求体过大）风险**：定期跑
-   `pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\codex-session-trim\scripts\scan-sessions.ps1" -IncludeArchived`
-   看本项目线程有没有被标「危」（请求体 ≥40 MiB，或 ≥20 MiB 且历史报过 413）；有就报给用户。
-   **裁剪（`trim-rollout-images.ps1 -Apply`）必须先经用户同意。**
+2. **413 巡查不用你跑（2026-10-07 用户明确：所有会话各自查会乱套）**：巡查只由 PC 端主程序会话
+   统一负责（每日定时 + 只在「危」时提醒用户）。你只要控制贴图量；如果出现"发不出消息 / 一读图就报错"，
+   把线索报给用户或 PC 端会话即可。**裁剪（`trim-rollout-images.ps1 -Apply`）只能由用户在 PC 端会话同意后执行。**
    ——出图对比**不要在本会话反复贴大图**（base64 会把历史撑爆），图一律落盘再引用路径：
    工作图 `.splash_gen\<底模名>\`，成品 `assets\splash\`。
