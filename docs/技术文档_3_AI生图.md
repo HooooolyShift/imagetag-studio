@@ -164,3 +164,62 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
 3. **22:30 起不要再起新的出图批次**（这台机器**每晚 23:00 断电**）：批次要么能在 22:30 前收尾，
    要么拆小分批跑；模型下载必须能续传（`tools\fetch_model.py` 已支持）；
    22:30 前把当天结论写进本文档并**本地 commit**；不要留下改了一半、跑不起来的脚本。
+
+## 八、SwarmUI 图形壳（2026-10-07 新增，给用户"少调参"的出图/改图界面）
+
+> 用户反馈：ComfyUI 原界面参数太多、不方便。按"先找开源壳，没有再自建"的指示，
+> 选定 **SwarmUI**（MIT，活跃，本质是 ComfyUI 的前端壳），已装好并接到本机 ComfyUI。
+
+- **位置**：`E:\SwarmUI`（`git clone https://github.com/mcmonkeyprojects/SwarmUI`，v0.9.8.3；
+  用 `dotnet build src/SwarmUI.csproj -c Release -o src/bin/live_release` 构建，本机 .NET 9 SDK 可编；
+  官方提示**将来会要求 .NET 10 SDK**，到时再装）。
+- **接后端**：`Data/Backends.fds` → `comfyui_api`，`Address: http://127.0.0.1:8188`
+  （即我们自己管的那个 ComfyUI，不用 SwarmUI 再装一份；批量脚本与我这边共用同一后端）。
+- **模型路径**：`Data/Settings.fds` → `Paths.ModelRoot = E:\ComfyUI\ComfyUI-aki-v1.5\ComfyUI-aki-v1.5\models`，
+  子目录 `checkpoints` / `loras` / `vae` / `embeddings` / `controlnet` / `clip_vision` 沿用 ComfyUI 的命名，
+  **不复制模型**。实测 `/API/ListModels` 已列出 16 个底模（含 NoobAI-XL v1.1、WAI-illustrious v17）。
+- **界面语言/安装状态**：`DefaultUser.Language = zh`（默认中文）；`IsInstalled = true`、
+  `InstallVersion = 0.9.8.3`、`LaunchMode = web`（跳过安装向导，启动即开浏览器页面）。
+- **界面中文化（2026-10-07 二次修正）**：光改 `DefaultUser.Language` 不够——**已存在的 `local` 用户**
+  仍是 en。用 API 直接改当前用户：`POST /API/ChangeUserSettings`，
+  body `{"session_id":"…","settings":{"language":"zh"}}`（**注意**：文档写的是 `rawData`，实际 API 吃扁平的
+  `settings`，写成 `rawData` 会 400）。验证：`POST /API/GetMyUserData` → `language = "zh"`。
+  前端语言来源：`js/translator.js` 先读 cookie `display_language`，没有就取 `data.language`（即用户设置），
+  所以刷新页面即为中文；万一你以前手动切过英文，清掉该 cookie 或 Ctrl+F5 强刷即可。
+- **避免浏览器自动翻译**：SwarmUI 原有页面是裸 `<html>`（没有 lang），浏览器会猜语言并弹翻译。
+  已在 `src/Pages/Shared/_Layout.cshtml` 本地改成 `<html lang="zh-CN" translate="no">`
+  并加 `<meta name="google" content="notranslate" />`，改完 `dotnet build` 重建 + 重启。
+  ⚠️ 这是我们**改动过上游文件**：以后 `git pull` 升级 SwarmUI 时，如果这两行被覆盖，按这个再补一次。
+- **启动**：桌面快捷方式 **「图片标签工坊 生图台」**（图标取自 `A绘世启动器.exe`）；
+  旧的桌面 `A绘世启动器.lnk` 已移到 `E:\SwarmUI\_backup_desktop_A绘世启动器.lnk`（可恢复）。
+  底脚本 `E:\SwarmUI\start-sd.cmd`：先确保 ComfyUI 在 8188 跑着（没跑就用干净模式拉起），再开 SwarmUI。
+- **端到端验证**：`POST /API/GenerateText2Image`（WAI-illustrious v17，1024×576，24 步）出图成功，
+  产物 `E:\SwarmUI\Output\local\raw\2026-10-07\2146001-...png`；后端 `status = running`。
+- **本地 API 免登录**：`POST /API/GetNewSession`（空 body）直接给出 `user_id = local` 与全部权限，
+  可脚本化配置/出图（改后端、列模型、生成都用它）。
+
+### 覆盖度评估（"ComfyUI 的功能能不能都用上"）
+
+| 能力 | SwarmUI 现状 |
+|---|---|
+| 文生图 / 图生图 / 批量 / 种子与变体 | 自带，参数可折叠，还能用 Preset 简化 |
+| LoRA、Refiner、高清放大、FreeU、Seamless | 自带 |
+| ControlNet（含预处理器、多重叠加） | 自带（`comfyui_controlnet_aux` 在我们后端里，预处理器可用） |
+| IP-Adapter / 参考图（风格与角色一致） | 自带（`ComfyUI_IPAdapter_plus` + `ip-adapter_xl.pth` + `clip_h.pth` 都在后端） |
+| 局部重绘 / 扩图（画遮罩） | 自带 Image Editor / Mask 工具 |
+| **任意 ComfyUI 原生工作流** | 自带 **Comfy Workflow Editor**：可以手搭/导入任意工作流，并把其中的参数绑定成界面控件 |
+| 我们装的所有 custom_nodes | 后端就是我们的 ComfyUI，节点都在（除"干净模式"启动时被禁用的那批） |
+| **中文自然语言 → 提示词** | ❌ **没有**：SwarmUI 的 LLM 支持目前是占位（`LLMs/LLMParamInput.cs` 自己写着 TODO），只有实验性文本生成 |
+| 我们固化的开屏参数（1536×648 / 60 步 / CFG 5.5 / 长负向词） | ❌ 没现成的，需要做成 Preset/Style |
+
+**结论**：底层能力 = ComfyUI 的全部（因为后端就是它，且能用原生工作流编辑器）；
+缺口只有两处"上层便利性"，由我来补：
+
+1. **中文自然语言入口**：写一个 SwarmUI 扩展（或在界面旁挂一个小服务），
+   用本机 Ollama（qwen3-8b，离线）把中文描述转成 danbooru tag → 填进提示词框。
+2. **项目预设**：把"开屏 1536×648 + 60 步 + dpmpp_2m/karras + CFG 5.5 + 我们那套负向词"做成 Preset/Style；
+   换装/局部重绘也各做一个预设（遮罩 + denoise 0.5~0.65 + 模板提示词）。
+
+（可选补充：**Krita + Krita AI Diffusion**（GPL-3，持续更新）连同一个 ComfyUI 后端，
+画笔式局部重绘/换装体验最好，需要另外装 Krita（约 250 MB）——用户想要再加。）
+
