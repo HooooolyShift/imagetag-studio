@@ -145,7 +145,13 @@ public static class BooruDictionary
         List<string> kept = [];
         List<string> invented = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        foreach (string raw in tagString.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        // 模型偶尔不用逗号分隔（会给一串空格分词的 tag），那样先按空格拆开，否则整串都会被判成"词表外"
+        string normalizedInput = tagString.Replace('\n', ',');
+        if (!normalizedInput.Contains(',') && normalizedInput.Count(c => c == ' ') > 6)
+        {
+            normalizedInput = normalizedInput.Replace(" ", ", ");
+        }
+        foreach (string raw in normalizedInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             if (Junk.Contains(Normalize(raw)))
             {
