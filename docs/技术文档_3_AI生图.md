@@ -105,3 +105,15 @@ python tools\gen_splash.py WAI-illustrious-SDXL-v17.safetensors 3
   关二段放大与锐化）：`NoobAI .splash_gen_smoke\smoke_01_a.png`（33s）、
   `WAI .splash_gen_smoke\wai_01_a.png`（27s）——均正常出图，WAI 线条更干净、色调更"冷"更平，
   NoobAI 观感更暖更"厚"一点。此外 WAI 只需再请求一次 `/object_info` 就被 ComfyUI 识别（无需重启）。
+
+## 七、项目规矩（2026-10-07 起，来自用户与 PC 端主程序会话）
+
+1. **只有用户明确说"正式更新 / 推送 / 发版"时，才允许 `git push`、更新 GitHub release、
+   同步 D 盘正式版副本（`D:\图片标签分类`）**。平时改完、验证完只做**本地 commit** 记录改动，
+   然后把结果汇报给用户等指示。（此条覆盖早期"每版做完主动发布"的旧约定。）
+2. **留意 413（请求体过大）风险**：定期跑
+   `pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\codex-session-trim\scripts\scan-sessions.ps1" -IncludeArchived`
+   看本项目线程有没有被标「危」（请求体 ≥40 MiB，或 ≥20 MiB 且历史报过 413）；有就报给用户。
+   **裁剪（`trim-rollout-images.ps1 -Apply`）必须先经用户同意。**
+   ——出图对比**不要在本会话反复贴大图**（base64 会把历史撑爆），图一律落盘再引用路径：
+   工作图 `.splash_gen\<底模名>\`，成品 `assets\splash\`。
