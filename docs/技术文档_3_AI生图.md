@@ -13,6 +13,14 @@
   - 启动：`cd <ComfyUI 目录>; .\python\python.exe main.py --listen 127.0.0.1 --port 8188`
 - 显卡：RTX 4070 Laptop 8 GB / 驱动 610.88；1216×512、60 步大约 20–30 秒一张
 
+### 启动 / 让显存（遵照 AGENTS.md 的显存纪律）
+
+- 启动 ComfyUI：`cd <ComfyUI 目录>; .\python\python.exe main.py --listen 127.0.0.1 --port 8188`
+  （冷启动到能出图约 **55 秒**；确认服务起来用 `GET /system_stats`）
+- 出完图让位：`POST http://127.0.0.1:8188/free`，body `{"unload_models":true,"free_memory":true}`
+  → 底模占的约 **3.9 GB** 显存立刻还回，服务本身不用停（再出图时重新加载模型即可）
+- 出图前先 `nvidia-smi` 看占用；用户已有进程占显存时不要抢，宁可等或改用更小的方案
+
 ## 二、底模（`models\checkpoints`）
 
 | 文件 | 说明 |
@@ -52,3 +60,12 @@ python tools\gen_splash.py [底模] [每张几版=2] [只跑某张,如 05 / 可�
 ## 六、变更记录
 
 - 2026-10-07：技术文档建立；记录 ComfyUI 升级、NoobAI 主用、二段放大/锐化/发型等实测结论。
+- 2026-10-07（接手自检）：读完本文档与技术文档 1 后做了一次流水线冒烟测试——
+  ComfyUI 冷启动成功（**0.39.0**，torch **2.11.0+cu128**，前端 1.53.10，CUDA `cudaMallocAsync`，
+  空闲显存 7068 MiB）；用 `gen_splash.py` 的固化参数跑 `JOBS[0]`（miku_wall，NoobAI-XL-v1.1、
+  1216×512、60 步、CFG 5.5、dpmpp_2m/karras、关二段放大与锐化、seed 20261983）出一张，
+  **33.2 秒**（含首次加载底模），画风/比例/分辨率与 `assets\splash\` 既有 14 张一致，
+  确认升级后整条链路没坏。
+  产物（临时，勿当成品）：`.splash_gen_smoke\smoke_01_a.png`，被 `.gitignore` 的 `.splash_gen*/` 覆盖。
+  出图后调 `/free` 卸模型，显存从 5812 MiB 回落到 **2037 MiB（空闲 5912 MiB）**；
+  ComfyUI 仍在 `127.0.0.1:8188` 常驻（不占显存），随时可继续出图。
