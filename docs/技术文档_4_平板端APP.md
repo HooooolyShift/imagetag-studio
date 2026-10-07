@@ -283,6 +283,17 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 
 ## 六、变更记录
 
+- 2026-10-07（晚·12）：**查重页做出来了**（PC 点名 + 用户点名那条）。连 PC 后左导航出现「查重」：
+  · 顶部：组数 + 状态 + 「开始扫描 / 刷新结果」；扫描是后台任务，进度走 SSE（`dupes_progress` → 进度条、
+  `dupes_done` → 提示并刷新、`dupes_failed` → 红字提示）。
+  · 每组：先点一张作为「保留」，然后三个按钮 —— **保留这张（其余进隔离区）** / **判为系列** / **误判反馈**；
+  与 PC 端对话语义一致（隔离区可恢复，不直接删；误判反馈共用 `dup_feedback`）。
+  · **空状态按 PC 叮嘱写成「扫描完成，未发现重复」**，不写"失败"；实测真实库（只比对图库根）就是 0 组：
+  点「开始扫描」→ 进度条走完 → 状态「扫描完成，未发现重复」→ 0 组、无控制台报错，截图 `shots/graph-pc/dupes-empty.png`。
+  · ⚠ 诚实说明：**三按钮的处置路径今天没走到**（真实库 0 组，本端自检库也没有可复现的重复对），
+  接口调用链已按 PC 给的字段写好（`keep_id/remove_ids/action`、`ids`），等出现真实重复组时再补一次实测。
+  · 目录树浏览仍缺"列子目录"的接口（现在库列表 = 全库系列 + 根目录散图）；`/api/library` 的 `dir` 参数已支持，
+  只差一个 `dirs` 列表。
 - 2026-10-07（晚·11）：**系列按 PC 同款呈现 + 内页浏览打通**（用户点名那条）。
   · 客户端补上批次六的接口：`/api/library`、`/api/series`、`/api/series/detail`、
   `series/create|reorder|rename|dissolve`、`/api/dupes` + `scan|resolve|not_dup|as_series`（统一走 `_post`，text/plain 免预检）。
