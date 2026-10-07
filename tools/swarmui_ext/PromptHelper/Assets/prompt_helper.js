@@ -64,6 +64,9 @@ async function promptHelperRun(append) {
     genericRequest('PromptHelper', { text: text, mode: mode }, (data) => {
         if (data.error) {
             out.textContent = data.error;
+            if (data.error.includes('11434')) {
+                out.textContent += '\n\n本机 Ollama 没在运行。双击 D:\\LocalAI\\start-ollama.cmd 启动即可（开机自启任务也会拉它）。';
+            }
         } else {
             data.result = promptHelperClean(data.result);
             out.textContent = data.result;

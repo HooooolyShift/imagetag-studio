@@ -319,4 +319,10 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   `#prompt_helper_panel` 存在，面板截图 `.verify_pics\panel.png`。
 - **注意**：提示词助手是 **SwarmUI（7801）** 的界面元素，不在 ComfyUI 原生界面（8188）里；
   打开 `http://localhost:7801/#simple`，面板固定在**右下角**（"提示词助手（中文 → 标签）"）。
+- **提示词助手依赖本机 Ollama（11434）**：报 `调用本机 Ollama 失败…(127.0.0.1:11434)` 就是 Ollama 没在跑。
+  它不在我这边的进程里，**机器重启/断电后不会自己起来**——已把 `D:\LocalAI\start-ollama.cmd`
+  加进 `E:\SwarmUI\autostart-services.ps1`（登录自启任务 `ImageTagSwarmAutoStart` 现在一次拉起
+  Ollama + ComfyUI + SwarmUI 三个服务，实测返回 0、三个端口都在听）。
+  前端也在报错时补了一句"双击 `D:\LocalAI\start-ollama.cmd` 启动"的提示。
+  显存纪律：启动前后看 `nvidia-smi`，qwen3-8b 约占 4.9 GB，用完 `ollama stop qwen3-8b` 让位。
 
