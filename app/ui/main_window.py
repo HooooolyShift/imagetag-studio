@@ -451,6 +451,7 @@ class MainWindow(QMainWindow):
         self.refresh_roots()
         self.refresh_tags()
         self.refresh_files()
+        self.start_lan_if_enabled()      # 让平板/手机端能自动发现这台 PC
         QTimer.singleShot(900, self.check_unfinished)
 
     # ================================================================= UI
@@ -534,6 +535,9 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
         tb.addWidget(spacer)
         act("打开数据目录", lambda: os.startfile(str(self.store.db_path.parent)))
+        act("已连接设备…", self.open_devices,
+            "局域网设备管理：本机地址与配对码、自动发现的平板/手机（选中即连接由移动端发起）")
+        act("最小化到托盘", self.hide_to_tray, "把窗口收进托盘，程序继续在后台运行；双击托盘图标可恢复")
 
         # 性能挡位快捷切换（工具栏右侧）
         from .. import perf as perf_mod
@@ -695,6 +699,7 @@ class MainWindow(QMainWindow):
         self.model.blur_r18 = bool(self.settings.rating_blur)
         self.grid = GridView(self.model)
         self.grid.itemActivated.connect(self.on_item_activated)
+        self.grid.browseRequested.connect(self.on_browse_requested)
         self.grid.reorderRequested.connect(self.on_reorder)
         self.grid.selectionModel().selectionChanged.connect(lambda *_: self.update_selection())
         self.grid.customContextMenuRequested.connect(self.grid_menu)
@@ -1172,6 +1177,73 @@ class MainWindow(QMainWindow):
         dlg.tagsChanged.connect(lambda fid: self.on_tags_changed([fid]))
         dlg.exec()
 
+    def current_file_ids(self) -> list[int]:
+        """当前图库里这一屏的图片 id（按显示顺序）——浏览模式翻页就用它。"""
+        m = self.grid.model()
+        ids: list[int] = []
+        try:
+            for r in range(m.rowCount()):
+                it = m.item_at(m.index(r, 0))
+                if it is not None and getattr(it, "file_id", None):
+                    ids.append(int(it.file_id))
+        except Exception:
+            pass
+        return ids
+
+    def on_browse_requested(self, item) -> None:
+        """图库左键单击 → 进入浏览模式（只有图 + 标签，可缩放/平移、可翻页）。"""
+        fid = getattr(item, "file_id", None)
+        if not fid:
+            return
+        row = self.store.one("SELECT path FROM files WHERE id=?", (int(fid),))
+        if row is None:
+            return
+        dlg = PreviewDialog(self.store, row["path"], self, browse_ids=self.current_file_ids())
+        dlg.tagsChanged.connect(lambda f: self.on_tags_changed([f]))
+        dlg.exec()
+        self.refresh_files()
+
+    # ---------------- 托盘 / 局域网设备 ----------------
+    def hide_to_tray(self) -> None:
+        """最小化到托盘：窗口收起来，程序继续跑（托盘菜单/双击可恢复）。"""
+        self.hide()
+        tray = getattr(self, "tray_icon", None)
+        if tray is not None:
+            try:
+                from PySide6.QtWidgets import QSystemTrayIcon
+                tray.showMessage("图片标签工坊", "已最小化到托盘，双击托盘图标可恢复窗口。",
+                                 QSystemTrayIcon.Information, 4000)
+            except Exception:
+                pass
+
+    def lan_service(self):
+        """懒加载设备发现服务（第一次用「已连接设备」时启动）。"""
+        svc = getattr(self, "_lan", None)
+        if svc is None:
+            try:
+                from ..devices import LanService
+                from ..config import VERSION
+                import socket as _socket
+                name = (getattr(self.settings, "lan_device_name", "") or "").strip() \
+                    or socket.gethostname() or "PC"
+                svc = LanService(name, role="pc",
+                                 version=VERSION, parent=self)
+                svc.start()
+            except Exception:
+                svc = None
+            self._lan = svc
+        return svc
+
+    def start_lan_if_enabled(self) -> None:
+        """程序启动时就把设备发现打开，平板/手机才找得到这台 PC。"""
+        if getattr(self.settings, "lan_enabled", True):
+            self.lan_service()
+
+    def open_devices(self) -> None:
+        from .devices_ui import DevicesDialog
+        dlg = DevicesDialog(self.lan_service(), self)
+        dlg.exec()
+
     def open_preview_by_id(self, file_id: int) -> None:
         row = self.store.one("SELECT path FROM files WHERE id=?", (file_id,))
         if row:
@@ -1180,7 +1252,7 @@ class MainWindow(QMainWindow):
     def grid_menu(self, pos) -> None:
         menu = QMenu(self)
         n = len(self.selected_ids())
-        a_preview = menu.addAction("预览大图（可框选标注）")
+        a_preview = menu.addAction("浏览模式（大图 + 标签 + 翻页）")
         a_write = menu.addAction("写回文件名")
         a_auto = menu.addAction("自动打标（WD14+CLIP）")
         a_face = menu.addAction("人脸检测")
@@ -1188,6 +1260,8 @@ class MainWindow(QMainWindow):
         a_series = menu.addAction("合并为系列…")
         a_series_order = menu.addAction("调整系列顺序…")
         a_new_tag = menu.addAction("添加标签…")
+        a_annotate = menu.addAction("框选标注…（告诉模型这个标签对应画面哪一块）")
+        a_region = menu.addAction("框选区域细分 / 区域精修打标")
         a_similar = menu.addAction("查找相似图片（以这张为例）")
         a_import = menu.addAction("收录到图库")
         a_dup = menu.addAction("查重 / 保留选择")
@@ -1212,6 +1286,19 @@ class MainWindow(QMainWindow):
         elif action == a_new_tag:
             self.tag_panel.new_tag.setFocus()
             self.dock_right.show()
+        elif action == a_annotate:
+            ids = self.selected_ids()
+            if ids:
+                row = self.store.one("SELECT path FROM files WHERE id=?", (ids[0],))
+                if row:
+                    dlg = PreviewDialog(self.store, row["path"], self,
+                                        browse_ids=self.current_file_ids())
+                    dlg.tagsChanged.connect(lambda f: self.on_tags_changed([f]))
+                    dlg.b_annotate.setChecked(True)      # 直接进框选状态
+                    dlg.exec()
+                    self.refresh_files()
+        elif action == a_region:
+            self.run_region_refine()
         elif action == a_similar:
             self.find_similar()
         elif action == a_import:
@@ -2416,6 +2503,12 @@ class MainWindow(QMainWindow):
                 return
             self.task.cancel()
             self.task.wait(3000)
+        try:                              # 关掉设备发现（释放 UDP 端口）
+            svc = getattr(self, "_lan", None)
+            if svc is not None:
+                svc.stop()
+        except Exception:
+            pass
         # 这里**不再**保存设置：设置窗口已经是"改动即存"，而主窗口内存里这份一旦是旧的，
         # 退出时保存就会把用户刚改的值整份盖回去（日志里 16:51:39 写 False、16:51:40 又写回 True 就是它）。
         # 关窗口 = 真正退出（以前会缩到托盘继续活着，于是"我明明重启过了"其实还是旧进程）

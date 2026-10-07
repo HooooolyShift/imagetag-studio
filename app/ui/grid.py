@@ -406,6 +406,7 @@ class GridView(QListView):
     """缩略图视图（只请求可见区域的缩略图）。"""
 
     itemActivated = Signal(object)
+    browseRequested = Signal(object)          # 左键单击（没拖动、没按 Ctrl/Shift）→ 进浏览模式
     reorderRequested = Signal(list, int)      # (拖动的行号列表, 目标插入位置)
 
     def __init__(self, model: GridModel, parent=None):
@@ -543,11 +544,34 @@ class GridView(QListView):
     MIME = "application/x-imtag-rows"
 
     def mousePressEvent(self, event) -> None:
+        # 左键按下时记位置：松手时如果没挪动过，就当作"单击 → 进浏览模式"
+        if event.button() == Qt.LeftButton:
+            self._click_pos = event.position().toPoint()
+            self._click_row = (self.indexAt(self._click_pos).row()
+                               if self.indexAt(self._click_pos).isValid() else None)
         if self.reorder_enabled and event.button() == Qt.LeftButton:
             idx = self.indexAt(event.position().toPoint())
             self._press_row = idx.row() if idx.isValid() else None
             self._press_pos = event.position().toPoint()
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        pos = event.position().toPoint()
+        clicked_row = getattr(self, "_click_row", None)
+        press = getattr(self, "_click_pos", None)
+        self._click_row = None
+        self._click_pos = None
+        super().mouseReleaseEvent(event)
+        if event.button() != Qt.LeftButton or clicked_row is None or press is None:
+            return
+        if (pos - press).manhattanLength() >= QApplication.startDragDistance():
+            return                                  # 拖过了 → 是框选/拖拽，不进浏览模式
+        if event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier):
+            return                                  # 按住修饰键 → 保留原来的多选行为
+        idx = self.model().index(clicked_row, 0)
+        it = self.grid_model.item_at(idx) if idx.isValid() else None
+        if it is not None:
+            self.browseRequested.emit(it)
 
     def mouseMoveEvent(self, event) -> None:
         if not (self.reorder_enabled and self._press_row is not None and self._press_pos is not None):

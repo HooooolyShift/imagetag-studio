@@ -61,6 +61,26 @@ python tools\gen_splash.py NoobAI-XL-v1.1.safetensors 3
 python tools\gen_splash.py WAI-illustrious-SDXL-v17.safetensors 3
 ```
 
+### 批量出图：一律交给计划任务跑（长任务保命）
+
+踩过的坑：**本机 Agent 会话的工具调用被新消息打断时，它启动的进程会被一起杀掉**，
+十几分钟的出图很容易半路死（实测死过两次，日志停在半途、没有任何报错）。
+所以长任务走 `tools\batch_gen.py` + Windows 计划任务，脱离会话进程树：
+
+```powershell
+$py  = "C:\Users\27838\.conda\envs\imtag\python.exe"
+$arg = 'tools\batch_gen.py --models NoobAI-XL-v1.1.safetensors,WAI-illustrious-SDXL-v17.safetensors --variants 2 --width 1536 --log "E:\文档\ChatGPT\图片标签分类\.splash_batch.log" --free'
+$action  = New-ScheduledTaskAction -Execute $py -Argument $arg -WorkingDirectory "E:\文档\ChatGPT\图片标签分类"
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)
+Register-ScheduledTask -TaskName "ImageTagSplashBatch" -Action $action -Trigger $trigger -Force
+Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-ScheduledTask -TaskName ImageTagSplashBatch -Force 删掉
+```
+
+- `batch_gen.py`：ComfyUI 不在就自己拉起并等就绪；逐个底模出图；**已存在的图直接跳过**（打断后重跑安全，
+  重出某张就先把它从 `.splash_gen\<底模>\` 移走，或设 `SPLASH_FORCE=1`）；`--free` 结束后卸模型还显存；
+  日志末尾写 `ALL DONE` 便于外部轮询。
+- 进度看 `.splash_batch.log`；ComfyUI 自己崩了（外部杀掉）重跑一次即可，已出的图不会重做。
+
 ## 四、实测参数与坑（重要）
 
 | 项 | 结论 |

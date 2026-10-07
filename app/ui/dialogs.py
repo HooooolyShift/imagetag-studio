@@ -1454,9 +1454,11 @@ class PreviewDialog(QDialog):
 
     tagsChanged = Signal(int)
 
-    def __init__(self, store, path: str, parent=None, models_dir=None):
+    def __init__(self, store, path: str, parent=None, models_dir=None, browse_ids=None):
         super().__init__(parent)
         self.store = store
+        # 浏览模式：带着"当前这批图"的 id 列表进来，就能 ↑/↓ 翻页
+        self._ids: list[int] = [int(i) for i in (browse_ids or [])]
         self.setWindowTitle(Path(path).name)
         self.resize(1180, 780)
         self.path = path
@@ -1465,6 +1467,20 @@ class PreviewDialog(QDialog):
             row = self.store.file_by_path(path)
         self.file_id = int(row["id"]) if row else None
         v = QVBoxLayout(self)
+        # ---- 翻页条（浏览模式）：上一张 / 第 n/N 张 / 下一张 ----
+        nav = QHBoxLayout()
+        self.b_prev = QPushButton("← 上一张")
+        self.b_prev.clicked.connect(lambda: self.goto(self._idx - 1))
+        self.b_next = QPushButton("下一张 →")
+        self.b_next.clicked.connect(lambda: self.goto(self._idx + 1))
+        self.nav_label = QLabel("")
+        self.nav_label.setStyleSheet("color:#8f96a3;")
+        nav.addWidget(self.b_prev)
+        nav.addWidget(self.b_next)
+        nav.addWidget(self.nav_label)
+        nav.addStretch(1)
+        nav.addWidget(QLabel("← / → 翻页 · Esc 关闭 · 滚轮以鼠标为中心缩放 · 左键拖动平移"))
+        v.addLayout(nav)
         bar = QHBoxLayout()
         self.b_annotate = QPushButton("框选标注：关")
         self.b_annotate.setCheckable(True)
@@ -1483,12 +1499,13 @@ class PreviewDialog(QDialog):
         self.also_file.setChecked(True)
         bar.addWidget(self.also_file)
         v.addLayout(bar)
-        tip = QLabel("框选的作用是告诉模型「这个标签对应画面哪一块」：框内区域会单独算特征，"
-                     "训练出该标签的“区域中心”，以后眼镜、领带这类只占一小块的标签会更准。"
-                     "框选完全可选，不框也能用。")
-        tip.setWordWrap(True)
-        tip.setStyleSheet("color:#8f96a3;")
-        v.addWidget(tip)
+        self.tip = QLabel("框选的作用是告诉模型「这个标签对应画面哪一块」：框内区域会单独算特征，"
+                          "训练出该标签的“区域中心”，以后眼镜、领带这类只占一小块的标签会更准。"
+                          "框选完全可选，不框也能用。")
+        self.tip.setWordWrap(True)
+        self.tip.setStyleSheet("color:#8f96a3;")
+        self.tip.setVisible(False)          # 浏览模式默认只留"图 + 标签"，框选相关收起来
+        v.addWidget(self.tip)
 
         split = QSplitter(Qt.Horizontal)
         self.canvas = ImageCanvas()
@@ -1537,17 +1554,68 @@ class PreviewDialog(QDialog):
         b_rm = QPushButton("删除选中标签")
         b_rm.clicked.connect(self.remove_selected_tag)
         pv.addWidget(b_rm)
-        pv.addWidget(label("框选区域", "#ff5c8a", True))
+        self.region_box = QWidget()
+        rb = QVBoxLayout(self.region_box)
+        rb.setContentsMargins(0, 0, 0, 0)
+        rb.addWidget(label("框选区域", "#ff5c8a", True))
         self.region_list = QListWidget()
         self.region_list.itemDoubleClicked.connect(self.edit_region)
-        pv.addWidget(self.region_list, 1)
+        rb.addWidget(self.region_list, 1)
         b_rm_r = QPushButton("删除选中框")
         b_rm_r.clicked.connect(self.remove_region)
-        pv.addWidget(b_rm_r)
+        rb.addWidget(b_rm_r)
+        self.region_box.setVisible(False)
+        pv.addWidget(self.region_box, 1)
         split.addWidget(panel)
         split.setSizes([860, 320])
         v.addWidget(split, 1)
+        self._idx = self._ids.index(self.file_id) if (self.file_id in self._ids) else -1
+        self._sync_nav()
         self.load()
+
+    # ---- 浏览模式：翻页 ----
+    def _sync_nav(self) -> None:
+        n = len(self._ids)
+        if n and self._idx >= 0:
+            self.nav_label.setText(f"第 {self._idx + 1}/{n} 张")
+        else:
+            self.nav_label.setText("单张浏览")
+        self.b_prev.setEnabled(self._idx > 0)
+        self.b_next.setEnabled(0 <= self._idx < max(0, n - 1))
+
+    def goto(self, i: int) -> None:
+        """翻到当前这批图的第 i 张（保留缩放/平移能力，换图自动适应窗口）。"""
+        if not self._ids:
+            return
+        i = max(0, min(int(i), len(self._ids) - 1))
+        if i == self._idx:
+            return
+        fid = self._ids[i]
+        row = self.store.one("SELECT path FROM files WHERE id=?", (fid,))
+        if row is None:
+            return
+        self._idx = i
+        self.file_id = int(fid)
+        self.path = row["path"]
+        self.setWindowTitle(Path(self.path).name)
+        self.canvas.fit_view()
+        self.load()
+        self._sync_nav()
+
+    def keyPressEvent(self, ev) -> None:
+        k = ev.key()
+        if k in (Qt.Key_Left, Qt.Key_PageUp, Qt.Key_Up):
+            self.goto(self._idx - 1)
+            ev.accept()
+            return
+        if k in (Qt.Key_Right, Qt.Key_PageDown, Qt.Key_Down, Qt.Key_Space):
+            self.goto(self._idx + 1)
+            ev.accept()
+            return
+        if k == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(ev)
 
     # ---- 载入 ----
     def load(self) -> None:
@@ -1624,6 +1692,10 @@ class PreviewDialog(QDialog):
         self.canvas.annotate = on
         self.b_annotate.setText("框选标注：开" if on else "框选标注：关")
         self.canvas.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+        # 只有开了框选才显示相关控件：平时保持"只有图 + 标签"的干净浏览界面
+        for w in (getattr(self, "tip", None), getattr(self, "region_box", None)):
+            if w is not None:
+                w.setVisible(bool(on))
 
     def on_region_drawn(self, x: float, y: float, w: float, h: float) -> None:
         if self.file_id is None:
