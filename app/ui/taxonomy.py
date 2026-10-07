@@ -340,8 +340,33 @@ class GraphCanvas(QGraphicsView):
             return
         self._zoom = new_zoom
         self.scale(factor, factor)
+        self._update_scene_rect()          # 放大后要留出更多可平移余量，否则拖不过去
         self._schedule_text_visibility()
         event.accept()
+
+    def _update_scene_rect(self) -> None:
+        """按当前缩放给场景留出"够拖"的边距。
+
+        以前只在重建时把 sceneRect 设成 itemsBoundingRect()+固定 60~160px：放大 3 倍后
+        这点边距在屏幕上只剩几十像素，于是"有些区域拖不过去"（QGraphicsView 的平移范围
+        受 sceneRect 限制）。这里改成**边距随缩放反比增长**——屏幕上永远有大约半屏的余量。
+        """
+        try:
+            r = self.scene_.itemsBoundingRect()
+            if r.isEmpty():
+                return
+            zoom = max(0.1, float(self._zoom))
+            vw = max(1, self.viewport().width()) / zoom
+            vh = max(1, self.viewport().height()) / zoom
+            pad_x = max(300.0, vw * 0.75)
+            pad_y = max(300.0, vh * 0.75)
+            self.scene_.setSceneRect(r.adjusted(-pad_x, -pad_y, pad_x, pad_y))
+        except Exception:
+            pass
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_scene_rect()
 
     def fit_to_view(self) -> None:
         """适应窗口：把内容缩放到整屏可见。"""
@@ -351,6 +376,7 @@ class GraphCanvas(QGraphicsView):
         self.resetTransform()
         self.fitInView(rect.adjusted(-40, -40, 40, 40), Qt.KeepAspectRatio)
         self._zoom = float(self.transform().m11())
+        self._update_scene_rect()
         self._apply_text_visibility()
 
     def reset_zoom(self) -> None:
@@ -835,7 +861,7 @@ class GraphCanvas(QGraphicsView):
             for i, it in enumerate(items):
                 it.setPos(40 + d * 230, 40 + i * (NODE_H + 18))
         self._pending_save = True
-        self.scene_.setSceneRect(self.scene_.itemsBoundingRect().adjusted(-60, -60, 80, 80))
+        self._update_scene_rect()          # 同上：边距随缩放算
 
     # ---------- 交互 ----------
     def mousePressEvent(self, event) -> None:
@@ -1560,7 +1586,7 @@ class TaxonomyDialog(QDialog):
         # 多中心放射布局：分类/作品各自是一个中心，孩子绕着它排；交织节点落在中心之间。
         # 用户拖过的坐标（layout 表里有记录的）算数，盖在自动布局上面。
         self.canvas.radial_layout()
-        self.canvas.scene_.setSceneRect(self.canvas.scene_.itemsBoundingRect().adjusted(-80, -80, 120, 120))
+        self.canvas._update_scene_rect()   # 边距随缩放算，别用固定值（放大后拖不动）
         self.rebuild_tree()
         self.refresh_detail()
         if hidden_tag_count and not self.show_all.isChecked():
