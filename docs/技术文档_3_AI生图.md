@@ -96,6 +96,7 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
 | 兔女郎服 | 要 `strapless`（无肩带抹胸）+ `high-cut leotard` + `rabbit tail`，并把 `shoulder straps/halterneck` 写进负向 |
 | ComfyUI 自定义节点 | 秋叶包里的 Advanced-ControlNet / AnimateDiff / Impact-Pack 会 monkey-patch 采样链，**连续出图时硬崩过一次**（faulthandler 堆栈停在采样函数里）。批量出图请用 `--disable-all-custom-nodes` 干净模式（`tools\batch_gen.py` 默认就这么拉起） |
 | 1536×648 出图耗时 | 实测 **39~45 秒/张**（RTX 4070 Laptop 8 GB，60 步）；1216×512 是 27~33 秒，按需选 |
+| 克隆人（多人题材） | 两个来源：①**背景里挂的照片/相框又画了同一个角色**（看着就是一排克隆）；②提示词只写 `2girls`，但没把两个角色各自锚死，模型直接复制同一张脸。对策见 `JOBS` 里的 `duo_bunny2`：**背景换成纯色摄影棚**（并负向 `photo, framed picture, picture frame, portrait`），两个角色分别写 `(hatsune miku:1.1)`/`(kasane teto:1.1)` + 各自发型特征，负向压 `3girls, 4girls, extra girls, extra person, clone, duplicated, twins`。实测 WAI **3/3 干净**；NoobAI 仍会多画人（3 张里 1 张画成三个女孩、1 张有漂浮兔耳瑕疵） |
 
 ## 五、当前成品
 
@@ -142,6 +143,13 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   不再傻等 300 秒；②`tools\batch_gen.py` 负责"缺 ComfyUI 就拉起、崩了就重启重跑"，**已存在的图跳过**；
   ③批量出图改用 `--disable-all-custom-nodes` 干净模式——改完后 28 张一次跑完没有崩。
   另：长任务一律走 Windows 计划任务（见上文"批量出图"），会话进程被打断会连坐杀掉子进程。
+- 2026-10-07（用户反馈 → 07 防克隆重做）：用户看完 A/B 后的结论——**整体 WAI-illustrious v17 胜出**；
+  唯一例外是 **NoobAI 的 01-a 构图用户"喜欢"，保留为候选**（此前"疑似"是打字错误）；07 出现**克隆人**，要求避免。
+  做法：新增 `JOBS[7] = duo_bunny2`（提示词/负向见第四节"克隆人"行）——背景改纯色摄影棚（去掉照片墙）、
+  两个角色分别用 `(hatsune miku:1.1)` / `(kasane teto:1.1)` 锚定、负向压 3girls/4girls/clone/相框人像。
+  结果（各 3 版、1536×648，21:26 跑完并已还显存）：**WAI 3/3 干净**（`08_duo_bunny2_a/b/c.png`）；
+  **NoobAI 3 版里 1 版画成三个女孩、1 版有漂浮兔耳瑕疵** → 多人题材优先用 WAI。
+  旧版 07 留在 `.splash_gen\<底模>\07_duo_bunny_*.png` 只作对照，不要再用。
 
 ## 七、项目规矩（2026-10-07 起，来自用户与 PC 端主程序会话）
 
