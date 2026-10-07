@@ -209,6 +209,9 @@ WebUI 里用 JS 实现一遍，PC 端 Python 实现为准绳，两端用同一�
 
 - 演示库：网格 54 格、缩略图 **54/54** 解码、图谱有内容、控制台 0 报错、无横向溢出 → `VERDICT: PASS`
 - 真实库（PC 只读导出，全年龄已评级 32 张）：缩略图 **32/32**，其余同上 → `VERDICT: PASS`
+- 扫描链路（`E:\ImageTagsBeta` 只读扫描根，不经 Android 壳）：**112/112** 张入索引、识别出 1 个系列、
+  控制台 0 报错 → 证明"扫描 → 文件名规则解析 → 索引"这条链真的跑得通（不只是读现成索引）
+- 设备面板：浏览器下如实给出"发不出 UDP + 手动连接"说明，不假装搜到设备
 - 截图落盘 `图片标签工坊_移动端\shots\`（含 `shots\real\` 真实库一组），不入版本库
 
 **⚠ 修正第二节 / 5.4 的一处描述（重要，PC 端契约按这条为准）**
@@ -240,6 +243,35 @@ PC 端已把发现协议做出来（`app/devices.py`，UDP 47823 广播 + 配对
 
 自检里已包含这一步：浏览器下设备面板给出"浏览器发不出 UDP + 手动连接"的说明，`shots\devices.png` 可见。
 
+### 5.10 两端规则对拍（可重复跑，2026-10-07）
+
+文档 5.3 承诺"两端用同一批样例对拍"——现在是真的脚本：`tools\rules-parity.py`
+（PC 端直接 import `app.naming` / `app.tag_i18n` 当真值，本端在浏览器里跑 JS 实现，逐条比）。
+
+```
+D:\Anaconda\python.exe tools\rules-parity.py --url http://127.0.0.1:5173/
+→ 对拍样例：文件名 12 · 分级 27 · 中文名 34      VERDICT: PASS（两端规则逐条一致）
+```
+
+首次跑就抓出两个真实 bug（都已修）：
+
+1. `rating:general` 认不出来 —— 归一化没去掉冒号（PC 端别名表里有 `rating:general` 这条）。
+2. `R18G（18禁猎奇）` 被误判成 **r18** —— 前缀匹配按插入顺序命中，`r18` 先于 `r18g`；改为**取最长匹配**。
+
+为了不依赖 Android 壳也能端到端自检扫描链路，`tools\dev-server.py` 加了两个**只读**接口
+（仅 127.0.0.1、仅限 `--scan-root` 指定的目录）：
+
+```
+python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
+  GET /api/roots            → 扫描根列表
+  GET /api/list?path=…      → {dirs,files}（语义与原生桥 listDir 完全一致）
+  GET /orig/<rootIndex>/<rel> → 原图字节（只读，仅开发用）
+```
+
+对应前端数据源 `devfs`（设置面板里叫「开发目录」）。另修了一处扫描判定：
+目录里**大部分是页码文件名**才算系列；普通子目录里 tag 只来自每张图自己的文件名
+（与 PC 端写盘规则一致）。
+
 **下一步从这开始**：
 
 1. M1：Android WebView 壳（`android/` 目前为空）——`window.imtagNative` 契约见 `webui/js/data/sources.js` 顶部注释；
@@ -251,6 +283,10 @@ PC 端已把发现协议做出来（`app/devices.py`，UDP 47823 广播 + 配对
 
 ## 六、变更记录
 
+- 2026-10-07（晚·3）：**规则对拍脚本落地**（`tools\rules-parity.py`，PC Python 真值 vs 本端 JS，12 文件名 + 27 分级 + 34 中文名，PASS），
+  并据它修掉两个真实 bug：`rating:general` 因未去冒号认不出、`R18G（18禁猎奇）` 被前缀匹配误判成 r18（改为取最长匹配）。
+  开发服务器加**只读**扫描根接口（`--scan-root` → `/api/roots`、`/api/list`、`/orig/…`）+ 前端 `devfs` 数据源，
+  端到端验证了"扫描 → 索引"链路：`E:\ImageTagsBeta` 112/112 张、识别 1 个系列。扫描规则修正：只有"多数是页码文件名"的目录算系列。
 - 2026-10-07（晚·2）：按 PC 端会话的核实结果**修正缩略图探测顺序**为 340 → 320 → 200 → 160
   （审核队列是 200，不是 320；320 那批来自导入对话框），工具已改并重新导出索引（库 49/49、全年龄集 32/32 命中）。
   **接入设备发现客户端骨架**：按 PC 端 `app/devices.py` 的 UDP 47823 协议（`{app:"imagetag",query:"who"}` ↔
