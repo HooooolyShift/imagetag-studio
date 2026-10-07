@@ -304,3 +304,19 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   观感：偏柔和/厚涂感，与 SDXL 系（NoobAI/WAI 的平涂）明显不同；官方建议常规变体 30-50 步、CFG 4-5，turbo 变体 CFG 1、8-12 步。
   待办：把它做成 SwarmUI 的自定义工作流预设，界面上也能直接选 Anima（SwarmUI 的模型下拉默认只认 checkpoints）。
 
+### 8.7 "页面打不开 / 看不到提示词助手" 的根因与修法（2026-10-07 晚）
+
+- **端口会断**：SwarmUI 是我在会话里起的进程，**我的会话结束/机器断电后它不会自己复活**，
+  期间我又反复停服重建扩展，所以用户点的时候正好是"拒绝连接"。
+  → 已注册**开机自启任务** `ImageTagSwarmAutoStart`：登录时静默拉起 ComfyUI(8188, 干净模式) + SwarmUI(7801)；
+  脚本 `E:\SwarmUI\autostart-services.ps1`（纯 ASCII，避免 PS5.1 编码坑）。
+- **扩展脚本没被页面加载**：SwarmUI 的 `GatherExtensionPageAdditions()` 只把**它自己启动时登记的**扩展资源
+  挂进页面，我们后加的扩展 `/ExtensionFile/PromptHelperExtension/...` 一直 404，页面里也没有 `<script>`。
+  → 改为走主站静态目录：把 JS/CSS 复制到 `src\wwwroot\js\itg_prompt_helper.js`、
+  `src\wwwroot\css\itg_prompt_helper.css`，并在 `src\Pages\Shared\_Layout.cshtml` 里引用
+  （和 lang/notranslate 一起属于上游文件的本地改动清单）。
+- 验证：页面 HTML 里能搜到 `itg_prompt_helper.js`；无头浏览器实测
+  `#prompt_helper_panel` 存在，面板截图 `.verify_pics\panel.png`。
+- **注意**：提示词助手是 **SwarmUI（7801）** 的界面元素，不在 ComfyUI 原生界面（8188）里；
+  打开 `http://localhost:7801/#simple`，面板固定在**右下角**（"提示词助手（中文 → 标签）"）。
+
