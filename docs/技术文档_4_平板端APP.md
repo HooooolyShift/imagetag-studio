@@ -283,6 +283,24 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 
 ## 六、变更记录
 
+- 2026-10-07（晚·7）：**图谱改用 PC 端移交件 + 审核台接通**。
+  ① 图谱：直接使用 `docs/handover/pc_graph_port.js`（拷进 `webui/js/graph/pc-graph.js`，常量/配色/动效不自己写），
+  本端只做喂数据与工具条。**移植件有两处判断错误，已按 PC 源码 `app/ui/taxonomy.py` 修好**（都已加注释标明出处）：
+  (a) 尺寸：PC 判的是"**这个标签自己**有没有子标签"(`taxonomy.py:1500-1506`)，移植件写成"父节点有没有子节点"
+  → 所有标签都画成中圆 92（层级形态消失）；(b) 色系：PC 用 `tags.category` 的序号 (`taxonomy.py:1497,1508-1514`)，
+  移植件爬到"最顶层分类"→ 本库顶层是唯一的容器「全部标签」→ **整张图一个色系**。另外 PC 不画根容器
+  (`taxonomy.py:1518-1521`)，本端也已跳过。修正后实测：19 个色系、三种圆径（68/92/118）、同心环结构，与 PC 一致。
+ ② 审核台（`webui/js/views/review.js`）：连上 PC 才出现在左导航；标签三态 ✓保留 / ✗否决 / ⊘丢弃、
+  分级 4 键（1-4 快捷键）、上一张/下一张/跳过、空格提交、「撤销上一次」（`/api/review/undo`）；
+  **只有提交才写库**（与 PC 一致：没点确认就关窗 = 本次作废、不写库不反馈）；提交带 `ver` 做乐观并发。
+  ⚠ **发现的 PC 端 bug（会卡死移动端审核，已报）**：`lan_api.py` 两处 ver 算法不一致 —— 队列端
+  `_review_ver(tags, r["rating"])` 传 `None`，提交端 `(row["rating"] if row else "") or ""` 传空串，
+  哈希不同（实测 `md5("rating=None")=a8c856…` vs `md5("rating=")=5b1553…`），于是**未定级的图首次提交必 409**
+  （本库 29 张待审里绝大多数是这种）。修法：两处统一（建议都用 `or ""`）。本端已加一次性兜底：
+  409 时用响应里带的服务端当前 ver 重试一次（实测 200），PC 端修好后这段可删。
+  ③ 自检（`tools/pc-check.py`）现在覆盖：契约层（ping/未授权 401/roots/list/thumb/image 全量与 Range 206/tags）、
+  时钟校准、`/api/thumbs` 打包、审核链路（提交 409 → 用新 ver 重试 200 → 撤销 200）、
+  界面层（PC 库 49 张 / blob 缩略图 48 / 大图 / SSE 同步 / 审核台 4 个分级键与图或空状态）→ **VERDICT: PASS**。
 - 2026-10-07（晚·6）：**图谱按第七节规格重做**（`webui/js/views/graph.js` 整文件重写）——
   数据接 `/api/graph`（分类 g<id> / 标签 t<id>，带 category、parents、count 与 PC 算好的 x/y），
   **只画当前图库里真的有的标签**（291 个 / 20 个分类 / 352 条边），坐标直接归一化后使用，不再自己跑布局；
