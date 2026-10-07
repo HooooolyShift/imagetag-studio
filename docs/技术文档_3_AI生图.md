@@ -293,4 +293,14 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   - `models\vae\qwen_image_vae.safetensors`（242 MB）
   下载脚本 `tools\fetch_anima.py`（走 hf-mirror；urllib 的 308 重定向已在 `fetch_model.py` 里补上）。
 - 官方用法：ComfyUI 原生支持；turbo 版 CFG 1 / 8-12 步，常规版 30-50 步、CFG 4-5。
+- **实测跑通**（2026-10-07 22:5x，768×768 / 24 步 / CFG 4.5 / euler+simple，57.7 秒，RTX 4070 Laptop）：
+  产物 `.verify_pics\anima_test.png`。写 API 工作流的关键（照官方 `anima_comparison.json` 抄的）：
+  ```json
+  UNETLoader(anima-aesthetic-v1.1.safetensors)
+    → ModelSamplingAuraFlow(shift=3.0) → KSampler
+  CLIPLoader(qwen_3_06b_base.safetensors, type="stable_diffusion")   ← 注意 type 是 stable_diffusion，不是 qwen_image
+  VAELoader(qwen_image_vae.safetensors) → VAEDecode
+  ```
+  观感：偏柔和/厚涂感，与 SDXL 系（NoobAI/WAI 的平涂）明显不同；官方建议常规变体 30-50 步、CFG 4-5，turbo 变体 CFG 1、8-12 步。
+  待办：把它做成 SwarmUI 的自定义工作流预设，界面上也能直接选 Anima（SwarmUI 的模型下拉默认只认 checkpoints）。
 
