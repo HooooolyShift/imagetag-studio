@@ -183,6 +183,14 @@ CREATE TABLE IF NOT EXISTS jobs(
     created_at REAL,
     updated_at REAL
 );
+-- 审核撤销栈：每完成一次审核（通过/否决/丢弃/改分级）记一条快照，可逐条撤销
+CREATE TABLE IF NOT EXISTS review_undo(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    payload TEXT NOT NULL,          -- JSON：改之前的标签行 + 分级 + reviewed
+    note TEXT,
+    created_at REAL
+);
 -- 重复图：误报反馈（标记过“这不是重复”的组合以后不再提示）
 CREATE TABLE IF NOT EXISTS dup_feedback(
     pair_key TEXT PRIMARY KEY,
@@ -612,6 +620,55 @@ class Store:
                            (status, time.time(), file_id))
         self.execute("UPDATE files SET reviewed=1 WHERE id=?", (file_id,))
         return cur.rowcount
+
+    # ---------------- 审核撤销栈 ----------------
+    def push_review_undo(self, file_id: int, payload: str, note: str = "", keep: int = 50) -> int:
+        """记一条撤销快照（payload 是改之前的标签行/分级/reviewed 的 JSON）。"""
+        cur = self.execute(
+            "INSERT INTO review_undo(file_id, payload, note, created_at) VALUES(?,?,?,?)",
+            (int(file_id), payload, note, time.time()))
+        # 只留最近 keep 条，避免无限长
+        self.execute(
+            "DELETE FROM review_undo WHERE id NOT IN "
+            "(SELECT id FROM review_undo ORDER BY id DESC LIMIT ?)", (int(keep),))
+        return int(cur.lastrowid or 0)
+
+    def pop_review_undo(self, file_id: int | None = None) -> sqlite3.Row | None:
+        """取出最近一条快照并删掉它（file_id 给了就只找这张图的）。"""
+        if file_id is None:
+            row = self.one("SELECT * FROM review_undo ORDER BY id DESC LIMIT 1")
+        else:
+            row = self.one("SELECT * FROM review_undo WHERE file_id=? ORDER BY id DESC LIMIT 1",
+                           (int(file_id),))
+        if row is not None:
+            self.execute("DELETE FROM review_undo WHERE id=?", (int(row["id"]),))
+        return row
+
+    def count_review_undo(self, file_id: int | None = None) -> int:
+        if file_id is None:
+            return int(self.one("SELECT COUNT(*) c FROM review_undo")["c"])
+        return int(self.one("SELECT COUNT(*) c FROM review_undo WHERE file_id=?", (int(file_id),))["c"])
+
+    def file_tags_rows(self, file_id: int) -> list[sqlite3.Row]:
+        """这个文件的全部标签行（含 pending/rejected，撤销时用来原样还原）。"""
+        return self.query(
+            "SELECT t.name, ft.source, ft.score, ft.status FROM file_tags ft "
+            "JOIN tags t ON t.id=ft.tag_id WHERE ft.file_id=? ORDER BY t.name", (int(file_id),))
+
+    def restore_file_tags(self, file_id: int, rows: list[dict]) -> None:
+        """把某个文件的标签行恢复成给定快照（先清空再按快照插回）。"""
+        fid = int(file_id)
+        self.execute("DELETE FROM file_tags WHERE file_id=?", (fid,))
+        for r in rows or []:
+            name = str(r.get("name") or "").strip()
+            if not name:
+                continue
+            tid = self.ensure_tag(name, "other")
+            self.execute(
+                "INSERT OR REPLACE INTO file_tags(file_id, tag_id, source, score, status, updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (fid, int(tid), str(r.get("source") or "manual"), float(r.get("score") or 0.0),
+                 str(r.get("status") or "confirmed"), time.time()))
 
     def pending_files(self, limit: int = 500) -> list[sqlite3.Row]:
         """待审核图片：有 pending 标签的，**或者**还没定级的（未定级也要人工看，避免漏掉）。"""

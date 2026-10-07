@@ -72,6 +72,12 @@ class ReviewDialog(QDialog):
             b = QPushButton(text)
             b.clicked.connect(slot)
             top.addWidget(b)
+        # 撤销审核（可连续撤销多次）：Ctrl+Z 或点按钮
+        self.b_undo = QPushButton("↶ 撤销审核 (Ctrl+Z)")
+        self.b_undo.setToolTip("把最近一次「审核完毕 / 保存 / 通过否决」按原样退回去（含分级与已审标记），"
+                               "并重算这些标签的自训练探针；可连续撤销多次。")
+        self.b_undo.clicked.connect(self.undo_review)
+        top.addWidget(self.b_undo)
         # 入库位置：默认图库根，可换子目录 / 新建 / 重命名
         top.addWidget(QLabel("入库位置："))
         self.dest = QComboBox()
@@ -729,6 +735,29 @@ class ReviewDialog(QDialog):
         self.save_decisions()
         self.next_file()
 
+    def undo_review(self) -> None:
+        """撤销最近一次审核（先退当前图，没有再退全局最近一条）。"""
+        fid = int(self.queue[self.index]["id"]) if self.queue else None
+        res = self.library.undo_last_review(fid) if fid else {"ok": False}
+        if not res.get("ok") and fid is not None:
+            res = self.library.undo_last_review(None)      # 当前图没有记录 → 退全局最近一条
+        if not res.get("ok"):
+            self.status.setText("没有可撤销的审核记录")
+            return
+        self.decisions = {}
+        self.reload_queue()
+        try:                                   # 定位回被撤销的那张，方便接着审
+            target = int(res.get("file", 0))
+            for i, r in enumerate(self.queue):
+                if int(r["id"]) == target:
+                    self.index = i
+                    self.show_current()
+                    break
+        except Exception:
+            pass
+        self.status.setText(f"已撤销审核（文件 {res.get('file')}，还原 {res.get('tags')} 个标签行）"
+                            f"｜{res.get('note') or ''}｜剩余可撤销 {self.library.review_undo_count()}")
+
     def finish_current(self) -> None:
         """审核完毕：通过/否决按当前判断写库，其余未决标签直接丢弃（不参与模型反馈）。"""
         if not self.queue:
@@ -1081,7 +1110,9 @@ class ReviewDialog(QDialog):
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
-        self.save_decisions(silent=True)
+        # 「审核一半没点确认就关窗」= 本次判断作废（这是用户明确要保留的特性）：
+        # 不写库、**不产生任何模型反馈**（只有点「审核完毕/保存」才算确认、才反馈）。
+        self.decisions = {}
         self.changed.emit()
         event.accept()
 

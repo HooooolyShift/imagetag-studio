@@ -274,6 +274,7 @@ class Library:
 
     def review_file(self, file_id: int, decisions: dict) -> dict:
         """提交一张图的审核结果。decisions: {标签名: 'confirmed' | 'rejected' | 'delete'}"""
+        snap = self._snapshot_for_undo(file_id)
         for name, action in decisions.items():
             if action == "delete":
                 self.store.remove_file_tags(file_id, [name])
@@ -284,7 +285,59 @@ class Library:
         if decisions:
             self.update_probes_for_tags(list(decisions.keys()))
         self.store.refresh_counts()
+        self._push_undo(file_id, snap, f"审核 {len(decisions)} 条")
         return {"file": file_id, "changed": len(decisions)}
+
+    # -------------------------------------------------------------- 审核撤销
+    def _snapshot_for_undo(self, file_id: int) -> dict:
+        """记下"改之前"的样子：标签行（名/来源/分数/状态）+ 分级 + 是否已审。"""
+        rows = [{"name": r["name"], "source": r["source"], "score": r["score"], "status": r["status"]}
+                for r in self.store.file_tags_rows(file_id)]
+        meta = self.store.one("SELECT rating, reviewed FROM files WHERE id=?", (int(file_id),))
+        return {"rows": rows,
+                "rating": (meta["rating"] if meta else "") or "",
+                "reviewed": int(meta["reviewed"] or 0) if meta else 0}
+
+    def _push_undo(self, file_id: int, snap: dict, note: str = "") -> None:
+        import json
+        try:
+            self.store.push_review_undo(int(file_id), json.dumps(snap, ensure_ascii=False), note)
+        except Exception:
+            pass
+
+    def undo_last_review(self, file_id: int | None = None) -> dict:
+        """撤销最近一次审核（可连续撤销若干次）：把标签行/分级/已审标记还原成改之前的样子。
+
+        撤销后还会重算这些标签的自训练探针——等于把"刚才那次反馈"也退回去。
+        注意：已经写进文件名的标签不受影响（那要另外用「写回文件名」覆盖）。
+        """
+        import json
+        row = self.store.pop_review_undo(file_id)
+        if row is None:
+            return {"ok": False, "msg": "没有可撤销的审核记录"}
+        fid = int(row["file_id"])
+        try:
+            snap = json.loads(row["payload"] or "{}")
+        except Exception:
+            snap = {}
+        names = [str(r.get("name")) for r in (snap.get("rows") or []) if r.get("name")]
+        self.store.restore_file_tags(fid, snap.get("rows") or [])
+        self.store.execute("UPDATE files SET rating=?, reviewed=? WHERE id=?",
+                           (snap.get("rating") or None, int(snap.get("reviewed") or 0), fid))
+        self.store.refresh_counts()
+        if names:
+            try:
+                self.update_probes_for_tags(names)      # 反馈也退回去（按还原后的样本重算）
+            except Exception:
+                pass
+        return {"ok": True, "file": fid, "tags": len(snap.get("rows") or []),
+                "note": row["note"] or ""}
+
+    def review_undo_count(self, file_id: int | None = None) -> int:
+        try:
+            return self.store.count_review_undo(file_id)
+        except Exception:
+            return 0
 
     def finish_review(self, file_id: int, confirmed: Sequence[str], rejected: Sequence[str],
                       drop: Sequence[str], rating: str | None = None) -> dict:
@@ -292,6 +345,7 @@ class Library:
 
         丢弃 = 删掉该行，既不生效也不参与模型训练（只有明确通过/否决才算反馈）。
         """
+        snap = self._snapshot_for_undo(file_id)
         for n in confirmed:
             self.store.set_tag_status(file_id, [n], "confirmed")
         for n in rejected:
@@ -309,6 +363,9 @@ class Library:
         if feedback:
             self.update_probes_for_tags(feedback)
         self.store.refresh_counts()
+        self._push_undo(file_id, snap,
+                        f"审核完毕：通过 {len(confirmed)}｜否决 {len(rejected)}｜丢弃 {len(drop)}"
+                        + ("｜改分级" if rating else ""))
         return {"confirmed": len(confirmed), "rejected": len(rejected), "dropped": len(drop)}
 
     def tag_zh(self, name: str) -> str:
