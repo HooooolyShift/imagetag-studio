@@ -61,10 +61,18 @@ def main() -> int:
             break
 
     settings = Settings.load()
+    SPLASH_STEPS = 4
+    # 单实例判定必须放在"显示开屏"之前：以前是先弹开屏再判重，于是同时开多个实例时
+    # 会先各弹一个过渡窗口，用户看到好几个开屏在闪。
+    from . import singleton
+    if not singleton.acquire(data_dir()):
+        QMessageBox.warning(None, f"{DISPLAY_NAME} 已在运行",
+                            "检测到已经有一个「图片标签工坊」在运行。\n\n"
+                            "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
+        return 1
+
     # 启动过渡窗口（类似 Adobe 系列的开屏）：先显示封面，窗口就绪后再收掉
     splash = None
-    SPLASH_STEPS = 4
-
     def splash_step(n: int, text: str) -> None:
         """更新开屏上的启动进度（第 n/SPLASH_STEPS 步）。"""
         if splash is None:
@@ -85,12 +93,6 @@ def main() -> int:
     model_lib.setup_env(settings.models_path())
     perf.configure(settings)
     splash_step(2, "正在加载模型与性能挡位…")
-    from . import singleton
-    if not singleton.acquire(data_dir()):
-        QMessageBox.warning(None, f"{DISPLAY_NAME} 已在运行",
-                            "检测到已经有一个「图片标签工坊」在运行。\n\n"
-                            "同时开两个会同时写数据库，可能把索引写坏——请用已经打开的那个窗口。")
-        return 1
     store = Store()
     splash_step(3, "正在读取图库…")
     win = MainWindow(store, settings)

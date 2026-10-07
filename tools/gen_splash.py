@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -218,12 +219,17 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     print(f"底模: {ckpt}  尺寸: {W}x{H}  每张 {variants} 版  产物目录: {out}")
     letters = "abcdefgh"
+    force = os.environ.get("SPLASH_FORCE", "") not in ("", "0", "false")
     for i, (tag, prompt, neg_extra) in enumerate(JOBS, 1):
         if only and not any(tag.startswith(o) or f"{i:02d}" == o for o in only):
             continue
         for v in range(variants):
             seed = 20261006 + i * 977 + v * 41
             dst = out / f"{i:02d}_{tag}_{letters[v]}.png"
+            # 已出过的直接跳过：被打断后重跑不浪费（要覆盖就设环境变量 SPLASH_FORCE=1）
+            if dst.exists() and dst.stat().st_size > 0 and not force:
+                print(f"[{i}/{len(JOBS)}] {tag}_{letters[v]} 已存在，跳过 ({dst.name})")
+                continue
             try:
                 res = api("/prompt", {"prompt": build(ckpt, prompt, neg_extra, seed)})
                 pid = res["prompt_id"]
