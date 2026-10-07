@@ -1227,14 +1227,19 @@ class MainWindow(QMainWindow):
                 from ..config import VERSION
                 import socket as _socket
                 name = (getattr(self.settings, "lan_device_name", "") or "").strip() \
-                    or socket.gethostname() or "PC"
+                    or _socket.gethostname() or "PC"
                 svc = LanService(name, role="pc",
                                  version=VERSION, parent=self,
                                  trusted=list(getattr(self.settings, "lan_trusted", []) or []))
                 svc.changed.connect(self._persist_trusted)
                 svc.pairRequested.connect(self.on_pair_requested)
                 svc.start()
-            except Exception:
+            except Exception as exc:
+                # 别静默吞：局域网服务起不来会直接影响平板/手机连接，
+                # 之前就是这里吞掉异常，导致"服务没起来"查了半天。
+                import traceback
+                traceback.print_exc()
+                print("[局域网] 设备发现服务启动失败：", exc)
                 svc = None
             self._lan = svc
         return svc

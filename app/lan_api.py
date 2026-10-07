@@ -37,6 +37,21 @@ API_PORT = 47824
 THUMB_RATING_ORDER = ("全年龄", "R15", "R18", "R18G")
 
 
+def review_ver(tags, rating: str = "") -> str:
+    """审核版本号：标签(名+状态) + 分级 的哈希。用来做乐观并发控制。
+
+    ⚠ 分级一定要先归一成字符串：队列端拿到的是 `None`（未定级），提交端是 `""`，
+    直接 f-string 会分别得到 "None" 和 ""，哈希不一样 → 未定级的图首次提交必 409。
+    （2026-10-07 平板端报的"审核卡死"就是这条；**两端都必须走 `rating or ""`**。）
+    """
+    rating = str(rating or "")
+    h = hashlib.md5()
+    for t in sorted(tags, key=lambda x: str(x.get("name"))):
+        h.update(f"{t.get('name')}|{t.get('status')}\n".encode("utf-8", "ignore"))
+    h.update(f"rating={rating}".encode("utf-8", "ignore"))
+    return h.hexdigest()[:16]
+
+
 class LanApi:
     """局域网 HTTP 服务：随设备发现一起启动。"""
 
@@ -274,12 +289,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _review_ver(tags, rating: str = "") -> str:
-        """审核版本号：标签(名+状态) + 分级 的哈希。用来做乐观并发控制。"""
-        h = hashlib.md5()
-        for t in sorted(tags, key=lambda x: str(x.get("name"))):
-            h.update(f"{t.get('name')}|{t.get('status')}\n".encode("utf-8", "ignore"))
-        h.update(f"rating={rating}".encode("utf-8", "ignore"))
-        return h.hexdigest()[:16]
+        return review_ver(tags, rating)
 
     def _thumb(self, q: dict) -> None:
         try:
@@ -497,7 +507,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                         "path": r["path"], "n_pending": int(r["n_pending"] or 0),
                         "no_rating": bool(r["no_rating"]) if "no_rating" in r.keys() else False,
                         "rating": (r["rating"] if "rating" in r.keys() else "") or "",
-                        "ver": self._review_ver(tags, (r["rating"] if "rating" in r.keys() else "")),
+                        "ver": self._review_ver(tags, (r["rating"] if "rating" in r.keys() else "") or ""),
                         "tags": tags, "thumb_sizes": self._present_thumbs(fid, r["mtime"] or 0)})
         summary = self.api.store.pending_summary()
         self._json({"ok": True, "count": len(out), "summary": summary, "files": out})
