@@ -283,6 +283,16 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 
 ## 六、变更记录
 
+- 2026-10-07（晚·5）：**时间基准已校准**（用户反馈"自检时间像未来时间"）——本端一律以本机时间为准：
+  Python 用 `datetime.now()`（不用 `utcnow`/`gmtime`），JS 用 `new Date()`/`Date.now()`（不手工 +8），
+  playwright 统一 `timezone_id="Asia/Shanghai"`（shot / rules-parity / debug-page / pc-check 四个脚本已加）。
+  `pc-check.py` 新增时钟校准：拿 `/api/ping` 的 `server_time` 与本机 `time.time()` 相减（epoch 相减与时区无关），
+  实测 **偏差 +0.0 秒**（本机 2026-10-07 21:06:34 / PC 端 21:06:34 UTC+08:00）。自检服务器启动也打印本机时间。
+  **接入 `/api/thumbs?ids=…&size=`**（zip，`<id>.jpg`）：自写极小 zip 读取器（浏览器原生 `DecompressionStream('deflate-raw')`，
+  不引三方库），首屏 240 张一次打包补水 —— 实测 5 张 87KB、界面 48 张缩略图全部走 blob（打包 1 次 / 单张 1 次），
+  拿不到的条目仍回退单张懒加载。全部自检仍 PASS（shot / rules-parity / pc-check 三条）。
+  新接口待用：`/api/graph` 现已带全节点 x/y（明天做图谱时直接用，不用自己布局）、
+  `/api/review/queue|apply` 的 `ver` 乐观并发（409 stale 重拉），审核台开工时接。
 - 2026-10-07（晚·4）：**连 PC 链路打通并自检通过**（客户端 `webui/js/data/pc-client.js`）——
   发现/配对走 UDP 47823、连接走 HTTP（发现报文里的 `api` 端口）、SSE 订阅 `/api/events`。
   自检用 `tools/lan-test-server.py`（跑 **PC 端自己的** `app/lan_api.py` + 数据库副本，不碰用户数据）
