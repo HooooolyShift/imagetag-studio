@@ -123,6 +123,30 @@ models/         本地模型（约 3 GB）
 
 ## 七·补　413（请求体过大）巡查约定
 
+## 七·补2　局域网连接（PC 侧已实现，2026-10-07 晚）
+
+**发现**：UDP 47823，JSON `{app:"imagetag", role, name, version, port, api, code}`；
+查询 `{app:"imagetag", query:"who"}`；配对请求 `{app:"imagetag", query:"pair", code, device_id, name, role}`
+→ PC 回 `{app:"imagetag", reply:"pair_ok"|"pair_denied", code, pc}`。
+
+**安全（用户要求：双向确认，两边都点同意才连）**：
+- 移动端发 `pair` 时要带 **PC 显示的 4 位对码**；对码不对直接 `pair_denied(reason=bad_code)`。
+- 对码对了 **PC 端还会弹确认框**（设备名/类型/IP/对码），用户点「同意」才会把该 `device_id`
+  记进 `settings.lan_trusted` 并回 `pair_ok`；点了「拒绝」或超时都不放行。
+- 之后的每个 API 请求都要带 `X-Imtag-Code`（对码）**和** `X-Imtag-Device`（设备号），
+  两个都对且设备已授权才放行，否则 401。设备号由移动端生成并持久保存（IP 变了也不影响授权）。
+
+**连接 API**（`app/lan_api.py`，端口 **47824**，HTTP + SSE，标准库实现）：
+`/api/ping`（免对码）、`/api/roots`、`/api/list?root=&dir=&offset=&limit=`、
+`/api/thumb?id=&size=`、`/api/image?id=`（支持 HTTP Range）、`/api/tags`、
+`/api/events`（SSE 实时推送）、`POST /api/file_tags`（远程加/删标签）。
+实测：缩略图 200/JPEG、原图 206 + Content-Range、未授权 401、授权后 200、SSE 收到 `tags_changed`。
+
+**稳定性**（用户要求：除"离开局域网/设备关机"外不要断）：
+- 已授权设备**不受 8 秒广播窗口影响**（丢一两个广播不会掉线），只有真的收不到广播（离线/关机）才从列表消失；
+- SSE 每 15 秒发心跳、连接不设超时；PC 端不主动断开，移动端断线自动重连即可。
+- 待办：SO_KEEPALIVE、移动端重连退避、连接状态在「已连接设备」里显示。
+
 - 背景：Codex 每轮会把整条会话历史重发；历史里累积的 base64 截图会把请求体推到几十 MB，
   撞到服务端上限后**那条线程每一轮都会失败**（unexpected status 413 / Payload Too Large）。
 - **巡查只由 PC 端主程序会话负责**（用户 2026-10-07 明确：所有会话各自查会乱套）：

@@ -60,13 +60,19 @@ def comfy_up() -> bool:
         return False
 
 
-def ensure_comfy(log) -> bool:
+def ensure_comfy(log, clean: bool = True) -> bool:
     if comfy_up():
         print("[batch] ComfyUI 已在运行", file=log)
         return True
-    print("[batch] 拉起 ComfyUI …", file=log)
+    cmd = [str(COMFY / "python" / "python.exe"), "main.py", "--listen", "127.0.0.1", "--port", "8188"]
+    if clean:
+        # 干净模式：gen_splash 只用核心节点；秋叶包里的自定义节点会 monkey-patch 采样
+        # （Advanced-ControlNet / AnimateDiff / Impact-Pack 都在采样链上打补丁），
+        # 连续出图时实测崩过一次（faulthandler 堆栈就停在采样链里），所以批量出图不带它们。
+        cmd.append("--disable-all-custom-nodes")
+    print(f"[batch] 拉起 ComfyUI … {'（干净模式，禁自定义节点）' if clean else '（含自定义节点）'}", file=log)
     subprocess.Popen(
-        [str(COMFY / "python" / "python.exe"), "main.py", "--listen", "127.0.0.1", "--port", "8188"],
+        cmd,
         cwd=str(COMFY),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -99,6 +105,8 @@ def main() -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--log", default="")
     ap.add_argument("--free", action="store_true")
+    ap.add_argument("--custom-nodes", action="store_true",
+                    help="拉起 ComfyUI 时保留自定义节点（默认启用干净模式）")
     args = ap.parse_args()
 
     log = open(args.log, "a", encoding="utf-8") if args.log else sys.stdout
@@ -106,16 +114,24 @@ def main() -> int:
         sys.stdout = Tee(sys.__stdout__, log)
     try:
         print(f"\n===== [batch] 开始 {time.strftime('%F %T')} =====")
-        if not ensure_comfy(sys.stdout):
+        if not ensure_comfy(sys.stdout, clean=not args.custom_nodes):
             return 1
         for model in [m.strip() for m in args.models.split(",") if m.strip()]:
-            print(f"\n[batch] >>> 底模 {model}（每张 {args.variants} 版，宽 {args.width}）")
-            sys.argv = [str(ROOT / "tools" / "gen_splash.py"), model,
-                        str(args.variants), args.only, str(args.width)]
-            try:
-                gen_splash.main()
-            except Exception as exc:                 # noqa: BLE001
-                print(f"[batch] 底模 {model} 出图出错：{exc}")
+            for attempt in range(1, 4):
+                print(f"\n[batch] >>> 底模 {model}（每张 {args.variants} 版，宽 {args.width}）"
+                      + (f" 第 {attempt} 次尝试" if attempt > 1 else ""))
+                sys.argv = [str(ROOT / "tools" / "gen_splash.py"), model,
+                            str(args.variants), args.only, str(args.width)]
+                try:
+                    rc = gen_splash.main()
+                except Exception as exc:             # noqa: BLE001
+                    print(f"[batch] 底模 {model} 出图出错：{exc}")
+                    rc = 2
+                if rc != 2:
+                    break
+                print(f"[batch] ComfyUI 中途崩了，重启后重跑 {model}（已出的图会自动跳过）")
+                time.sleep(5)
+                ensure_comfy(sys.stdout, clean=not args.custom_nodes)
         if args.free:
             free_vram(sys.stdout)
         print(f"===== [batch] ALL DONE {time.strftime('%F %T')} =====")

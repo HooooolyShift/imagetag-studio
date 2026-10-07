@@ -135,6 +135,10 @@ def api(path: str, data=None):
         return json.load(r)
 
 
+class ComfyDown(RuntimeError):
+    """ComfyUI 进程没了（连续连不上）——调用方重启它之后再重跑即可。"""
+
+
 def _snap(n: float) -> int:
     return max(64, int(round(n / 8)) * 8)
 
@@ -179,11 +183,16 @@ def build(ckpt: str, prompt: str, neg_extra: str, seed: int,
 
 def wait_and_save(pid: str, dst: Path) -> bool:
     t0 = time.time()
+    fails = 0
     while time.time() - t0 < 300:
         time.sleep(3)
         try:
             hist = api(f"/history/{pid}")
+            fails = 0
         except Exception:
+            fails += 1
+            if fails >= 5:                  # ComfyUI 崩了：别在这儿干等 300 秒
+                raise ComfyDown("ComfyUI 连续 5 次连不上，判定已崩")
             continue
         if pid in hist:
             for node in hist[pid].get("outputs", {}).values():
@@ -233,11 +242,14 @@ def main() -> int:
             try:
                 res = api("/prompt", {"prompt": build(ckpt, prompt, neg_extra, seed)})
                 pid = res["prompt_id"]
+                t0 = time.time()
+                ok = wait_and_save(pid, dst)
+            except ComfyDown as exc:
+                print(f"[{i}/{len(JOBS)}] {tag}_{letters[v]} 中止：{exc}（重跑会跳过已出的图）")
+                return 2
             except Exception as exc:
                 print(f"[{i}/{len(JOBS)}] {tag}{letters[v]} 提交失败: {exc}")
                 continue
-            t0 = time.time()
-            ok = wait_and_save(pid, dst)
             print(f"[{i}/{len(JOBS)}] {tag}_{letters[v]} "
                   f"{'完成' if ok else '失败'} {time.time()-t0:.0f}s → {dst.name}")
     print("全部完成，产物在:", out)

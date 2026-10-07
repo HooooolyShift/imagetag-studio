@@ -181,6 +181,8 @@ class Settings:
     # 局域网（平板/手机端发现本机、连接本机）
     lan_enabled: bool = True               # 启动时开启设备发现（UDP 广播，仅局域网内）
     lan_device_name: str = ""              # 本机在设备列表里显示的名字（空=用计算机名）
+    lan_trusted: list = field(default_factory=list)   # 已授权设备 [{device_id,name,role}]
+    lan_require_pair: bool = True          # 连接是否必须双向确认（对码 + 本机点同意）
     auto_import_after_review: bool = False # 审核完成后自动把图片收进图库
     dup_threshold: int = 6                 # 感知哈希汉明距离阈值（越小越严格）
     dup_use_clip: bool = True              # 是否用 CLIP 再兜一层

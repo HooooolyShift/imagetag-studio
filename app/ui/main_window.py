@@ -1092,6 +1092,8 @@ class MainWindow(QMainWindow):
             row = self.store.one("SELECT manual FROM files WHERE id=?", (int(fid),))
             self.model.update_file_tags(int(fid), tags, bool(row["manual"]) if row else False)
         self.refresh_tags()
+        # 连着的平板/手机立刻能看到这次改动
+        self.lan_bump("tags_changed", file_ids=[int(f) for f in file_ids])
 
     def filter_tree_restore(self) -> None:
         """保留勾选状态刷新标签树（refresh_tags 已处理，这里留作兼容）。"""
@@ -1227,7 +1229,10 @@ class MainWindow(QMainWindow):
                 name = (getattr(self.settings, "lan_device_name", "") or "").strip() \
                     or socket.gethostname() or "PC"
                 svc = LanService(name, role="pc",
-                                 version=VERSION, parent=self)
+                                 version=VERSION, parent=self,
+                                 trusted=list(getattr(self.settings, "lan_trusted", []) or []))
+                svc.changed.connect(self._persist_trusted)
+                svc.pairRequested.connect(self.on_pair_requested)
                 svc.start()
             except Exception:
                 svc = None
@@ -1238,6 +1243,69 @@ class MainWindow(QMainWindow):
         """程序启动时就把设备发现打开，平板/手机才找得到这台 PC。"""
         if getattr(self.settings, "lan_enabled", True):
             self.lan_service()
+            self.lan_api()
+
+    def lan_api(self):
+        """局域网连接 API（图库树 / 缩略图 / 原图 / 标签 / 事件流）。"""
+        api = getattr(self, "_lan_api", None)
+        if api is None:
+            try:
+                from ..lan_api import LanApi
+                from ..config import VERSION
+                svc = self.lan_service()
+                api = LanApi(self.store, self.settings,
+                             code=(svc.pairing_code if svc is not None else "0000"),
+                             name=(svc.name if svc is not None else "PC"),
+                             version=VERSION,
+                             is_trusted=(svc.is_trusted if svc is not None else None),
+                             require_pair=bool(getattr(self.settings, "lan_require_pair", True)))
+                if not api.start():
+                    api = None
+            except Exception:
+                api = None
+            self._lan_api = api
+        return api
+
+    def lan_bump(self, kind: str, **data) -> None:
+        """把"数据变了"推给连着的移动端（在改完标签/图库后调用）。"""
+        api = getattr(self, "_lan_api", None)
+        if api is not None:
+            try:
+                api.bump(kind, **data)
+            except Exception:
+                pass
+
+    def _persist_trusted(self) -> None:
+        """把"已授权设备"写回设置（IP 会变，所以按 device_id 记）。"""
+        svc = getattr(self, "_lan", None)
+        if svc is None:
+            return
+        try:
+            self.settings.lan_trusted = list(svc.trusted)
+            self.settings.save()
+        except Exception:
+            pass
+
+    def on_pair_requested(self, info: dict) -> None:
+        """有平板/手机请求连接：本机弹确认（双向确认的一半；另一半在移动端点）。"""
+        svc = getattr(self, "_lan", None)
+        if svc is None:
+            return
+        role = {"tablet": "平板", "phone": "手机", "pc": "电脑"}.get(str(info.get("role")), str(info.get("role")))
+        txt = (f"设备名称：{info.get('name', '?')}\n"
+               f"类型：{role}\n"
+               f"地址：{info.get('ip', '?')}\n"
+               f"配对码：{info.get('code', '????')}（请和移动端屏幕上显示的 4 位数核对）\n\n"
+               "同意后这台设备就能访问本机图库 / 调用本机算力做审核；\n"
+               "只有你和对方设备上都点了「同意」才会真正连上。")
+        ans = QMessageBox.question(self, "设备请求连接", txt,
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans == QMessageBox.Yes:
+            svc.approve(str(info.get("device_id")), info.get("name", ""), info.get("role", ""),
+                        info.get("ip", ""))
+            self.status_label.setText(f"已授权设备：{info.get('name')}（{info.get('ip')}）")
+        else:
+            svc.deny(str(info.get("device_id")), info.get("ip", ""))
 
     def open_devices(self) -> None:
         from .devices_ui import DevicesDialog
@@ -2507,6 +2575,9 @@ class MainWindow(QMainWindow):
             svc = getattr(self, "_lan", None)
             if svc is not None:
                 svc.stop()
+            api = getattr(self, "_lan_api", None)
+            if api is not None:
+                api.stop()
         except Exception:
             pass
         # 这里**不再**保存设置：设置窗口已经是"改动即存"，而主窗口内存里这份一旦是旧的，
