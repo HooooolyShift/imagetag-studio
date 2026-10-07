@@ -223,3 +223,29 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
 （可选补充：**Krita + Krita AI Diffusion**（GPL-3，持续更新）连同一个 ComfyUI 后端，
 画笔式局部重绘/换装体验最好，需要另外装 Krita（约 250 MB）——用户想要再加。）
 
+### 8.1 语言与界面改造（2026-10-07，用户要求"直接用中文、收起复杂项"）
+
+- **中文没生效的真正原因**：SwarmUI 自带 `languages/zh.json` 其实**是完整的**（672 条，含 234 条参数说明），
+  但前端 `js/translator.js` 第一行优先读浏览器 cookie `display_language`，残留 `en` 就会一直英文；
+  且原版只对带 `.translate` 类的元素做替换，大量参数 tooltip / placeholder 根本不在替换范围内。
+- **本机改动（都可被 git pull 覆盖，覆盖后照此重打）**：
+  1. `src/Pages/Shared/_Layout.cshtml`：`<html lang="zh-CN" translate="no">` + `<meta name="google" content="notranslate">`
+     （防止浏览器弹"是否翻译"）。
+  2. `src/wwwroot/js/genpage/main.js`：语言以服务端用户设置为准（`language = data.language || language`）并把 cookie 同步成该值。
+  3. `src/wwwroot/js/translator.js`：替换范围从 `.translate` 扩大到 `.translate, [title], [placeholder]`。
+  4. `POST /API/ChangeUserSettings`（**扁平** `settings`，不是文档写的 `rawData`）把 local 用户设为 `zh`。
+- **补译工具**：`tools/translate_swarmui_zh.py` —— 用本机 Ollama（`qwen3-8b`，本机最好且能进 8G 显存）批量翻译
+  界面字符串，支持断点续跑（`--cache .verify_pics/zh_new.json`）与 `--merge` 合并进 `languages/zh.json`（先备份）。
+  界面字符串由无头浏览器导出到 `.verify_pics/dom_strings2.json`（按 `T:` title / `P:` placeholder / `X:` 元素文本三种查表形态）。
+  实测界面需翻译 1087 条（自带 zh.json 只覆盖 7 条命中）。
+
+### 8.2 本地扩展：中文自然语言 → 提示词（`src/Extensions/PromptHelper/`）
+
+- 界面右下角"提示词助手"面板：写中文 → 选「正向 / 只翻服装（换装）/ 负向」→ 点按钮，
+  用本机 Ollama 转成 danbooru tag 串，直接填进 Prompt 框（可选"追加"）。
+- 组件：`PromptHelperExtension.cs`（注册 `POST /API/PromptHelper`，调 `http://127.0.0.1:11434/api/chat`）、
+  `Assets/prompt_helper.js` / `.css`、`csproj`。
+- 两个坑：①**命名空间不能以 `SwarmUI.` 开头**，否则会被当成内置扩展去 `src/BuiltinExtensions` 找；
+  ②路由名 = 方法名（方法必须叫 `PromptHelper`），且扩展 DLL 缓存在
+  `src/bin/extensions/SwarmExtension<文件夹名>/…-<hash>.dll`，**改完源码必须删掉/移走这个缓存**才会重新编译。
+

@@ -27,6 +27,17 @@
   POST /api/fs/delete                   → 删除（**进回收站**）{path}
   POST /api/fs/move                     → 移动文件 {ids|paths, target}
   POST /api/import                      → 收录到图库 {ids, subdir?, move?}
+  GET  /api/similar?id=&kind=&region_id= → 相似图查找（按图或按框）
+  GET  /api/regions?id=                 → 某张图的框选区域
+  POST /api/regions/replace|delete      → 写/删框选（告诉模型标签对应哪一块）
+  POST /api/region/refine               → 区域精修打标（后台，进度走 SSE）
+  GET  /api/persons                     → 人物列表（人脸聚类结果）
+  POST /api/tags/bulk_delete            → 批量删除标签 {names, ids?, also_filename?, confirm:true}
+  POST /api/feedback/clear              → 清空模型反馈 {confirm:true}
+  POST /api/pack/export | /api/pack/import → 导出/导入学习包
+  GET  /api/exports | /api/exports/download → 列出/下载导出产物
+  POST /api/export/regions_yolo | /api/export/captions → 导出 YOLO 数据集 / SD 字幕
+  POST /api/cleanup                     → 清理失效目录与文件 {confirm:true}
   GET  /api/dupes                       → 最近一次查重结果（重复图分组）
   POST /api/dupes/scan                  → 开始查重（后台跑，进度走 SSE）
   POST /api/dupes/resolve               → 保留一张、其余隔离/删除
@@ -275,6 +286,16 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._series_detail(q)
         elif path == "/api/fs/list":
             self._fs_list(q)
+        elif path == "/api/similar":
+            self._similar(q)
+        elif path == "/api/regions":
+            self._regions(q)
+        elif path == "/api/persons":
+            self._persons()
+        elif path == "/api/exports":
+            self._exports_list()
+        elif path == "/api/exports/download":
+            self._export_download(q)
         elif path == "/api/events":
             self._events()
         else:
@@ -339,6 +360,26 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._fs_move(body)
         elif path == "/api/import":
             self._import(body)
+        elif path == "/api/regions/replace":
+            self._region_replace(body)
+        elif path == "/api/regions/delete":
+            self._region_delete(body)
+        elif path == "/api/region/refine":
+            self._region_refine(body)
+        elif path == "/api/tags/bulk_delete":
+            self._tags_bulk_delete(body)
+        elif path == "/api/feedback/clear":
+            self._feedback_clear(body)
+        elif path == "/api/pack/export":
+            self._pack_export(body)
+        elif path == "/api/pack/import":
+            self._pack_import(body)
+        elif path == "/api/export/regions_yolo":
+            self._export_yolo(body)
+        elif path == "/api/export/captions":
+            self._export_captions(body)
+        elif path == "/api/cleanup":
+            self._cleanup(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -1085,6 +1126,238 @@ class _ApiHandler(BaseHTTPRequestHandler):
             subdir=str(body.get("subdir") or ""))
         api.bump("library_changed", action="import", count=len(ids))
         self._json({"ok": bool(res.get("ok", True)), "result": res})
+
+    # ---------- 相似图 / 框选区域 / 人物 ----------
+    def _similar(self, q: dict) -> None:
+        try:
+            fid = int(q.get("id") or 0)
+        except ValueError:
+            fid = 0
+        if not fid:
+            self._json({"ok": False, "error": "bad_id"}, 400)
+            return
+        kind = "region" if str(q.get("kind") or "") == "region" else "image"
+        rid = int(q["region_id"]) if str(q.get("region_id") or "").isdigit() else None
+        limit = min(200, max(1, int(q.get("limit") or 60)))
+        try:
+            hits = self.api.library.find_similar(fid, kind=kind, region_id=rid, limit=limit)
+        except Exception as exc:
+            self._json({"ok": False, "error": "similar_failed", "detail": str(exc)}, 500)
+            return
+        out = []
+        for hid, score in hits:
+            row = self.api.store.one("SELECT * FROM files WHERE id=?", (int(hid),))
+            if row is None:
+                continue
+            d = self._file_brief(row)
+            d["score"] = round(float(score), 4)
+            out.append(d)
+        self._json({"ok": True, "base": fid, "kind": kind, "count": len(out), "files": out})
+
+    def _regions(self, q: dict) -> None:
+        try:
+            fid = int(q.get("id") or 0)
+        except ValueError:
+            fid = 0
+        if not fid:
+            self._json({"ok": False, "error": "bad_id"}, 400)
+            return
+        rows = self.api.store.regions_for_file(fid)
+        out = [{"id": int(r["id"]), "tag": r["tag_name"], "x": r["x"], "y": r["y"],
+                "w": r["w"], "h": r["h"]} for r in rows]
+        img = self.api.store.one("SELECT width, height FROM files WHERE id=?", (fid,))
+        self._json({"ok": True, "file_id": fid, "count": len(out), "regions": out,
+                    "width": (img["width"] if img else None),
+                    "height": (img["height"] if img else None)})
+
+    def _region_replace(self, body: dict) -> None:
+        try:
+            fid = int(body.get("file_id") or 0)
+            tag = str(body.get("tag") or "").strip()
+            box = [float(v) for v in (body.get("box") or [])]
+        except Exception:
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        if not fid or not tag or len(box) != 4:
+            self._json({"ok": False, "error": "bad_args",
+                        "hint": "box 要 4 个数：[x, y, w, h]"}, 400)
+            return
+        ok = self.api.library.replace_region(fid, tag, tuple(box), hub=self.api.hub)
+        if ok:
+            self.api.bump("regions_changed", file_id=fid, tag=tag)
+        self._json({"ok": bool(ok)})
+
+    def _region_delete(self, body: dict) -> None:
+        try:
+            fid = int(body.get("file_id") or 0)
+        except Exception:
+            fid = 0
+        tag = str(body.get("tag") or "").strip()
+        if not fid or not tag:
+            self._json({"ok": False, "error": "bad_args"}, 400)
+            return
+        n = self.api.library.delete_region_of_tag(fid, tag)
+        self.api.bump("regions_changed", file_id=fid, tag=tag)
+        self._json({"ok": True, "deleted": int(n)})
+
+    def _region_refine(self, body: dict) -> None:
+        """区域精修打标（用框选区域提升标签准确率）——后台跑，进度走 SSE。"""
+        api = self.api
+        if api.library is None or api.hub is None:
+            self._json({"ok": False, "error": "not_available"}, 503)
+            return
+        if api._tag_running:
+            self._json({"ok": True, "started": False, "reason": "already_running",
+                        "kind": api._tag_running})
+            return
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if not ids and body.get("all"):
+            ids = [int(r["id"]) for r in api.store.query(
+                "SELECT DISTINCT file_id AS id FROM regions")]
+        if not ids:
+            self._json({"ok": False, "error": "no_files"}, 400)
+            return
+        api._tag_running = "region"
+        api.bump("region_started", count=len(ids))
+
+        def progress(text: str, frac: float = 0.0) -> None:
+            api.bump("region_progress", text=text, frac=frac)
+
+        def job() -> None:
+            try:
+                api.library.ensure_region_embeddings(ids, api.hub, progress, lambda: False)
+                api.library.region_refine(ids, api.hub, progress, lambda: False)
+                api.bump("region_done", ids=ids)
+            except Exception as exc:
+                api.bump("region_failed", error=str(exc))
+            finally:
+                api._tag_running = ""
+
+        threading.Thread(target=job, daemon=True, name="imtag-region").start()
+        self._json({"ok": True, "started": True, "count": len(ids)})
+
+    def _persons(self) -> None:
+        """人物列表（人脸聚类结果）：人名 + 人脸数 + 一张样图（移动端真人库用）。"""
+        rows = self.api.store.query(
+            "SELECT p.id, p.name, COUNT(fc.id) AS faces FROM persons p "
+            "LEFT JOIN faces fc ON fc.person_id=p.id GROUP BY p.id ORDER BY faces DESC")
+        out = []
+        for r in rows:
+            face = self.api.store.one(
+                "SELECT file_id FROM faces WHERE person_id=? AND file_id IS NOT NULL LIMIT 1",
+                (int(r["id"]),))
+            cover = None
+            if face is not None:
+                frow = self.api.store.one("SELECT * FROM files WHERE id=?", (int(face["file_id"]),))
+                if frow is not None:
+                    cover = self._file_brief(frow)
+            out.append({"person_id": int(r["id"]), "name": r["name"] or "", "faces": int(r["faces"] or 0),
+                        "cover": cover})
+        self._json({"ok": True, "count": len(out), "persons": out})
+
+    # ---------- 维护类：批量删标签 / 清反馈 / 学习包 / 导出 / 清理 ----------
+    def _exports_dir(self) -> Path:
+        d = Path(self.api.settings.path().parent) / "exports"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _tags_bulk_delete(self, body: dict) -> None:
+        if not body.get("confirm"):
+            self._json({"ok": False, "error": "need_confirm",
+                        "hint": "破坏性操作：body 里加 confirm:true"}, 400)
+            return
+        names = [str(x) for x in (body.get("names") or []) if str(x).strip()]
+        if not names:
+            self._json({"ok": False, "error": "no_names"}, 400)
+            return
+        ids = [int(x) for x in (body.get("ids") or [])] or None
+        res = self.api.library.delete_tags_bulk(names, file_ids=ids,
+                                                also_filename=bool(body.get("also_filename", False)))
+        self.api.bump("tags_changed", removed_names=names)
+        self._json({"ok": True, "result": res})
+
+    def _feedback_clear(self, body: dict) -> None:
+        if not body.get("confirm"):
+            self._json({"ok": False, "error": "need_confirm",
+                        "hint": "会清掉自训练探针 + 否决记录 + 已审标记，body 里加 confirm:true"}, 400)
+            return
+        res = self.api.library.clear_model_feedback()
+        self.api.bump("feedback_cleared", result=res)
+        self._json({"ok": True, "result": res})
+
+    def _pack_export(self, body: dict) -> None:
+        import datetime
+        name = str(body.get("name") or "").strip() or \
+            f"learn_pack_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        target = self._exports_dir() / name
+        res = self.api.library.export_learning_pack(
+            target, with_probes=bool(body.get("with_probes", True)))
+        self._json({"ok": True, "name": target.name, "bytes": target.stat().st_size, "result": res})
+
+    def _pack_import(self, body: dict) -> None:
+        name = str(body.get("name") or "").strip()
+        path = str(body.get("path") or "").strip()
+        target = Path(path) if path else (self._exports_dir() / name if name else None)
+        if target is None or not target.exists():
+            self._json({"ok": False, "error": "not_found", "hint": "先 POST /api/pack/export，或给出已存在的 path"},
+                       404)
+            return
+        res = self.api.library.import_learning_pack(target)
+        self.api.bump("pack_imported", name=target.name)
+        self._json({"ok": True, "result": res})
+
+    def _exports_list(self) -> None:
+        d = self._exports_dir()
+        items = [{"name": p.name, "bytes": p.stat().st_size,
+                  "mtime": p.stat().st_mtime, "is_dir": p.is_dir()}
+                 for p in sorted(d.iterdir(), key=lambda x: -x.stat().st_mtime)]
+        self._json({"ok": True, "count": len(items), "dir": str(d), "files": items})
+
+    def _export_download(self, q: dict) -> None:
+        name = str(q.get("name") or "")
+        p = self._exports_dir() / name
+        if not name or not p.exists() or p.is_dir() or ".." in name:
+            self._json({"ok": False, "error": "not_found"}, 404)
+            return
+        data = p.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{p.name}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _export_yolo(self, body: dict) -> None:
+        import datetime
+        out = str(body.get("out_dir") or "").strip()
+        target = Path(out) if out else (self._exports_dir() /
+                                       f"yolo_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}")
+        res = self.api.library.export_regions_yolo(target)
+        self._json({"ok": True, "dir": str(target), "result": res})
+
+    def _export_captions(self, body: dict) -> None:
+        ids = [int(x) for x in (body.get("ids") or [])]
+        if not ids and body.get("all"):
+            ids = [int(r["id"]) for r in self.api.store.query(
+                "SELECT id FROM files WHERE missing=0")]
+        if not ids:
+            self._json({"ok": False, "error": "no_files"}, 400)
+            return
+        res = self.api.library.export_captions(
+            ids, out_dir=(str(body.get("out_dir")) if body.get("out_dir") else None),
+            include_rating=bool(body.get("include_rating", True)),
+            mode=str(body.get("mode") or "kohya"))
+        self._json({"ok": True, "result": res})
+
+    def _cleanup(self, body: dict) -> None:
+        if not body.get("confirm"):
+            self._json({"ok": False, "error": "need_confirm",
+                        "hint": "会删掉失效的库根记录并把缺失文件标 missing，body 里加 confirm:true"}, 400)
+            return
+        res = self.api.library.cleanup_missing()
+        self.api.bump("library_changed", action="cleanup", result=res)
+        self._json({"ok": True, "result": res})
     def _dupes_payload(self, groups) -> list:
         """把 library 的查重结果整理成移动端好用的结构（含缩略图边长与标签）。"""
         out = []
