@@ -249,3 +249,20 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   ②路由名 = 方法名（方法必须叫 `PromptHelper`），且扩展 DLL 缓存在
   `src/bin/extensions/SwarmExtension<文件夹名>/…-<hash>.dll`，**改完源码必须删掉/移走这个缓存**才会重新编译。
 
+### 8.3 danbooru 全量词表接进补全（2026-10-07）
+
+- 项目自带词表 `app/booru_zh/*.csv`（列：tag,category,aliases,zh,count,notes）共 **75,069 条**
+  （character 35,384 / general 30,691 / copyright 8,414 / meta 580，每条都有中文名、别名、热度、备注）。
+- 工具 `tools/build_swarm_autocomplete.py` 把它转成 SwarmUI 的补全词表
+  `E:\SwarmUI\Data\Autocompletions\danbooru_zh.csv`（列：tag,category,count, → 分类着色 + 热度排序）。
+- 用户设置（本机 local 用户已设好）：`autocomplete.source = danbooru_zh.csv`、
+  `autocomplete.sortmode = Frequency`、`spacingmode = Spaces`、`suffix = ", "`。
+  实测 `POST /API/GetMyUserData` 返回 **75,067** 条补全项 → 提示词框里中英 tag 都能补全。
+
+### 8.4 中文化结果（实测）
+
+- `languages/zh.json` 从 672 条扩到 **1,751 条**（备份 `zh.json.bak-20261007-220459`）。
+- 无头浏览器实测：参数 tooltip **916/916 全中文**（改之前只有 27/358），
+  参数标签 592/684 中文（剩下的多是 ReVision / IP-Adapter 这类专有名词）。
+- 截图（简易页）：`.verify_pics\swarm_ui.png`；界面为中文，右下角有"提示词助手"面板。
+
