@@ -5,8 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import dlc as dlc_mod
 
@@ -19,7 +19,7 @@ class DlcManagerDialog(QDialog):
         self.settings = settings
         self.on_changed = on_changed
         self.setWindowTitle("扩展包（DLC）")
-        self.resize(760, 460)
+        self._fit_to_screen()
         v = QVBoxLayout(self)
         tip = QLabel("DLC 是可选安装的功能包（例如 AI 生图那套）。启用后会在工具栏「更多 ▾」里多出对应菜单；"
                      "配置项（如生图输出路径）在这里改，随主程序设置一起保存。")
@@ -36,7 +36,14 @@ class DlcManagerDialog(QDialog):
         v.addWidget(self.table, 1)
         self.config_box = QWidget()
         self.config_form = QFormLayout(self.config_box)
-        v.addWidget(self.config_box)
+        # 配置项是照 DLC 清单自动渲染的，数量只会越来越多（生图那套已经 7 项）。
+        # 包一层滚动区，以后再长也顶不破窗口。
+        self.config_scroll = QScrollArea()
+        self.config_scroll.setWidgetResizable(True)
+        self.config_scroll.setFrameShape(QFrame.NoFrame)
+        self.config_scroll.setWidget(self.config_box)
+        self.config_scroll.setMaximumHeight(280)
+        v.addWidget(self.config_scroll)
         row = QHBoxLayout()
         for text, slot in (("启用 / 停用", self.toggle),
                            ("安装 zip…", self.install),
@@ -54,6 +61,19 @@ class DlcManagerDialog(QDialog):
         self.reload()
 
     # ---------- 列表 ----------
+    def _fit_to_screen(self) -> None:
+        """按屏幕可用区域定初始尺寸（小屏笔记本也能整个放下）。"""
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        w, h = 760, 460
+        if screen is not None:
+            avail = screen.availableGeometry()
+            if avail.width() > 0 and avail.height() > 0:
+                w = min(w, max(560, avail.width() - 80))
+                h = min(h, max(360, avail.height() - 80))
+        self.resize(w, h)
+        self.setMinimumSize(520, 340)
+
     def reload(self) -> None:
         self.dlcs = dlc_mod.scan_dlcs()
         self.table.setRowCount(len(self.dlcs))

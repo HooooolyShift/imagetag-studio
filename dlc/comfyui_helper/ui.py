@@ -14,8 +14,8 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                               QPushButton, QSpinBox, QDoubleSpinBox, QTextEdit, QToolTip,
+                               QFrame, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+                               QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QTextEdit, QToolTip,
                                QVBoxLayout, QWidget)
 
 import re
@@ -123,7 +123,10 @@ class GenWindow(QWidget):
         self.cfg = host.config
         self.client = ComfyClient(self.cfg.get("comfy_url") or "http://127.0.0.1:8188")
         self.setWindowTitle("AI 生图（ComfyUI 助手）")
-        self.resize(1080, 720)
+        # 别照 1080×720 硬开：下面「参数」+「更多」加起来最低要 1200+ 像素，
+        # 窗口会被自己的 minimumSizeHint 顶高，小屏上直接露到屏幕外（实测 1280×800 会切掉
+        # 「开始生成」和整个「更多」面板）。这里按屏幕可用区域定初始尺寸，两边都包滚动区。
+        self._fit_to_screen()
         self._busy = False
 
         root = QVBoxLayout(self)
@@ -276,7 +279,16 @@ class GenWindow(QWidget):
         b_import.clicked.connect(self.import_results)
         left.addWidget(b_import)
         left.addStretch(1)
-        split.addLayout(left, 1)
+        # 左侧「参数」表单最高能到 700+ 像素，包一层滚动区，窗口矮的时候能滚（不截断）。
+        self.left_host = QWidget()
+        self.left_host.setLayout(left)
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setFrameShape(QFrame.NoFrame)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_scroll.setWidget(self.left_host)
+        self.left_scroll.setMinimumWidth(430)
+        split.addWidget(self.left_scroll, 1)
 
         right = QVBoxLayout()
         right.addWidget(QLabel("生成结果"))
@@ -289,14 +301,56 @@ class GenWindow(QWidget):
         right.addWidget(self.results, 1)
         split.addLayout(right, 2)
         root.addLayout(split, 1)
+        # 「更多」面板（预设/批量队列/重绘/参考图/姿势/模型下载）自己就 500+ 像素：
+        # 收进一个限高滚动区 + 折叠开关，默认展开（和改之前一样看得见），需要时能折起来。
         self.more = MorePanel(self)
-        root.addWidget(self.more)
+        self._MORE_TITLE = "更多功能（预设 / 批量队列 / 局部重绘 / 参考图 / 姿势线稿 / 模型下载）"
+        self.more_toggle = QPushButton(self._MORE_TITLE + "  ▾")
+        self.more_toggle.setCheckable(True)
+        self.more_toggle.setChecked(True)
+        self.more_toggle.toggled.connect(self._toggle_more)
+        self.more_scroll = QScrollArea()
+        self.more_scroll.setWidgetResizable(True)
+        self.more_scroll.setFrameShape(QFrame.NoFrame)
+        self.more_scroll.setWidget(self.more)
+        self.more_scroll.setMaximumHeight(320)
+        more_wrap = QWidget()
+        mw = QVBoxLayout(more_wrap)
+        mw.setContentsMargins(0, 0, 0, 0)
+        mw.setSpacing(4)
+        mw.addWidget(self.more_toggle)
+        mw.addWidget(self.more_scroll)
+        root.addWidget(more_wrap)
         self._saved: list[Path] = []
         self._helper_worker = None
         self.reload_hot_words()
         self.refresh_status()
 
     # ---------- ComfyUI 接入 ----------
+    def _fit_to_screen(self) -> None:
+        """按屏幕可用区域定窗口尺寸（小屏也能整个放进屏幕里）。
+
+        这块是宿主侧 2026-10-08 加的：窗口原本固定 1080×720，但里面「参数」表单 + 「更多」
+        面板的最低高度加起来有 1200+ 像素，Qt 会把窗口顶到那个高度，1280×800 的笔记本上
+        「开始生成」和「更多」会被切到屏幕外。现在：两侧各包一个滚动区 + 这里按屏幕定尺寸，
+        布局逻辑一行没动，各控件引用（self.pos / self.more …）全部保持原样。
+        """
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+        w, h = 1080, 760
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            w = min(w, max(720, avail.width() - 80))
+            h = min(h, max(520, avail.height() - 80))
+        self.resize(w, h)
+        # 允许缩到更小（默认 minimumSizeHint 会把窗口锁死在 780×1213）
+        self.setMinimumSize(680, 480)
+
+    def _toggle_more(self, on: bool) -> None:
+        """「更多功能」折叠开关：折起来只留一行标题，把空间让给生成结果。"""
+        self.more_scroll.setVisible(bool(on))
+        self.more_toggle.setText(self._MORE_TITLE + ("  ▾" if on else "  ▸"))
+
     def _api_port(self) -> int:
         try:
             return int(self.api_row.text().rsplit(":", 1)[-1].strip("/ "))
