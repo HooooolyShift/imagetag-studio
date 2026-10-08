@@ -204,7 +204,7 @@ models/         本地模型（约 3 GB）
 | `POST /api/gen/img2img` | 图生图 / **图融合**：`denoise` 控改造强度；给 `blend_file_id` 就先混两张图 |
 | `POST /api/gen/upscale` | **纯放大**（ESRGAN 超分，不重绘不出彩噪）；要更大的图走这条 |
 | `POST /api/gen/hires` | 潜空间放大 + 低 denoise 重采样（会长细节，但边缘有彩噪风险） |
-| `GET /api/gen/status`、`POST /api/gen/interrupt` | 任务状态 / 取消（转发 ComfyUI `/interrupt`；取消后剩余张数不再提交） |
+| `GET /api/gen/status`、`POST /api/gen/interrupt` | 任务状态 / **定向取消**：`/queue delete {prompt_id}` + `/interrupt {prompt_id}`，排队中的也能停、不误伤别的客户端；空闲时不动 ComfyUI。状态走 `_gen_lock` + epoch（2026-10-08 晚修竞态，详见联调报告「一·补」） |
 | `GET /api/gen/file?name=&size=` | 生成结果下载；带 `size` 就回 JPEG 缩略图（移动端列表别拉原图） |
 | `GET /api/gen/results`、`GET /api/gen/file` | 结果列表 / 下载 |
 | `GET /api/lex/zh`、`POST /api/lex/prompt_fix` | 共享词库（中文→标签 / 提示词规范化） |

@@ -187,13 +187,21 @@ POST /api/gen/hires        # 潜空间放大 + 低 denoise 重采样：会长新
 
 ```
 GET  /api/gen/status      → { ok, running, fetching }        # 轮询用；页面上"停止"按钮的可用性看它
-POST /api/gen/interrupt   → { ok, interrupted, hint }        # 取消当前生成/重绘/参考图/姿势/融合/放大
+POST /api/gen/interrupt   → { ok, interrupted, deleted, hint }  # 取消当前生成/重绘/参考图/姿势/融合/放大/模型下载
 ```
 
-- 取消是**真停**：转发给 ComfyUI 的 `/interrupt`，正在跑的那张以
-  `gen_failed { error: "已取消", kind }` 结束；`count>1` 时**还没提交的那几张不会再提交**。
-- 实测：1024×1024 / 80 步 / count=3，6 秒后调 interrupt → 4 秒内线程停、状态回到 `running:false`、
-  事件序列 `gen_started → gen_interrupted → gen_failed{已取消}`。
+- **取消是定向的**（2026-10-08 晚重写，修竞态）：服务端记住我们的 `prompt_id`，取消时
+  `POST /queue {"delete":[pid]}` 清掉**还在排队**的那条，再 `POST /interrupt {"prompt_id": pid}`
+  定向打断**正在跑**的那条。所以：
+  - 排队中的任务也能停掉（旧版只发无参数 `/interrupt`，只能打断"正在执行"的那个，
+    我们的还在排队就会稍后照样跑起来 —— 这就是"点了停止它还在跑"的偶发根因）；
+  - **不会误伤别的客户端**（比如 PC 上 DLC 窗口自己发的任务）：`prompt_id` 对不上时 ComfyUI 只记日志；
+  - 当前**没有本机任务在跑**时，接口直接返回 `interrupted:false` 且**不动 ComfyUI**；
+  - 返回里的 `deleted` 表示"排队里那条确实删掉了"（真删成功才为 true）。
+- 正在跑的那张以 `gen_failed { error: "已取消", kind }` 结束；`count>1` 时**还没提交的那几张不会再提交**；
+  如果取消恰好撞在 `submit()` 返回的那一瞬间，任务线程会自己补一刀（定向删/打断），不会漏。
+- 实测（`%TEMP%\gen_race_test.py`，11 项全过）：排队中取消（不误伤占位任务）✔、
+  提交撞车 ✔、取消上一轮不影响刚开始的新一轮 ✔、三路并发 `/api/gen/run` 只有一个 `started:true` ✔。
 - **CORS 预检已支持**：服务端现在响应 `OPTIONS`（204 + `Access-Control-Allow-Methods/Headers`），
   WebView 里用 `fetch` 发 JSON 不用再靠 `allowUniversalAccessFromFileURLs` 兜底。
 

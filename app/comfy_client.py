@@ -34,6 +34,18 @@ class ComfyClient:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
 
+    def _post_nobody(self, path: str, data: dict, timeout: int = 60) -> None:
+        """POST 那些**不返回 JSON** 的接口。
+
+        ComfyUI 的 `/interrupt`、`/queue` 都是 `web.Response(status=200)` 空 body，
+        用 `_post()`（内部 json.load）会抛 "Expecting value" —— 被 except 吞掉后
+        调用方就不能区分"真的失败了"和"成功了但没 body"（实测就把成功删队列报成了 deleted=False）。
+        """
+        req = urllib.request.Request(self.url + path, data=json.dumps(data).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read()
+
     def ping(self) -> tuple[bool, str]:
         try:
             st = self._get("/system_stats", timeout=5)
@@ -179,9 +191,40 @@ class ComfyClient:
     def interrupt(self) -> None:
         """取消当前正在跑的任务。"""
         try:
-            self._post("/interrupt", {})
+            self._post_nobody("/interrupt", {})
         except Exception:                                    # noqa: BLE001
             pass
+
+    def cancel(self, prompt_id: str = "") -> dict:
+        """**定向**取消我们自己的这一单：既清掉还排在队列里的，也打断正在跑的那张。
+
+        为什么不能只发 `/interrupt`（2026-10-08 用户报"偶发点了停止它还在跑"）：
+        · 如果我们的 prompt 还在**排队**（ComfyUI 正被别的任务占着，比如 DLC 窗口自己发起的那次），
+          `/interrupt` 只会打断**正在执行**的那个，我们这条稍后照样会被执行起来 —— 偶发就是这个；
+        · 无参数的 `/interrupt` 是全局打断，会把**别的客户端**（DLC 窗口、另一台设备）的任务也打断。
+
+        所以这里两步走（本机 ComfyUI 0.39 实测两个接口都支持）：
+        1) `POST /queue {"delete": [pid]}` —— 把还在排队的这条删掉；
+        2) `POST /interrupt {"prompt_id": pid}` —— 定向打断；**不是我们这条时服务器只记日志不动手**。
+        """
+        out = {"deleted": False, "interrupted": False}
+        pid = str(prompt_id or "").strip()
+        if pid:
+            try:
+                self._post_nobody("/queue", {"delete": [pid]})
+                out["deleted"] = True
+            except Exception:                                # noqa: BLE001
+                pass
+            try:
+                self._post_nobody("/interrupt", {"prompt_id": pid})
+                out["interrupted"] = True
+            except Exception:                                # noqa: BLE001
+                pass
+        else:
+            # 还不知道 prompt_id（提交前的取消）：退回全局打断
+            self.interrupt()
+            out["interrupted"] = True
+        return out
 
     # ---------- 出图 ----------
     @staticmethod
@@ -494,10 +537,18 @@ class ComfyClient:
         }
 
     def wait(self, prompt_id: str, out_dir: Path, base_name: str,
-             timeout: float = 900.0, on_tick=None) -> list[Path]:
+             timeout: float = 900.0, on_tick=None, should_stop=None) -> list[Path]:
+        """等这一单出图。`should_stop` 是取消钩子：返回 True 就立刻抛 ComfyError("已取消")。
+
+        为什么需要它：取消时我们会把排队里的这条**删掉**，那样 /history 永远不会出现它，
+        光靠轮询会一直等到超时（用户看到的是"点了停止还转半天"）。有了这个钩子，取消后
+        大约 2 秒内就能收尾。
+        """
         out_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
         while time.time() - t0 < timeout:
+            if should_stop is not None and should_stop():
+                raise ComfyError("已取消")
             try:
                 hist = self._get(f"/history/{prompt_id}", timeout=30)
             except Exception:

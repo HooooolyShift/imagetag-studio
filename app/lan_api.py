@@ -109,6 +109,81 @@ def review_ver(tags, rating: str = "") -> str:
     return h.hexdigest()[:16]
 
 
+# ---------- 生图任务状态（带锁；见 LanApi.__init__ 里的说明） ----------
+def gen_begin(api, kind: str, fetching: bool = False):
+    """开一轮生图/下载任务。返回 `(epoch, reason)`；已经在跑时 epoch 为 None。
+
+    epoch 是自增序号：每个任务只认自己那一次的取消标记，所以"取消上一轮"不会误伤
+    "刚开始的新一轮"（这是原来裸标志位最典型的竞态）。
+    """
+    lock = getattr(api, "_gen_lock", None) or api._lock
+    with lock:
+        if getattr(api, "_gen_running", False):
+            return None, "already_running"
+        if getattr(api, "_gen_fetching", False):
+            return None, "already_fetching"
+        api._gen_epoch = int(getattr(api, "_gen_epoch", 0)) + 1
+        api._gen_cancel = False
+        api._gen_kind = str(kind)
+        api._gen_prompt_id = ""
+        if fetching:
+            api._gen_fetching = True
+        else:
+            api._gen_running = True
+        return api._gen_epoch, ""
+
+
+def gen_end(api, epoch) -> None:
+    """收尾：只有"当前这一轮"能把自己标成结束（避免旧线程把新一轮的状态清掉）。"""
+    lock = getattr(api, "_gen_lock", None) or api._lock
+    with lock:
+        if int(getattr(api, "_gen_epoch", 0)) == int(epoch):
+            api._gen_running = False
+            api._gen_fetching = False
+            api._gen_kind = ""
+            api._gen_prompt_id = ""
+
+
+def gen_set_prompt(api, epoch, prompt_id: str) -> None:
+    """记下这一轮提交给 ComfyUI 的 prompt_id（取消时要靠它定向删/打断）。"""
+    lock = getattr(api, "_gen_lock", None) or api._lock
+    with lock:
+        if int(getattr(api, "_gen_epoch", 0)) == int(epoch):
+            api._gen_prompt_id = str(prompt_id or "")
+
+
+def gen_cancelled(api, epoch) -> bool:
+    """这一轮（epoch）是否已被取消。"""
+    lock = getattr(api, "_gen_lock", None) or api._lock
+    with lock:
+        return bool(getattr(api, "_gen_cancel", False)
+                    and int(getattr(api, "_gen_epoch", 0)) == int(epoch))
+
+
+def gen_cancel_current(api):
+    """请求取消当前任务 → `(在跑吗, prompt_id)`。
+
+    **没有任务在跑时不动取消标记**：否则那个标记会一直挂着，等下一轮开跑时（虽然会清零）
+    中间这段窗口里任何判断都会误以为"被取消了"。
+    """
+    lock = getattr(api, "_gen_lock", None) or api._lock
+    with lock:
+        if not (getattr(api, "_gen_running", False) or getattr(api, "_gen_fetching", False)):
+            return False, ""
+        api._gen_cancel = True
+        return True, str(getattr(api, "_gen_prompt_id", "") or "")
+
+
+def gen_status(api) -> dict:
+    """给 /api/gen/status 用的快照。"""
+    lock = getattr(api, "_gen_lock", None) or api._lock
+    with lock:
+        return {"running": bool(getattr(api, "_gen_running", False)),
+                "fetching": bool(getattr(api, "_gen_fetching", False)),
+                "kind": str(getattr(api, "_gen_kind", "") or ""),
+                "cancel": bool(getattr(api, "_gen_cancel", False))}
+
+
 class LanApi:
     """局域网 HTTP 服务：随设备发现一起启动。"""
 
@@ -132,6 +207,17 @@ class LanApi:
         self._dupes: list = []            # 最近一次查重结果（内存缓存，供移动端取）
         self._dupes_scanning = False
         self._tag_running = ""            # 正在跑的远程打标类型（空=没跑）
+        # 生图任务状态：**必须带锁**。/api/gen/run 与 /api/gen/interrupt 来自不同的 HTTP 线程，
+        # 原来那几个裸标志位（_gen_running/_gen_cancel）有竞态：偶发"点停止还继续跑"、
+        # "取消上一个把刚开始的新任务也带走了"、两个并发请求同时通过 already_running 检查等。
+        # epoch 是每次开跑自增的序号，取消只对"发起取消时那一轮"生效。
+        self._gen_lock = threading.Lock()
+        self._gen_running = False
+        self._gen_fetching = False
+        self._gen_cancel = False
+        self._gen_epoch = 0
+        self._gen_kind = ""
+        self._gen_prompt_id = ""
 
     # ---------- 生命周期 ----------
     def start(self) -> bool:
@@ -331,9 +417,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         elif path == "/api/gen/models":
             self._gen_models()
         elif path == "/api/gen/status":
-            self._json({"ok": True,
-                        "running": bool(getattr(self.api, "_gen_running", False)),
-                        "fetching": bool(getattr(self.api, "_gen_fetching", False))})
+            self._json({"ok": True, **gen_status(self.api)})
         elif path == "/api/gen/results":
             self._gen_results(q)
         elif path == "/api/gen/file":
@@ -1443,10 +1527,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
     def _gen_run(self, body: dict) -> None:
         """平板遥控生图：PC 上跑 ComfyUI，产出落到 DLC 配置的 output_dir（可以顺便入库）。"""
         api = self.api
-        if getattr(api, "_gen_running", False):
-            self._json({"ok": True, "started": False, "reason": "already_running"})
-            return
-        from .comfy_client import ComfyClient
+        from .comfy_client import ComfyClient, ComfyError
         cfg = self._gen_cfg()
         presets = self._gen_presets()
         preset_name = str(body.get("preset") or "")
@@ -1483,8 +1564,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         scheduler = str(body.get("scheduler") or preset.get("scheduler") or "karras")
         do_import = bool(body.get("import", False))
         out_dir = self._gen_out_dir()
-        api._gen_running = True
-        api._gen_cancel = False
+        epoch, why = gen_begin(api, "gen")       # 校验都通过了才占位（提前 return 不能把状态挂住）
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_started", count=count, model=model, preset=preset_name)
 
         def job() -> None:
@@ -1494,25 +1577,31 @@ class _ApiHandler(BaseHTTPRequestHandler):
             ids: list[int] = []
             try:
                 for i in range(count):
-                    if api._gen_cancel:        # 被 /api/gen/interrupt 取消：剩下的不再提交
-                        raise RuntimeError("已取消")
+                    if gen_cancelled(api, epoch):   # 被取消：剩下的不再提交
+                        raise ComfyError("已取消")
                     seed = int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1)
                     wf = ComfyClient.workflow(model, prompt, negative, width, height,
                                               steps, cfg_s, seed, sampler, scheduler)
                     pid = client.submit(wf)
+                    gen_set_prompt(api, epoch, pid)
+                    if gen_cancelled(api, epoch):
+                        # 提交与取消撞车：这条可能刚进队列还没跑，定向删掉/打断它
+                        client.cancel(pid)
+                        raise ComfyError("已取消")
                     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                     files = client.wait(pid, out_dir, f"gen_{stamp}_{seed}",
                                         on_tick=lambda s, i=i: api.bump(
-                                            "gen_progress", index=i + 1, total=count, elapsed=round(s)))
+                                            "gen_progress", index=i + 1, total=count, elapsed=round(s)),
+                                        should_stop=lambda: gen_cancelled(api, epoch))
                     made += [str(f) for f in files]
                     api.bump("gen_progress", index=i + 1, total=count, file=made[-1] if made else "")
                 if do_import:
                     ids = self.api.library.import_generated(made)
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids))
             except Exception as exc:
-                api.bump("gen_failed", error=self._gen_err_text(api, exc), files=made)
+                api.bump("gen_failed", error=self._gen_err_text(api, exc, epoch), files=made)
             finally:
-                api._gen_running = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name="imtag-gen").start()
         self._json({"ok": True, "started": True, "count": count, "model": model,
@@ -1565,7 +1654,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "bad_mask",
                         "hint": "mask_base64 要是 PNG（白=重绘）"}, 400)
             return
-        from .comfy_client import ComfyClient
+        from .comfy_client import ComfyClient, ComfyError
         cfg = self._gen_cfg()
         client = ComfyClient(self._gen_comfy_url())
         model = str(body.get("model") or "").strip() or self._gen_default_model(client)
@@ -1580,8 +1669,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"ok": False, "error": "mask_write_failed", "detail": str(exc)}, 500)
             return
-        api._gen_running = True
-        api._gen_cancel = False
+        epoch, why = gen_begin(api, "inpaint")
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_inpaint_started", base=str(base_path), model=model)
 
         def job() -> None:
@@ -1603,15 +1694,20 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     denoise=float(body.get("denoise") or 0.55),
                     grow_mask=int(body.get("grow_mask") or 6))
                 pid = client.submit(wf)
+                gen_set_prompt(api, epoch, pid)
+                if gen_cancelled(api, epoch):
+                    client.cancel(pid)
+                    raise ComfyError("已取消")
                 files = client.wait(pid, out_dir, f"inpaint_{stamp}",
-                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s)))
+                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s)),
+                                    should_stop=lambda: gen_cancelled(api, epoch))
                 made = [str(f) for f in files]
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="inpaint")
             except Exception as exc:
-                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="inpaint")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc, epoch), kind="inpaint")
             finally:
-                api._gen_running = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name="imtag-inpaint").start()
         self._json({"ok": True, "started": True, "model": model,
@@ -1921,7 +2017,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             items.append(rec)
         self._json({"ok": True, "comfyui_path": root, "configured": bool(root),
                     "models_dir": str(base) if base else "",
-                    "fetching": bool(getattr(self.api, "_gen_fetching", False)),
+                    "fetching": bool(gen_status(self.api)["fetching"]),
                     "models": items,
                     "wordlists": man.get("wordlists") or [],
                     "requirements": man.get("requirements") or {}})
@@ -1933,12 +2029,6 @@ class _ApiHandler(BaseHTTPRequestHandler):
         断电后重跑即可续传（按 Range 接着下，不会从头重来），符合"任何时刻掉电都能继续"。
         """
         api = self.api
-        if getattr(api, "_gen_fetching", False):
-            self._json({"ok": True, "started": False, "reason": "already_fetching"})
-            return
-        if getattr(api, "_gen_running", False):
-            self._json({"ok": True, "started": False, "reason": "generating"})
-            return
         script = self._dlc_file("scripts/fetch_model.py")
         if script is None:
             self._json({"ok": False, "error": "fetch_script_missing",
@@ -1988,7 +2078,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "started": False, "reason": "already_complete",
                         "ids": [m.get("id") for m in picks]})
             return
-        api._gen_fetching = True
+        epoch, why = gen_begin(api, "fetch", fetching=True)
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_dl_started", count=len(jobs), ids=[m.get("id") for m, _ in jobs])
 
         def job() -> None:
@@ -1999,12 +2092,15 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 spec.loader.exec_module(mod)
             except Exception as exc:                          # noqa: BLE001
                 api.bump("gen_dl_failed", error=f"加载下载脚本失败：{exc}")
-                api._gen_fetching = False
+                gen_end(api, epoch)
                 return
             done_ids: list[str] = []
             failed: list[str] = []
             try:
                 for idx, (m, dst) in enumerate(jobs):
+                    if gen_cancelled(api, epoch):    # 取消后剩下的模型不再下
+                        failed.append(str(m.get("id") or ""))
+                        continue
                     total = int(m.get("size_bytes") or 0)
                     mid = str(m.get("id") or "")
                     api.bump("gen_dl_progress", id=mid, file=dst.name, index=idx + 1,
@@ -2038,7 +2134,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             except Exception as exc:                          # noqa: BLE001
                 api.bump("gen_dl_failed", error=str(exc), done=done_ids)
             finally:
-                api._gen_fetching = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name="imtag-dl").start()
         self._json({"ok": True, "started": True, "count": len(jobs),
@@ -2123,8 +2219,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         seed = int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
-        api._gen_running = True
-        api._gen_cancel = False
+        epoch, why = gen_begin(api, kind)
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_advanced_started", kind=kind, source=str(src), model=model,
                  width=width, height=height)
 
@@ -2144,16 +2242,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
                         strength=extra["strength"], preprocessor=extra["preprocessor"],
                         sampler=sampler, scheduler=scheduler, prefix=f"pose_{stamp}")
                 pid = client.submit(wf)
+                gen_set_prompt(api, epoch, pid)
+                if gen_cancelled(api, epoch):
+                    client.cancel(pid)
+                    raise ComfyError("已取消")
                 files = client.wait(pid, out_dir, f"{kind}_{stamp}",
                                     on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
-                                                               kind=kind))
+                                                               kind=kind),
+                                    should_stop=lambda: gen_cancelled(api, epoch))
                 made = [str(f) for f in files]
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind=kind)
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind=kind)
+                api.bump("gen_failed", error=self._gen_err_text(api, exc, epoch), kind=kind)
             finally:
-                api._gen_running = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name=f"imtag-{kind}").start()
         self._json({"ok": True, "started": True, "kind": kind, "model": model,
@@ -2170,30 +2273,53 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self._gen_advanced(body, "controlnet")
 
     def _gen_interrupt(self, body: dict) -> None:
-        """取消当前正在跑的生图任务（出图 / 重绘 / 参考图 / 姿势 / 融合 / 放大都管）。
+        """取消当前正在跑的生图任务（出图 / 重绘 / 参考图 / 姿势 / 融合 / 放大 / 模型下载都管）。
 
-        做法就是给 ComfyUI 发 `/interrupt`：它会让当前那次采样抛中断异常，任务线程随即走
-        `gen_failed`，`_gen_running` 变回 False。**队列里还没开始的那几张不会再提交**
-        （每个生图任务是一张一张提交的，中断后下一次 `submit` 前会看到 `_gen_cancel` 标记）。
+        2026-10-08 重写（用户报"偶发点了停止它还在跑"）。原来只有两步：置个裸标志位 +
+        发一个**无参数**的 `/interrupt`，有三个竞态：
+        1. **排队中的任务停不掉**：`/interrupt` 只打断"正在执行"的那一个。如果我们的 prompt
+           还在排队（ComfyUI 正被 DLC 窗口或上一次任务占着），它稍后照样会跑起来 —— 表象就是
+           "点了停止还在跑"，而且是偶发；
+        2. **提交与取消撞车**：取消发生在 `submit()` 之前一点点时，那一条已经进队列，循环里的
+           标志位检查已经过去了，没人再管它；
+        3. **误伤别人 + 状态互踩**：无参数 `/interrupt` 是全局打断，会把其他客户端的任务一起打断；
+           几个裸标志位（`_gen_running` / `_gen_cancel`）在不同 HTTP 线程间读写，还会出现
+           "取消上一轮把刚开始的新一轮也带走"、"两个并发请求同时通过 already_running 检查"。
+
+        现在：状态全部走 `_gen_lock` 保护的 epoch（见 gen_begin/gen_cancel_current），
+        ComfyUI 侧用**定向** cancel（`/queue delete` + `/interrupt {prompt_id}`），
+        任务线程在每一张提交前后、以及 wait 循环里都会看自己那一轮的取消标记。
         """
         api = self.api
         from .comfy_client import ComfyClient
-        running = bool(getattr(api, "_gen_running", False))
-        api._gen_cancel = True                 # 让正在跑的线程别再提交下一张
-        try:
-            ComfyClient(self._gen_comfy_url()).interrupt()
-        except Exception as exc:               # noqa: BLE001
-            self._json({"ok": False, "error": "interrupt_failed", "detail": str(exc),
-                        "running": running}, 500)
-            return
-        api.bump("gen_interrupted", running=running)
+        running, prompt_id = gen_cancel_current(api)
+        result = {"deleted": False, "interrupted": False}
+        if running:
+            try:
+                result = ComfyClient(self._gen_comfy_url()).cancel(prompt_id)
+            except Exception as exc:           # noqa: BLE001
+                self._json({"ok": False, "error": "interrupt_failed", "detail": str(exc),
+                            "running": True}, 500)
+                return
+        api.bump("gen_interrupted", running=running, deleted=bool(result.get("deleted")))
         self._json({"ok": True, "interrupted": running,
-                    "hint": "已经通知 ComfyUI 停下；正在跑的那张会以 gen_failed 结束"})
+                    "deleted": bool(result.get("deleted")),
+                    "hint": ("已按 prompt_id 定向清掉队列项并打断执行；"
+                             "正在跑的那张会以 gen_failed 结束"
+                             if running else
+                             "当前没有本机的生图任务在跑（不动 ComfyUI，免得打断别的客户端）")})
 
     @staticmethod
-    def _gen_err_text(api, exc: Exception) -> str:
-        """报错文案：用户主动取消时说"已取消"，别把 ComfyUI 的英文中断异常甩给用户。"""
-        return "已取消" if getattr(api, "_gen_cancel", False) else str(exc)
+    def _gen_err_text(api, exc: Exception, epoch=None) -> str:
+        """报错文案：用户主动取消时说"已取消"，别把 ComfyUI 的英文中断异常甩给用户。
+
+        传了 epoch 就只认"这一轮"的取消标记（否则取消上一轮会把这一轮的报错也写成"已取消"）。
+        """
+        if epoch is None:
+            cancelled = bool(gen_status(api).get("cancel"))
+        else:
+            cancelled = gen_cancelled(api, epoch)
+        return "已取消" if cancelled else str(exc)
 
     def _gen_img2img(self, body: dict) -> None:
         """图生图 / 图融合（ComfyUI 原生就支持，这里做成接口）。
@@ -2249,8 +2375,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         mode = str(body.get("blend_mode") or "normal")
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
-        api._gen_running = True
-        api._gen_cancel = False
+        epoch, why = gen_begin(api, "img2img")
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_advanced_started", kind="img2img", source=str(src),
                  blend=str(blend) if blend else "", denoise=denoise, model=model)
 
@@ -2268,16 +2396,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     scheduler=str(body.get("scheduler") or "karras"),
                     prefix=f"i2i_{stamp}")
                 pid = client.submit(wf)
+                gen_set_prompt(api, epoch, pid)
+                if gen_cancelled(api, epoch):
+                    client.cancel(pid)
+                    raise ComfyError("已取消")
                 files = client.wait(pid, out_dir, f"img2img_{stamp}",
                                     on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
-                                                               kind="img2img"))
+                                                               kind="img2img"),
+                                    should_stop=lambda: gen_cancelled(api, epoch))
                 made = [str(f) for f in files]
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="img2img")
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="img2img")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc, epoch), kind="img2img")
             finally:
-                api._gen_running = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name="imtag-i2i").start()
         self._json({"ok": True, "started": True, "kind": "img2img", "model": model,
@@ -2339,8 +2472,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 want_w, want_h = int(round(want_w * k)), int(round(want_h * k))
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
-        api._gen_running = True
-        api._gen_cancel = False
+        epoch, why = gen_begin(api, "upscale")
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_advanced_started", kind="upscale", source=str(src),
                  upscale_model=up_model, source_size=[iw, ih], size=[want_w or 0, want_h or 0])
 
@@ -2351,16 +2486,21 @@ class _ApiHandler(BaseHTTPRequestHandler):
                                                   method=str(body.get("method") or "lanczos"),
                                                   prefix=f"up_{stamp}")
                 pid = client.submit(wf)
+                gen_set_prompt(api, epoch, pid)
+                if gen_cancelled(api, epoch):
+                    client.cancel(pid)
+                    raise ComfyError("已取消")
                 files = client.wait(pid, out_dir, f"upscale_{stamp}", timeout=1800,
                                     on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
-                                                               kind="upscale"))
+                                                               kind="upscale"),
+                                    should_stop=lambda: gen_cancelled(api, epoch))
                 made = [str(f) for f in files]
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="upscale")
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="upscale")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc, epoch), kind="upscale")
             finally:
-                api._gen_running = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name="imtag-upscale").start()
         self._json({"ok": True, "started": True, "kind": "upscale",
@@ -2418,8 +2558,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         method = str(body.get("upscale_method") or "bislerp")
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
-        api._gen_running = True
-        api._gen_cancel = False
+        epoch, why = gen_begin(api, "hires")
+        if epoch is None:
+            self._json({"ok": True, "started": False, "reason": why})
+            return
         api.bump("gen_advanced_started", kind="hires", source=str(src), model=model,
                  width=out_w, height=out_h)
 
@@ -2434,17 +2576,22 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     scheduler=str(body.get("scheduler") or "karras"),
                     prefix=f"hires_{stamp}")
                 pid = client.submit(wf)
+                gen_set_prompt(api, epoch, pid)
+                if gen_cancelled(api, epoch):
+                    client.cancel(pid)
+                    raise ComfyError("已取消")
                 files = client.wait(pid, out_dir, f"hires_{stamp}",
                                     on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
-                                                               kind="hires"))
+                                                               kind="hires"),
+                                    should_stop=lambda: gen_cancelled(api, epoch))
                 made = [str(f) for f in files]
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="hires",
                          source_size=[iw, ih], size=[out_w, out_h])
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="hires")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc, epoch), kind="hires")
             finally:
-                api._gen_running = False
+                gen_end(api, epoch)
 
         threading.Thread(target=job, daemon=True, name="imtag-hires").start()
         self._json({"ok": True, "started": True, "kind": "hires", "model": model,
