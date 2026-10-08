@@ -7,6 +7,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import re
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -79,8 +80,20 @@ def build_wheels() -> None:
         shutil.copy2(f, w / f.name)
     for f in TORCH_DIR.glob("torchvision-*.whl"):
         shutil.copy2(f, w / f.name)
-    have = {p.name.split("-")[0].lower() for p in w.glob("*.whl")}
-    todo = [d for d in DEPS if d.split("==")[0].split("[")[0].lower() not in have]
+    # 包名归一化：wheel 文件名用下划线、需求写的是连字符/驼峰（onnxruntime_gpu vs onnxruntime-gpu、
+    # PySide6_Essentials vs pyside6-essentials）。以前直接比对会把"已经有"的判成"没有"，
+    # 于是每次构建都重下 2.8GB（2026-10-08 实测：卡在 onnxruntime-gpu 244MB 上下载十分钟）。
+    def _norm(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", str(name)).lower()
+
+    have = set()
+    for p in w.glob("*.whl"):
+        parts = p.name.split("-")
+        if parts:
+            have.add(_norm(parts[0]))
+    todo = [d for d in DEPS if _norm(d.split("==")[0].split("[")[0]) not in have]
+    if have:
+        print(f"  已有 wheel {len(have)} 个，本次需要补 {len(todo)} 个")
     for d in todo:
         run([str(PY), "-m", "pip", "download", d, "--no-deps", "--dest", str(w),
              "-i", TARO_MIRROR])
