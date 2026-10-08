@@ -102,6 +102,10 @@ models/         本地模型（约 3 GB）
 > **规矩（2026-10-07 起）**：改完、验证完**不要自己 push、不要自己更 release、不要自己同步 D 盘**。
 > 把结果留在本地、汇报给用户；等用户说"推送 / 正式更新 / 发版"再执行下面这套。
 > 日常的本地 commit 照常做（用来记录改动），只是不推。
+>
+> **2026-10-08 用户决定：不再写更新公告、不再做宣传片**（宣传片线已归档）。
+> 下面的发布流程里「公告 / 封面」两项已删除，别再生成；`tools\make_cover.py`、
+> `tools\make_announce_v15.py` 留在仓库里只作历史记录，不要再用。
 
 1. 推代码：`git -c http.proxy=http://127.0.0.1:29758 push origin master`
 2. 重建更新包：`python tools\build_update.py "K:\ImageTagStudio\更新包"` → 压成 `K:\ImageTagStudio\更新包.7z`
@@ -113,7 +117,8 @@ models/         本地模型（约 3 GB）
    （默认勾上、约 8 MB；不勾就跳过，已装过的不会被删）。更新包的 `更新.cmd` 用 `/E` 覆盖
    `dlc\`（不清旧文件）。**装完默认是"未启用"**——用户要在程序里
    「更多 ▾ → 扩展包（DLC）…」启用，菜单里才会出现「AI 生图（DLC）」。
-6. 刷新 GitHub release `HooooolyShift/imagetag-studio` 的 v1.4 资产（更新包 / 说明书 / 公告 / 封面 / payload 分卷 / 合并脚本 / SHA256）
+6. 刷新 GitHub release `HooooolyShift/imagetag-studio` 的资产（更新包 / 说明书 / payload 分卷 /
+   合并脚本 `merge_and_install.bat` / `SHA256.txt`）——**不含公告与封面**
 7. 同步正式版副本：`git -C "D:\图片标签分类" pull --ff-only origin master`
 
 ## 六、已知坑（踩过的，别再踩）
