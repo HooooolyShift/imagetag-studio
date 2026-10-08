@@ -504,6 +504,14 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 > 进度 SSE `gen_dl_*`）。
 > **可直接落地的参考实现（含 JS 片段）在 `docs/handover/tablet_gen_page/README.md`**，含交互细节与三个坑
 > （IP-Adapter/ControlNet 必须跟底模架构配套，IP-Adapter 配错**不报错只出噪声图**）。
+>
+> **2026-10-08 下午再补**：`POST /api/gen/img2img`（图生图 / **图融合**）、
+> `POST /api/gen/upscale`（纯超分放大，实测 1024→4096 只要 9 秒、不出彩噪）、
+> `POST /api/gen/hires`（潜空间放大 + 重采样，会长细节但有彩噪风险）、
+> `/api/gen/info → limits`（尺寸边界，滑杆照它画）、`/api/gen/file?size=`（结果缩略图）。
+> **SDXL 不要给 512**（会糊成一团，PC 已兜底抬到 1024 并回 `warning`）；
+> 要更大的图一律走 `upscale`，别硬开 2048²。细节见 `docs/handover/tablet_gen_page/README.md`
+> 的第四节、第五节。
 
 > **排期**：这是下一步的首要任务（明天开工第一件）。本端现状：只有一个"共现力导向图"，
 > 动效 / 两种视图 / 折叠 / 层级 / 弹簧拖拽都没有 —— 与本节要求差距明显，按下面重做。

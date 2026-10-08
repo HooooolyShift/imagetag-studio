@@ -47,15 +47,34 @@ class ComfyClient:
     def checkpoints(self) -> list[str]:
         try:
             info = self._get("/object_info/CheckpointLoaderSimple", timeout=30)
-            return list(info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0])
+            return self._parse_enum(info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"])
         except Exception as exc:
             raise ComfyError(f"取模型列表失败：{exc}") from exc
+
+    @staticmethod
+    def _parse_enum(spec) -> list[str]:
+        """把节点的下拉定义解析成选项列表，**两种写法都要认**：
+
+        - 老写法：`[[选项1, 选项2], {"default": ...}]`（第一项直接是列表）
+        - 新写法：`["COMBO", {"multiselect": false, "options": [选项…]}]`
+          （新版本 ComfyUI 用这个；**旧解析会把字符串 "COMBO" 拆成 ['C','O','M','B','O']**，
+           实测把 UpscaleModelLoader 的模型名解析成了 "C"，提交工作流直接失败。）
+        """
+        if not isinstance(spec, (list, tuple)) or not spec:
+            return []
+        head = spec[0]
+        if isinstance(head, str) and head.strip().upper() == "COMBO":
+            opts = spec[1].get("options") if len(spec) > 1 and isinstance(spec[1], dict) else []
+            return [str(x) for x in (opts or [])]
+        if isinstance(head, (list, tuple)):
+            return [str(x) for x in head]
+        return []
 
     def _enum(self, node: str, field: str) -> list[str]:
         """取某个节点某个下拉的可选值（模型列表都从这里拿）。"""
         try:
             info = self._get(f"/object_info/{node}", timeout=30)
-            return list(info[node]["input"]["required"][field][0])
+            return self._parse_enum(info[node]["input"]["required"][field])
         except Exception as exc:
             raise ComfyError(f"取 {node}.{field} 列表失败：{exc}") from exc
 
@@ -98,6 +117,7 @@ class ComfyClient:
         # 只有 ip-adapter_xl.pth + clip_h.pth 时会报 size mismatch（1280 vs 1024），所以分开判。
         ip_missing = [n for n in ("IPAdapterModelLoader", "CLIPVisionLoader", "IPAdapterAdvanced")
                       if not self.has_node(n)]
+        per_arch: dict = {}
         if not ip_missing:
             try:
                 ip_files = self._enum("IPAdapterModelLoader", "ipadapter_file")
@@ -107,13 +127,20 @@ class ComfyClient:
                 cv_files = self._enum("CLIPVisionLoader", "clip_name")
             except ComfyError:
                 cv_files = []
-            if not [i for i in ip_files if "plus_sdxl" in i.lower() or "vit-h" in i.lower()]:
-                ip_missing.append("models/ipadapter 里缺 SDXL 版（建议 ip-adapter-plus_sdxl_vit-h.safetensors）")
+            # FaceID 那两件套还要 InsightFace，这里不算数
+            usable = [i for i in ip_files if "faceid" not in i.lower() and "face_id" not in i.lower()]
+            per_arch = {"sdxl": any("xl" in i.lower() for i in usable),
+                        "sd15": any("sd15" in i.lower() for i in usable)}
+            if not usable:
+                ip_missing.append("models/ipadapter 里没有可用的 IP-Adapter（先下载 ipadapter-plus-sdxl）")
             if not [c for c in cv_files if "vit-h" in c.lower() or "vit_h" in c.lower()]:
                 ip_missing.append("models/clip_vision 里缺 ViT-H 图像编码器（CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors）")
         rep["参考图（IP-Adapter）"] = {
             "ok": not ip_missing, "missing": ip_missing,
-            "hint": "缺的模型文件可以用 DLC 的「模型下载」一键补齐（scripts/fetch_ipadapter.py）"}
+            "per_arch": per_arch,
+            "hint": "缺的模型文件可以用 DLC 的「模型下载」一键补齐（scripts/fetch_ipadapter.py）；"
+                    "**IP-Adapter 必须跟底模架构配套**：SD1.5 底模用 *sd15* 的，SDXL 底模用 *_xl* 的，"
+                    "配错不会报错、只会出噪声图"}
         need("姿势/线稿（ControlNet）", ["ControlNetLoader", "ControlNetApplyAdvanced", "OpenposePreprocessor"],
              models=[("ControlNetLoader", "control_net_name")],
              hint="需要 comfyui_controlnet_aux 预处理器 + ControlNet 模型（本项目已有 controlnet++ union SDXL）")
@@ -293,6 +320,107 @@ class ComfyClient:
             "11": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["10", 0]}},
         }
 
+    # ---------- 放大（高分辨率） ----------
+    @staticmethod
+    def img2img_workflow(ckpt: str, image_name: str, positive: str, negative: str,
+                         steps: int, cfg: float, seed: int, denoise: float = 0.6,
+                         blend_name: str = "", blend_factor: float = 0.5,
+                         blend_mode: str = "normal",
+                         sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                         prefix: str = "imtag_i2i") -> dict:
+        """图生图 / 图融合。
+
+        - 不给 `blend_name`：**改造底图**（denoise 越大改得越多；0.5~0.6 换衣服/换背景比较自然）。
+        - 给了 `blend_name`：先把两张图按 `blend_factor` 混一张（这就是"图融合"），
+          再拿混出来的图走 img2img。混完通常还要低 denoise（0.3~0.5）保住融合结果。
+        """
+        wf: dict = {
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["4", 1]}},
+            "8": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": float(denoise),
+                "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0],
+                "latent_image": ["5", 0]}},
+            "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 2]}},
+            "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix,
+                                                         "images": ["9", 0]}},
+        }
+        wf["1"] = {"class_type": "LoadImage", "inputs": {"image": image_name}}
+        src_node: list = ["1", 0]
+        if blend_name:
+            wf["2"] = {"class_type": "LoadImage", "inputs": {"image": blend_name}}
+            wf["3"] = {"class_type": "ImageBlend", "inputs": {
+                "image1": ["1", 0], "image2": ["2", 0],
+                "blend_factor": float(blend_factor), "blend_mode": blend_mode}}
+            src_node = ["3", 0]
+        wf["5"] = {"class_type": "VAEEncode", "inputs": {"pixels": src_node, "vae": ["4", 2]}}
+        return wf
+
+    @staticmethod
+    def upscale_workflow(image_name: str, upscale_model: str,
+                         width: int = 0, height: int = 0, method: str = "lanczos",
+                         prefix: str = "imtag_upscale") -> dict:
+        """纯放大（ESRGAN 这类超分模型，**不做二次采样**）。
+
+        为什么推荐它而不是 hires 那条路：潜空间放大 + 重采样在 SDXL 二次元模型上会出
+        **彩噪/重影**（实测 denoise 0.3~0.45 时头发边缘一圈彩虹边；DLC 预设里也写了
+        "二段放大与锐化都关掉"）。纯超分只是"把像素变多"，画面本身不动，所以干净。
+
+        `width`/`height` 给 0 = 用模型原生倍率（4× 模型就是 4 倍）；给了就在放大后缩到精确尺寸。
+        """
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "UpscaleModelLoader", "inputs": {"model_name": upscale_model}},
+            "3": {"class_type": "ImageUpscaleWithModel", "inputs": {
+                "upscale_model": ["2", 0], "image": ["1", 0]}},
+            "5": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["3", 0]}},
+        }
+        if width and height:
+            wf["4"] = {"class_type": "ImageScale", "inputs": {
+                "image": ["3", 0], "upscale_method": method,
+                "width": int(width), "height": int(height), "crop": "disabled"}}
+            wf["5"]["inputs"]["images"] = ["4", 0]
+        return wf
+
+    @staticmethod
+    def hires_workflow(ckpt: str, image_name: str, positive: str, negative: str,
+                       width: int, height: int, steps: int, cfg: float, seed: int,
+                       denoise: float = 0.3, upscale_method: str = "bislerp",
+                       sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                       prefix: str = "imtag_hires") -> dict:
+        """高分辨率修复（hires fix）：原图 → VAEEncode → LatentUpscale → 低 denoise 再采样。
+
+        `width`/`height` 是**图像像素**（和 KSampler 那条工作流一个口径）——ComfyUI 的
+        LatentUpscale 节点自己会 `// 8` 转成潜空间；**别自己先除 8**，
+        否则会得到 1/8 尺寸的图（实测踩过：要 1024 却出 128）。
+
+        为什么不直接开 2048×2048 出图：SDXL 直接出巨图在 8GB 显存上几乎必 OOM，
+        而且超过训练分辨率后容易出现重复肢体/双头。这条路只把潜空间放大再补细节，
+        显存开销和 1024 出图同一量级，是目前"要更大图"的稳妥做法。
+
+        denoise 别开大（实测 0.45 会把头发重画成一片噪点和拉丝；0.3 以下才"只是变清楚"）。
+        放大方式用 bislerp（专为潜空间设计）；nearest-exact 会出马赛克块。
+        """
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "3": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["2", 2]}},
+            "4": {"class_type": "LatentUpscale", "inputs": {
+                "samples": ["3", 0], "width": int(width), "height": int(height),
+                "upscale_method": upscale_method, "crop": "disabled"}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
+            "7": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": float(denoise),
+                "model": ["2", 0], "positive": ["5", 0], "negative": ["6", 0],
+                "latent_image": ["4", 0]}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["2", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["8", 0]}},
+        }
+
     def wait(self, prompt_id: str, out_dir: Path, base_name: str,
              timeout: float = 900.0, on_tick=None) -> list[Path]:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -304,6 +432,10 @@ class ComfyClient:
                 time.sleep(2)
                 continue
             if prompt_id in hist:
+                # 执行失败的记录同样会进 /history，**光看"有没有 outputs"会把它当成
+                # "跑完但没图"**（结果就是静默返回空列表，用户只看到"没出图"）。
+                # 这里把真实报错抛出去，调用方（宿主 / DLC）才能提示到点子上。
+                self._raise_if_failed(hist[prompt_id])
                 saved: list[Path] = []
                 for node in (hist[prompt_id].get("outputs") or {}).values():
                     for i, img in enumerate(node.get("images", []) or []):
@@ -324,3 +456,59 @@ class ComfyClient:
                     pass
             time.sleep(2)
         raise ComfyError(f"等超时（{timeout:.0f}s）")
+
+    @staticmethod
+    def _raise_if_failed(record: dict) -> None:
+        """把 /history 里的 execution_error 变成 ComfyError。"""
+        status = record.get("status") or {}
+        if str(status.get("status_str") or "") != "error":
+            return
+        msg = ""
+        node = ""
+        for item in status.get("messages") or []:
+            if isinstance(item, (list, tuple)) and len(item) == 2 and item[0] == "execution_error":
+                info = item[1] or {}
+                msg = str(info.get("exception_message") or "").strip()
+                node = f"{info.get('node_type') or ''} {info.get('node_id') or ''}".strip()
+        raise ComfyError(f"ComfyUI 执行失败：{msg or '未知错误'}" + (f"（节点 {node}）" if node else ""))
+
+    @staticmethod
+    def checkpoint_arch(path) -> str:
+        """猜底模架构：读 safetensors 头部（不加载权重），返回 'sdxl' / 'sd15' / ''。
+
+        为什么要它：SDXL 的 ControlNet 套在 SD1.5 底模上，ComfyUI 会在采样时报
+        "y is None, did you try using a controlnet for SDXL on SD1?"，光看报错很难联想。
+        有架构信息就能自动挑配得上的 ControlNet。
+        """
+        try:
+            with open(path, "rb") as fh:
+                n = int.from_bytes(fh.read(8), "little")
+                if n <= 0 or n > 64 * 1024 * 1024:
+                    return ""
+                head = json.loads(fh.read(n).decode("utf-8", "ignore"))
+        except Exception:                                    # noqa: BLE001
+            return ""
+        meta = head.get("__metadata__") or {}
+        arch = str(meta.get("modelspec.architecture") or "").lower()
+        if "xl" in arch:
+            return "sdxl"
+        if arch:
+            return "sd15" if "stable-diffusion-v1" in arch else ""
+        keys = list(head.keys())
+        if any(k.startswith("conditioner.embedders.1") for k in keys):
+            return "sdxl"                                  # SDXL 才有第二个文本编码器
+        # 没有元数据的合并模型（civitai 上很常见）就按交叉注意力的上下文维度判：
+        # SD1.5 的 attn2 上下文是 CLIP-L 的 768 维，SDXL 是 768+1280=2048 维。
+        for k in keys:
+            if k.endswith("attn2.to_k.weight"):
+                shape = (head.get(k) or {}).get("shape") or []
+                if len(shape) == 2:
+                    ctx = int(shape[1])
+                    if ctx == 2048:
+                        return "sdxl"
+                    if ctx == 768:
+                        return "sd15"
+                break
+        if any(k.startswith("conditioner.embedders.0") for k in keys):
+            return "sd15"
+        return ""

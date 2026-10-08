@@ -39,8 +39,16 @@
   POST /api/export/regions_yolo | /api/export/captions → 导出 YOLO 数据集 / SD 字幕
   POST /api/cleanup                     → 清理失效目录与文件 {confirm:true}
   GET  /api/gen/info                    → 生图 DLC 状态（ComfyUI 是否在线/模型/预设/输出目录）
+  GET  /api/gen/caps                    → 高级功能可用性（局部重绘/参考图/姿势控制）+ 可选模型文件
+  GET  /api/gen/models                  → 模型清单与本机是否已有（生图页显示"要下什么"）
+  POST /api/gen/models/fetch            → 后台下载缺的模型（断点续传，进度走 SSE gen_dl_*）
   POST /api/gen/run                     → **在 PC 上生图**（平板遥控）{prompt, model?, preset?, count?, import?}
   POST /api/gen/inpaint                 → **局部重绘**：{file_id|name, mask_base64, prompt, denoise?} 白=重绘
+  POST /api/gen/ipadapter               → **参考图**（IP-Adapter）：{ref_file_id|ref_name|ref_base64, prompt, weight?}
+  POST /api/gen/controlnet              → **姿势/线稿**（ControlNet）：{pose_file_id|pose_name|pose_base64, prompt, strength?}
+  POST /api/gen/hires                   → **高分辨率修复**：{file_id|name, prompt, scale?=1.5, denoise?}
+  POST /api/gen/upscale                 → **纯放大（超分模型，无彩噪）**：{file_id|name, scale?=4}
+  POST /api/gen/img2img                 → **图生图 / 图融合**：{file_id|name, prompt, denoise?, blend_file_id?}
   GET  /api/gen/results?limit=          → 最近生成的文件（输出目录扫描）
   GET  /api/gen/file?name=              → 下载/预览生成结果
   GET  /api/lex/zh?text=                → 中文→规范英文标签（共享词库，平板提示词用）
@@ -305,6 +313,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._export_download(q)
         elif path == "/api/gen/info":
             self._gen_info()
+        elif path == "/api/gen/caps":
+            self._gen_caps(q)
+        elif path == "/api/gen/models":
+            self._gen_models()
         elif path == "/api/gen/results":
             self._gen_results(q)
         elif path == "/api/gen/file":
@@ -399,6 +411,18 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._gen_run(body)
         elif path == "/api/gen/inpaint":
             self._gen_inpaint(body)
+        elif path == "/api/gen/ipadapter":
+            self._gen_ipadapter(body)
+        elif path == "/api/gen/controlnet":
+            self._gen_controlnet(body)
+        elif path == "/api/gen/hires":
+            self._gen_hires(body)
+        elif path == "/api/gen/upscale":
+            self._gen_upscale(body)
+        elif path == "/api/gen/img2img":
+            self._gen_img2img(body)
+        elif path == "/api/gen/models/fetch":
+            self._gen_fetch_models(body)
         elif path == "/api/lex/prompt_fix":
             self._lex_prompt_fix(body)
         else:
@@ -1181,17 +1205,85 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
     def _gen_presets(self) -> dict:
         """DLC 里的 workflows/presets.json（固化的参数预设，含实测结论）。"""
+        p = self._dlc_file("workflows/presets.json")
+        if p is None:
+            return {}
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+        except Exception:
+            return {}
+
+    def _dlc_file(self, rel: str) -> Path | None:
+        """在可能的 DLC 安装位置里找一个文件（便携版在程序目录，安装版在数据目录）。"""
         try:
             from .config import project_root
-            for p in (project_root() / "dlc" / "comfyui_helper" / "workflows" / "presets.json",
-                      Path(self.api.settings.path()).parent / "dlc" / "comfyui_helper" /
-                      "workflows" / "presets.json"):
-                if p.exists():
-                    raw = json.loads(p.read_text(encoding="utf-8"))
-                    return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+            from .dlc import dlcs_dir
+            cands = [dlcs_dir() / "comfyui_helper" / rel,
+                     project_root() / "dlc" / "comfyui_helper" / rel,
+                     Path(self.api.settings.path()).parent / "dlc" / "comfyui_helper" / rel]
         except Exception:
-            pass
-        return {}
+            cands = []
+        for p in cands:
+            try:
+                if p.exists():
+                    return p
+            except Exception:
+                continue
+        return None
+
+    def _gen_manifest(self) -> dict:
+        """DLC 的 models.json（模型清单，不含模型本体）。"""
+        p = self._dlc_file("models.json")
+        if p is None:
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _gen_comfy_url(self) -> str:
+        """取 ComfyUI API 地址。DLC 清单里写的是 `comfyui_url`，老配置里叫 `comfy_url`，两个都认。"""
+        cfg = self._gen_cfg()
+        for key in ("comfyui_url", "comfy_url", "api_url"):
+            val = str(cfg.get(key) or "").strip()
+            if val:
+                return val
+        return "http://127.0.0.1:8188"
+
+    def _gen_comfy_path(self) -> str:
+        """取 ComfyUI 安装目录（下载模型要知道放到哪）。
+
+        配置里没填就借用 DLC 的 `autoconnect` 做一次"常见位置"探测（只查固定候选路径，
+        不扫盘，也不去问进程），结果在一次运行里缓存，避免反复探测。
+        """
+        cfg = self._gen_cfg()
+        for key in ("comfyui_path", "comfy_path", "comfy_dir", "install_dir"):
+            val = str(cfg.get(key) or "").strip()
+            if val:
+                return val
+        if hasattr(self.api, "_gen_comfy_dir_cache"):
+            return str(self.api._gen_comfy_dir_cache or "")
+        found = ""
+        try:
+            import importlib.util
+            script = self._dlc_file("autoconnect.py")
+            if script is not None:
+                spec = importlib.util.spec_from_file_location("imtag_comfy_autoconnect", script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                for cand in mod._candidate_roots():          # noqa: SLF001
+                    if mod._is_comfy_dir(cand):              # noqa: SLF001
+                        found = str(cand)
+                        break
+        except Exception:
+            found = ""
+        if not found:
+            import os
+            env = os.environ.get("COMFYUI_PATH") or os.environ.get("COMFYUI_DIR") or ""
+            found = str(env).strip()
+        self.api._gen_comfy_dir_cache = found
+        return found
 
     def _gen_out_dir(self) -> Path:
         cfg = self._gen_cfg()
@@ -1206,7 +1298,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
     def _gen_info(self) -> None:
         from .comfy_client import ComfyClient
         cfg = self._gen_cfg()
-        url = str(cfg.get("comfy_url") or "http://127.0.0.1:8188")
+        url = self._gen_comfy_url()
         client = ComfyClient(url)
         ok, detail = client.ping()
         models: list = []
@@ -1217,14 +1309,22 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 models = []
         presets = self._gen_presets()
         files = self._gen_scan(limit=1)
+        # 默认底模：配置里没写就按"优先 SDXL"挑一个（SD1.5 太老，用户 2026-10-08 起弃用）
+        default_model = str(cfg.get("default_model") or "").strip() or (
+            self._gen_default_model(client) if ok else "")
+        default_arch = self._gen_ckpt_arch(default_model) if default_model else ""
         self._json({"ok": True, "comfy_url": url, "online": bool(ok), "detail": detail,
+                    "comfyui_path": self._gen_comfy_path(),
                     "models": models,
+                    "model_arch": {m: self._gen_ckpt_arch(m) for m in models},
                     "presets": {k: {"width": v.get("width"), "height": v.get("height"),
                                     "steps": v.get("steps"), "cfg": v.get("cfg"),
                                     "notes": v.get("notes", "")}
                                 for k, v in presets.items()},
                     "output_dir": str(self._gen_out_dir()),
-                    "default_model": cfg.get("default_model", ""),
+                    "default_model": default_model,
+                    "default_arch": default_arch,
+                    "limits": self._gen_limits(),
                     "neg_prompt": cfg.get("neg_prompt", ""),
                     "recent": len(files)})
 
@@ -1267,6 +1367,32 @@ class _ApiHandler(BaseHTTPRequestHandler):
         if not p.exists() or not p.is_file():
             self._json({"ok": False, "error": "not_found"}, 404)
             return
+        # ?size=340 → 给移动端的生成结果缩略图（不用为了看个列表把原图整张拉下来）。
+        # 未入库的文件没有 file id，这里用"文件名的稳定负数"当缓存键（真 id 都是正数，不会撞）。
+        try:
+            want = int(q.get("size") or 0)
+        except ValueError:
+            want = 0
+        if want:
+            want = max(64, min(1024, want))
+            try:
+                fid = -(abs(hash(name)) % (10 ** 9) + 1)
+                st_mtime = p.stat().st_mtime
+                tp = thumb_path(fid, st_mtime, want)
+                if not tp.exists() or tp.stat().st_size == 0:
+                    tp = make_thumb(p, fid, st_mtime, size=want) or tp
+                if tp.exists() and tp.stat().st_size:
+                    data = tp.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+            except Exception:
+                pass                     # 缩略图失败就退回原图，别让"看图"这件事挂掉
         data = p.read_bytes()
         ctype = {".png": "image/png", ".webp": "image/webp"}.get(p.suffix.lower(), "image/jpeg")
         self.send_response(200)
@@ -1283,7 +1409,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         if getattr(api, "_gen_running", False):
             self._json({"ok": True, "started": False, "reason": "already_running"})
             return
-        from .comfy_client import ComfyClient, ComfyError
+        from .comfy_client import ComfyClient
         cfg = self._gen_cfg()
         presets = self._gen_presets()
         preset_name = str(body.get("preset") or "")
@@ -1301,16 +1427,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
         negative = str(body.get("negative") or cfg.get("neg_prompt") or preset.get("negative") or "")
         if preset.get("negative_add"):
             negative += ", " + str(preset["negative_add"])
-        model = str(body.get("model") or cfg.get("default_model") or "").strip()
-        url = str(cfg.get("comfy_url") or "http://127.0.0.1:8188")
+        url = self._gen_comfy_url()
         client = ComfyClient(url)
-        if not model:
-            try:
-                names = client.checkpoints()
-                model = names[0] if names else ""
-            except ComfyError as exc:
-                self._json({"ok": False, "error": "comfy_unavailable", "detail": str(exc)}, 503)
-                return
+        model = str(body.get("model") or "").strip() or self._gen_default_model(client)
         if not model:
             self._json({"ok": False, "error": "no_model"}, 400)
             return
@@ -1318,8 +1437,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
             count = max(1, min(20, int(body.get("count") or 1)))
         except Exception:
             count = 1
-        width = int(body.get("width") or preset.get("width") or 1024)
-        height = int(body.get("height") or preset.get("height") or 1024)
+        width, height, warning = self._gen_size_for_model(
+            model, body.get("width") or preset.get("width") or 1024,
+            body.get("height") or preset.get("height") or 1024)
         steps = int(body.get("steps") or preset.get("steps") or 30)
         cfg_s = float(body.get("cfg") or preset.get("cfg") or 5.5)
         sampler = str(body.get("sampler") or preset.get("sampler") or "dpmpp_2m")
@@ -1356,6 +1476,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=job, daemon=True, name="imtag-gen").start()
         self._json({"ok": True, "started": True, "count": count, "model": model,
+                    "model_arch": self._gen_ckpt_arch(model),
+                    "width": width, "height": height, "warning": warning,
                     "output_dir": str(out_dir), "preset": preset_name})
 
     def _gen_inpaint(self, body: dict) -> None:
@@ -1403,17 +1525,13 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "bad_mask",
                         "hint": "mask_base64 要是 PNG（白=重绘）"}, 400)
             return
-        from .comfy_client import ComfyClient, ComfyError
+        from .comfy_client import ComfyClient
         cfg = self._gen_cfg()
-        client = ComfyClient(str(cfg.get("comfy_url") or "http://127.0.0.1:8188"))
-        model = str(body.get("model") or cfg.get("default_model") or "").strip()
+        client = ComfyClient(self._gen_comfy_url())
+        model = str(body.get("model") or "").strip() or self._gen_default_model(client)
         if not model:
-            try:
-                names = client.checkpoints()
-                model = names[0] if names else ""
-            except ComfyError as exc:
-                self._json({"ok": False, "error": "comfy_unavailable", "detail": str(exc)}, 503)
-                return
+            self._json({"ok": False, "error": "no_model"}, 400)
+            return
         out_dir = self._gen_out_dir()
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         mask_path = out_dir / f"_mask_{stamp}.png"
@@ -1457,6 +1575,812 @@ class _ApiHandler(BaseHTTPRequestHandler):
         threading.Thread(target=job, daemon=True, name="imtag-inpaint").start()
         self._json({"ok": True, "started": True, "model": model,
                     "base": str(base_path), "output_dir": str(out_dir)})
+
+    # ---------- 生图：参考图 / 姿势控制 / 能力探测 / 模型下载 ----------
+    @staticmethod
+    def _gen_enum(client, node: str, field: str) -> list[str]:
+        """取某个节点下拉的可选值（拿不到就返回空表，别让探测把接口拖死）。"""
+        try:
+            return list(client._enum(node, field))          # noqa: SLF001（同包内部调用）
+        except Exception:
+            return []
+
+    @staticmethod
+    def _pick_name(items: list[str], *keywords: str) -> str:
+        """从候选里挑一个：按关键词顺序找第一个命中的（不区分大小写），都不中就返回第一个。"""
+        items = [str(x) for x in (items or []) if str(x or "").strip()]
+        if not items:
+            return ""
+        for kw in keywords:
+            k = kw.lower()
+            for it in items:
+                if k in it.lower():
+                    return it
+        return items[0]
+
+    @staticmethod
+    def _gen_image_size(path, fallback: int = 1024) -> tuple[int, int]:
+        """读图片原始宽高（读不出来就退回正方形）。"""
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(path) as im:
+                return int(im.width), int(im.height)
+        except Exception:
+            return fallback, fallback
+
+    @staticmethod
+    def _fit_mp(w: int, h: int, target: int = 1024 * 1024,
+                lo: int = 512, hi: int = 1536) -> tuple[int, int]:
+        """按原图长宽比缩放到约 target 像素（SDXL 的甜点区），并取 8 的整数倍。"""
+        import math
+        if w <= 0 or h <= 0:
+            return 1024, 1024
+        scale = math.sqrt(target / float(w * h))
+        w2 = max(lo, min(hi, int(round(w * scale / 8)) * 8))
+        h2 = max(lo, min(hi, int(round(h * scale / 8)) * 8))
+        return w2 - (w2 % 8), h2 - (h2 % 8)
+
+    # 出图尺寸边界（PC 侧统一口径，客户端照这个画滑杆）
+    GEN_MIN_SIDE = 256
+    GEN_MAX_SIDE = 2048
+    GEN_STEP = 8
+    GEN_SWEET_SPOT = 1024
+
+    @classmethod
+    def _gen_clamp_size(cls, w, h) -> tuple[int, int]:
+        """把宽高夹到合法范围并取 8 的整数倍（SDXL 对 8 对齐敏感，不合法会出怪异画质）。"""
+        def one(v) -> int:
+            try:
+                v = int(v or 0)
+            except (TypeError, ValueError):
+                v = 0
+            v = v or cls.GEN_SWEET_SPOT
+            v = max(cls.GEN_MIN_SIDE, min(cls.GEN_MAX_SIDE, v))
+            return v - (v % cls.GEN_STEP)
+        return one(w), one(h)
+
+    @classmethod
+    def _gen_limits(cls) -> dict:
+        return {"min_side": cls.GEN_MIN_SIDE, "max_side": cls.GEN_MAX_SIDE,
+                "step": cls.GEN_STEP, "sweet_spot": cls.GEN_SWEET_SPOT,
+                "note": "SDXL 的甜点区是 1024×1024；直接开 1536 以上显存吃紧、构图也容易崩，"
+                        "要更大的图请用 /api/gen/hires（先出 1024 再放大）"}
+
+    def _gen_size_for_model(self, model: str, w, h) -> tuple[int, int, str]:
+        """出图尺寸的统一口径（出图/参考图/姿势控制都用它，免得各写一份）。
+
+        1) 夹到 256–2048 并取 8 的整数倍；
+        2) SDXL 底模低于 ~0.6MP 会糊成一团（实测 512×512 直接是色块），
+           按原长宽比自动抬到约 1MP，并把原因回给客户端显示。
+        """
+        width, height = self._gen_clamp_size(w, h)
+        if self._gen_ckpt_arch(model) == "sdxl" and width * height < int(0.6 * 1024 * 1024):
+            before = (width, height)
+            width, height = self._fit_mp(width, height, target=1024 * 1024, lo=768, hi=1536)
+            return width, height, (f"SDXL 底模在 {before[0]}×{before[1]} 以下会糊成一团，"
+                                   f"已自动抬到 {width}×{height}")
+        return width, height, ""
+
+    @staticmethod
+    def _img_ext(data: bytes) -> str:
+        """按魔数猜后缀（base64 上来的图可能是 PNG/JPG/WEBP，后缀错了 ComfyUI 不认）。"""
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return ".webp"
+        if data[:2] in (b"II", b"MM"):
+            return ".tif"
+        if data[:2] == b"BM":
+            return ".bmp"
+        return ".png"
+
+    def _gen_ckpt_arch(self, model: str) -> str:
+        """猜底模架构（'sdxl' / 'sd15' / ''），用来给 ControlNet 配对。"""
+        root = self._gen_comfy_path()
+        if not root or not model:
+            return ""
+        try:
+            from .comfy_client import ComfyClient
+            p = Path(root) / "models" / "checkpoints" / str(model)
+            return ComfyClient.checkpoint_arch(p) if p.exists() else ""
+        except Exception:
+            return ""
+
+    # SD1.5 已经太老（用户 2026-10-08 明确：以后尽量别用，用 SDXL 架构的）。
+    # 名字里带这些的多半是 SDXL，先按名字粗筛、再用 safetensors 头部确认，省时间。
+    _SDXL_NAME_HINT = ("xl", "illustrious", "noobai", "pony", "animagine",
+                       "juggernaut", "sdxl", "wai")
+
+    def _gen_default_model(self, client) -> str:
+        """选默认底模：DLC 配置里指定了就用它，否则**优先挑 SDXL**，实在没有才退回列表第一个。"""
+        cfg = self._gen_cfg()
+        want = str(cfg.get("default_model") or "").strip()
+        if want:
+            return want
+        try:
+            names = list(client.checkpoints())
+        except Exception:
+            return ""
+        if not names:
+            return ""
+        hot = [n for n in names if any(h in n.lower() for h in self._SDXL_NAME_HINT)]
+        tried: set[str] = set()
+        for name in hot + names:
+            if name in tried:
+                continue
+            tried.add(name)
+            if self._gen_ckpt_arch(name) == "sdxl":
+                return name
+        return names[0]
+
+    @staticmethod
+    def _cnet_arch_ok(name: str, arch: str) -> bool:
+        """ControlNet 文件名跟底模架构对不对得上（SDXL 的套 SD1.5 上会直接报错）。"""
+        low = str(name).lower()
+        if arch == "sdxl":
+            return "xl" in low
+        if arch == "sd15":
+            return "sd15" in low or "sd1.5" in low
+        return True
+
+    @staticmethod
+    def _ipa_arch_ok(name: str, arch: str) -> bool:
+        """IP-Adapter 文件名跟底模架构对不对得上。
+
+        对不上不会报错，只会出**噪声图**（比报错更难发现），所以这里必须按架构挑。
+        FaceID 那两件套需要 InsightFace，本项目没装，直接排除。
+        """
+        low = str(name).lower()
+        if "faceid" in low or "face_id" in low:
+            return False
+        if arch == "sdxl":
+            return "xl" in low
+        if arch == "sd15":
+            return "sd15" in low
+        return True
+
+    def _gen_input_image(self, body: dict, prefix: str) -> tuple[Path | None, str]:
+        """取一张输入图（参考图/姿势图），三种给法按优先级试：
+
+        `<prefix>file_id`（库里已有的图，推荐）/ `<prefix>name`（输出目录里的文件）/ `<prefix>base64`。
+        都没写前缀时退回 `file_id` / `name` / `base64`，方便旧客户端。
+        返回 (本地路径, 错误码)；base64 会以正确的后缀落到生图输出目录。
+        """
+        import base64
+        import datetime
+        api = self.api
+
+        def val(*keys: str):
+            for k in keys:
+                v = body.get(k)
+                if v not in (None, ""):
+                    return v
+            return None
+
+        fid = val(prefix + "file_id", "file_id")
+        if fid:
+            try:
+                row = api.store.one("SELECT path FROM files WHERE id=?", (int(fid),))
+            except Exception:
+                row = None
+            if row is None:
+                return None, "no_such_file_id"
+            p = Path(str(row["path"]))
+            if not p.exists():
+                return None, "base_file_missing"
+            return p, ""
+
+        name = str(val(prefix + "name", "name") or "")
+        if name:
+            if "/" in name or "\\" in name or ".." in name:
+                return None, "bad_name"
+            p = self._gen_out_dir() / name
+            if p.exists() and p.is_file():
+                return p, ""
+            return None, "no_such_name"
+
+        raw = str(val(prefix + "base64", prefix + "b64", "base64", "image_base64") or "")
+        if raw:
+            if raw.startswith("data:"):
+                raw = raw.split(",", 1)[-1]
+            try:
+                data = base64.b64decode(raw, validate=False)
+            except Exception:
+                data = b""
+            if len(data) < 100:
+                return None, "bad_base64"
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            dst = self._gen_out_dir() / f"_in_{prefix or 'img'}_{stamp}{self._img_ext(data)}"
+            try:
+                dst.write_bytes(data)
+            except Exception:
+                return None, "write_failed"
+            return dst, ""
+        return None, "no_input_image"
+
+    def _gen_caps(self, q: dict) -> None:
+        """生图高级功能的可用性 + 可选文件（移动端一进生图页调一次，决定按钮灰不灰、提示缺什么）。
+
+        探测要打十几次 /object_info，比较慢，结果做 60 秒缓存；带 `?fresh=1` 强制重探
+        （例如刚用 DLC 下完模型，ComfyUI 刷新列表后）。
+        """
+        from .comfy_client import ComfyClient
+        api = self.api
+        url = self._gen_comfy_url()
+        fresh = str(q.get("fresh") or "").lower() in ("1", "true", "yes")
+        cache = getattr(api, "_gen_caps_cache", None)
+        if cache and not fresh and cache.get("url") == url and time.time() - cache.get("at", 0) < 60:
+            self._json(cache["data"])
+            return
+        client = ComfyClient(url)
+        ok, detail = client.ping()
+        caps: dict = {}
+        files: dict[str, list] = {"ipadapter": [], "clip_vision": [], "control_net": []}
+        if ok:
+            try:
+                caps = client.capability_report()
+            except Exception as exc:                          # noqa: BLE001
+                caps = {"_error": str(exc)}
+            for key, node, field in (("ipadapter", "IPAdapterModelLoader", "ipadapter_file"),
+                                     ("clip_vision", "CLIPVisionLoader", "clip_name"),
+                                     ("control_net", "ControlNetLoader", "control_net_name")):
+                files[key] = self._gen_enum(client, node, field)
+        # ControlNet 分架构给默认值：SDXL 的套在 SD1.5 底模上会直接报错，让调用方按底模选。
+        cn_xl = [c for c in files["control_net"] if self._cnet_arch_ok(c, "sdxl")]
+        cn_15 = [c for c in files["control_net"] if self._cnet_arch_ok(c, "sd15")]
+        ip_xl = [c for c in files["ipadapter"] if self._ipa_arch_ok(c, "sdxl")]
+        ip_15 = [c for c in files["ipadapter"] if self._ipa_arch_ok(c, "sd15")]
+        data = {"ok": True, "comfy_url": url, "online": bool(ok), "detail": detail,
+                "capabilities": caps, "files": files,
+                "defaults": {
+                    "ipadapter_file": self._pick_name(ip_xl or files["ipadapter"], "plus", "vit-h"),
+                    "ipadapter_file_sdxl": self._pick_name(ip_xl, "plus", "vit-h"),
+                    "ipadapter_file_sd15": self._pick_name(ip_15, "plus", "vit-h"),
+                    "clip_vision": self._pick_name(files["clip_vision"], "vit-h", "vit_h"),
+                    "control_net": self._pick_name(cn_xl or files["control_net"], "union", "openpose"),
+                    "control_net_sdxl": self._pick_name(cn_xl, "union", "openpose"),
+                    "control_net_sd15": self._pick_name(cn_15, "openpose", "union")},
+                "models_ready": {k: bool(v) for k, v in files.items()},
+                # 按底模架构看"参考图/姿势控制"能不能用（缺哪门就提示下哪门）
+                "arch_ready": {"sdxl": bool(ip_xl) and bool(cn_xl),
+                               "sd15": bool(ip_15) and bool(cn_15)}}
+        api._gen_caps_cache = {"at": time.time(), "url": url, "data": data}
+        self._json(data)
+
+    def _gen_models(self) -> None:
+        """模型清单 + 本机是否已有（生图页用来显示"还要下什么"，不含模型本体）。"""
+        man = self._gen_manifest()
+        root = self._gen_comfy_path()
+        # 清单里的 target 是**相对 ComfyUI 根目录**写的（形如 "models/checkpoints"），
+        # 所以这里只能拼 root，不能再补一层 models（补了会变成 models\models\...）。
+        base = Path(root) if root else None
+        items = []
+        for m in (man.get("models") or []):
+            if not isinstance(m, dict):
+                continue
+            rec = dict(m)
+            target = str(m.get("target") or "").replace("/", "\\")
+            fname = str(m.get("file") or "")
+            dst = (base / target / fname) if (base and target and fname) else None
+            if dst is None:
+                rec["present"] = None
+                rec["actual_bytes"] = 0
+            else:
+                try:
+                    exists = dst.exists()
+                    rec["present"] = bool(exists)
+                    rec["actual_bytes"] = dst.stat().st_size if exists else 0
+                except Exception:
+                    rec["present"] = None
+                    rec["actual_bytes"] = 0
+            rec["path"] = str(dst) if dst else ""
+            rec["can_fetch"] = bool(m.get("download_url")) and base is not None
+            items.append(rec)
+        self._json({"ok": True, "comfyui_path": root, "configured": bool(root),
+                    "models_dir": str(base) if base else "",
+                    "fetching": bool(getattr(self.api, "_gen_fetching", False)),
+                    "models": items,
+                    "wordlists": man.get("wordlists") or [],
+                    "requirements": man.get("requirements") or {}})
+
+    def _gen_fetch_models(self, body: dict) -> None:
+        """后台下载缺的模型：复用 DLC 的 `scripts/fetch_model.py`（断点续传 + 自动走系统代理）。
+
+        进度走 SSE：`gen_dl_started` / `gen_dl_progress` / `gen_dl_done` / `gen_dl_failed`。
+        断电后重跑即可续传（按 Range 接着下，不会从头重来），符合"任何时刻掉电都能继续"。
+        """
+        api = self.api
+        if getattr(api, "_gen_fetching", False):
+            self._json({"ok": True, "started": False, "reason": "already_fetching"})
+            return
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "generating"})
+            return
+        script = self._dlc_file("scripts/fetch_model.py")
+        if script is None:
+            self._json({"ok": False, "error": "fetch_script_missing",
+                        "hint": "没找到 DLC 的 scripts/fetch_model.py（未安装扩展包？）"}, 400)
+            return
+        root = self._gen_comfy_path()
+        if not root:
+            self._json({"ok": False, "error": "no_comfyui_path",
+                        "hint": "先在「更多 ▾ → 扩展包（DLC）…」里填 ComfyUI 安装目录"}, 400)
+            return
+        man = self._gen_manifest()
+        by_id = {str(m.get("id")): m for m in (man.get("models") or []) if isinstance(m, dict)}
+        raw_ids = body.get("ids") or []
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        ids = [str(i) for i in raw_ids if str(i or "").strip()]
+        picks: list[dict] = []
+        if bool(body.get("all")):
+            picks = [m for m in (man.get("models") or [])
+                     if isinstance(m, dict) and m.get("download_url")]
+        else:
+            if not ids:
+                self._json({"ok": False, "error": "no_ids", "hint": "给 ids:[模型id] 或 all:true"}, 400)
+                return
+            for i in ids:
+                m = by_id.get(i)
+                if m is None:
+                    self._json({"ok": False, "error": "unknown_model_id", "id": i}, 400)
+                    return
+                if not m.get("download_url"):
+                    self._json({"ok": False, "error": "no_download_url", "id": i,
+                                "hint": f"{m.get('name') or i} 没有下载直链，只能手动下载"}, 400)
+                    return
+                picks.append(m)
+        base = Path(root)          # 同上：target 已经带了 "models" 前缀
+        jobs: list[tuple[dict, Path]] = []
+        for m in picks:
+            dst = base / str(m.get("target") or "").replace("/", "\\") / str(m.get("file") or "")
+            try:
+                want = int(m.get("size_bytes") or 0)
+                if dst.exists() and want and dst.stat().st_size >= want:
+                    continue
+            except Exception:
+                pass
+            jobs.append((m, dst))
+        if not jobs:
+            self._json({"ok": True, "started": False, "reason": "already_complete",
+                        "ids": [m.get("id") for m in picks]})
+            return
+        api._gen_fetching = True
+        api.bump("gen_dl_started", count=len(jobs), ids=[m.get("id") for m, _ in jobs])
+
+        def job() -> None:
+            import importlib.util
+            try:
+                spec = importlib.util.spec_from_file_location("imtag_fetch_model", script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+            except Exception as exc:                          # noqa: BLE001
+                api.bump("gen_dl_failed", error=f"加载下载脚本失败：{exc}")
+                api._gen_fetching = False
+                return
+            done_ids: list[str] = []
+            failed: list[str] = []
+            try:
+                for idx, (m, dst) in enumerate(jobs):
+                    total = int(m.get("size_bytes") or 0)
+                    mid = str(m.get("id") or "")
+                    api.bump("gen_dl_progress", id=mid, file=dst.name, index=idx + 1,
+                             total_models=len(jobs), got=0, total=total, pct=0.0)
+                    stop = threading.Event()
+
+                    def watch(_dst=dst, _mid=mid, _total=total, _idx=idx + 1, _stop=stop) -> None:
+                        # fetch_model.py 只有标准输出进度，没有回调；这里改成盯文件大小，
+                        # 既不用改那个脚本，也不影响它在命令行下的表现。
+                        while not _stop.wait(3):
+                            try:
+                                got = _dst.stat().st_size if _dst.exists() else 0
+                            except Exception:
+                                got = 0
+                            api.bump("gen_dl_progress", id=_mid, file=_dst.name, index=_idx,
+                                     total_models=len(jobs), got=got, total=_total,
+                                     pct=round(got / _total * 100, 2) if _total else None)
+
+                    th = threading.Thread(target=watch, daemon=True, name="imtag-dl-watch")
+                    th.start()
+                    try:
+                        rc = mod.download(str(m.get("download_url")), dst, str(m.get("sha256") or ""))
+                    finally:
+                        stop.set()
+                    (done_ids if rc == 0 else failed).append(mid)
+                if failed:
+                    api.bump("gen_dl_failed", ids=failed, done=done_ids)
+                else:
+                    api.bump("gen_dl_done", ids=done_ids, models_dir=str(base),
+                             hint="ComfyUI 若没自动刷新，重启一次即可看到新模型")
+            except Exception as exc:                          # noqa: BLE001
+                api.bump("gen_dl_failed", error=str(exc), done=done_ids)
+            finally:
+                api._gen_fetching = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-dl").start()
+        self._json({"ok": True, "started": True, "count": len(jobs),
+                    "ids": [m.get("id") for m, _ in jobs], "models_dir": str(base)})
+
+    def _gen_advanced(self, body: dict, kind: str) -> None:
+        """参考图（IP-Adapter）与姿势/线稿（ControlNet）共用一条链路。
+
+        两者只有"工作流怎么拼"和"多出来的参数"不同，其余（取图/上传/进度/入库/报错）完全一致，
+        所以合到一个实现里，避免以后改一处漏一处。
+        """
+        import datetime
+        import random as _rnd
+        api = self.api
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "already_running"})
+            return
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            self._json({"ok": False, "error": "no_prompt"}, 400)
+            return
+        prefix = "ref_" if kind == "ipadapter" else "pose_"
+        src, err = self._gen_input_image(body, prefix)
+        if src is None:
+            self._json({"ok": False, "error": err,
+                        "hint": f"给 {prefix}file_id（库里）/ {prefix}name（输出目录）/ {prefix}base64"}, 400)
+            return
+        from .comfy_client import ComfyClient
+        cfg = self._gen_cfg()
+        client = ComfyClient(self._gen_comfy_url())
+        model = str(body.get("model") or "").strip() or self._gen_default_model(client)
+        if not model:
+            self._json({"ok": False, "error": "no_model"}, 400)
+            return
+        iw, ih = self._gen_image_size(src)
+        fit_w, fit_h = self._fit_mp(iw, ih)
+        width = int(body.get("width") or 0) or fit_w
+        height = int(body.get("height") or 0) or fit_h
+        width, height, size_warning = self._gen_size_for_model(model, width, height)
+        sampler = str(body.get("sampler") or "dpmpp_2m")
+        scheduler = str(body.get("scheduler") or "karras")
+        extra: dict
+        if kind == "ipadapter":
+            cands = [c for c in self._gen_enum(client, "IPAdapterModelLoader", "ipadapter_file")
+                     if "faceid" not in c.lower() and "face_id" not in c.lower()]
+            arch = self._gen_ckpt_arch(model)      # 底模是 SDXL 还是 SD1.5
+            matched = [c for c in cands if self._ipa_arch_ok(c, arch)] if arch else []
+            if arch and not matched and not str(body.get("ipadapter_file") or "").strip():
+                need = ("ip-adapter-plus_sd15.safetensors" if arch == "sd15"
+                        else "ip-adapter-plus_sdxl_vit-h.safetensors")
+                self._json({"ok": False, "error": "no_ipadapter_for_arch", "arch": arch,
+                            "hint": f"这门底模是 {arch}，models/ipadapter 里没有对得上的，"
+                                    f"需要 {need}"}, 400)
+                return
+            ip_file = str(body.get("ipadapter_file") or "").strip() or self._pick_name(
+                matched or cands, "plus", "vit-h", "sd15", "sdxl")
+            clip_v = str(body.get("clip_vision") or "").strip() or self._pick_name(
+                self._gen_enum(client, "CLIPVisionLoader", "clip_name"), "vit-h", "vit_h")
+            if not ip_file or not clip_v:
+                self._json({"ok": False, "error": "missing_ipadapter_models",
+                            "hint": "缺 IP-Adapter 的 SDXL 版或 ViT-H 图像编码器，"
+                                    "先看 GET /api/gen/caps 缺什么（可用 /api/gen/models/fetch 下）"}, 400)
+                return
+            extra = {"ipadapter_file": ip_file, "clip_vision": clip_v,
+                     "weight": float(body.get("weight") or 0.8)}
+        else:
+            cands = self._gen_enum(client, "ControlNetLoader", "control_net_name")
+            arch = self._gen_ckpt_arch(model)          # 底模是 SDXL 还是 SD1.5
+            matched = [c for c in cands if self._cnet_arch_ok(c, arch)] if arch else []
+            cnet = str(body.get("control_net") or "").strip() or self._pick_name(
+                matched or cands, "union", "openpose",
+                "sdxl" if arch == "sdxl" else "sd15", "xl")
+            if not cnet:
+                self._json({"ok": False, "error": "missing_controlnet_model",
+                            "hint": "models/controlnet 里没有 ControlNet 模型文件"}, 400)
+                return
+            extra = {"control_net": cnet, "strength": float(body.get("strength") or 0.8),
+                     "preprocessor": str(body.get("preprocessor") or "openpose")}
+        steps = int(body.get("steps") or 28)
+        cfg_v = float(body.get("cfg") or 6.0)
+        negative = str(body.get("negative") or cfg.get("neg_prompt") or "")
+        seed = int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = self._gen_out_dir()
+        api._gen_running = True
+        api.bump("gen_advanced_started", kind=kind, source=str(src), model=model,
+                 width=width, height=height)
+
+        def job() -> None:
+            try:
+                up = client.upload_image(src)
+                if kind == "ipadapter":
+                    wf = ComfyClient.ipadapter_workflow(
+                        model, up, prompt, negative, width=width, height=height,
+                        steps=steps, cfg=cfg_v, seed=seed, weight=extra["weight"],
+                        ipadapter_file=extra["ipadapter_file"], clip_vision=extra["clip_vision"],
+                        sampler=sampler, scheduler=scheduler, prefix=f"ipadapter_{stamp}")
+                else:
+                    wf = ComfyClient.controlnet_workflow(
+                        model, up, extra["control_net"], prompt, negative,
+                        width=width, height=height, steps=steps, cfg=cfg_v, seed=seed,
+                        strength=extra["strength"], preprocessor=extra["preprocessor"],
+                        sampler=sampler, scheduler=scheduler, prefix=f"pose_{stamp}")
+                pid = client.submit(wf)
+                files = client.wait(pid, out_dir, f"{kind}_{stamp}",
+                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
+                                                               kind=kind))
+                made = [str(f) for f in files]
+                ids = api.library.import_generated(made) if body.get("import") else []
+                api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind=kind)
+            except Exception as exc:                          # noqa: BLE001
+                api.bump("gen_failed", error=str(exc), kind=kind)
+            finally:
+                api._gen_running = False
+
+        threading.Thread(target=job, daemon=True, name=f"imtag-{kind}").start()
+        self._json({"ok": True, "started": True, "kind": kind, "model": model,
+                    "source": str(src), "width": width, "height": height,
+                    "warning": size_warning,
+                    "output_dir": str(out_dir), **extra})
+
+    def _gen_ipadapter(self, body: dict) -> None:
+        """参考图（IP-Adapter）：拿一张图影响风格/角色。见 `_gen_advanced`。"""
+        self._gen_advanced(body, "ipadapter")
+
+    def _gen_controlnet(self, body: dict) -> None:
+        """姿势/线稿（ControlNet）：姿势图 → Openpose → ControlNet。见 `_gen_advanced`。"""
+        self._gen_advanced(body, "controlnet")
+
+    def _gen_img2img(self, body: dict) -> None:
+        """图生图 / 图融合（ComfyUI 原生就支持，这里做成接口）。
+
+        - 只给底图 + 提示词：**改造这张图**（`denoise` 0.5~0.6 换衣服/换背景最自然，
+          0.3 以下是微调，1.0 就等于重新出图）。
+        - 再给第二张图（`blend_*`）：先按 `blend_factor` 把两张**混成一张**（这是"融合"），
+          然后拿混出来的结果继续 img2img。混完 denoise 建议 0.3~0.5，别把融合结果冲掉。
+
+        body: `{file_id|name|base64（底图）, prompt, negative?, denoise?:0.6, steps?, cfg?, seed?,
+                blend_file_id|blend_name|blend_base64?, blend_factor?:0.5, blend_mode?:normal, import?}`
+        """
+        import datetime
+        import random as _rnd
+        api = self.api
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "already_running"})
+            return
+        src, err = self._gen_input_image(body, "src_")
+        if src is None:
+            self._json({"ok": False, "error": err,
+                        "hint": "底图给 file_id（库里）/ name（输出目录）/ base64"}, 400)
+            return
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            self._json({"ok": False, "error": "no_prompt"}, 400)
+            return
+        blend = None
+        if body.get("blend_file_id") or body.get("blend_name") or body.get("blend_base64"):
+            blend, berr = self._gen_input_image(body, "blend_")
+            if blend is None:
+                self._json({"ok": False, "error": f"blend_{berr}"}, 400)
+                return
+        from .comfy_client import ComfyClient
+        cfg = self._gen_cfg()
+        client = ComfyClient(self._gen_comfy_url())
+        model = str(body.get("model") or "").strip() or self._gen_default_model(client)
+        if not model:
+            self._json({"ok": False, "error": "no_model"}, 400)
+            return
+        try:
+            # 有第二张图（融合）时默认 0.7：实测 blend 0.3 + denoise 0.7 才成画；
+            # 只改造底图时默认 0.6（换装/换场景比较自然）。
+            denoise = float(body.get("denoise") or (0.7 if blend else 0.6))
+        except (TypeError, ValueError):
+            denoise = 0.6
+        denoise = max(0.05, min(1.0, denoise))
+        try:
+            factor = float(body.get("blend_factor") or 0.3)
+        except (TypeError, ValueError):
+            factor = 0.3
+        factor = max(0.0, min(1.0, factor))
+        mode = str(body.get("blend_mode") or "normal")
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = self._gen_out_dir()
+        api._gen_running = True
+        api.bump("gen_advanced_started", kind="img2img", source=str(src),
+                 blend=str(blend) if blend else "", denoise=denoise, model=model)
+
+        def job() -> None:
+            try:
+                up_src = client.upload_image(src)
+                up_blend = client.upload_image(blend) if blend else ""
+                wf = ComfyClient.img2img_workflow(
+                    model, up_src, prompt,
+                    str(body.get("negative") or cfg.get("neg_prompt") or ""),
+                    steps=int(body.get("steps") or 28), cfg=float(body.get("cfg") or 6.0),
+                    seed=int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1),
+                    denoise=denoise, blend_name=up_blend, blend_factor=factor, blend_mode=mode,
+                    sampler=str(body.get("sampler") or "dpmpp_2m"),
+                    scheduler=str(body.get("scheduler") or "karras"),
+                    prefix=f"i2i_{stamp}")
+                pid = client.submit(wf)
+                files = client.wait(pid, out_dir, f"img2img_{stamp}",
+                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
+                                                               kind="img2img"))
+                made = [str(f) for f in files]
+                ids = api.library.import_generated(made) if body.get("import") else []
+                api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="img2img")
+            except Exception as exc:                          # noqa: BLE001
+                api.bump("gen_failed", error=str(exc), kind="img2img")
+            finally:
+                api._gen_running = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-i2i").start()
+        self._json({"ok": True, "started": True, "kind": "img2img", "model": model,
+                    "source": str(src), "blend": str(blend) if blend else "",
+                    "denoise": denoise, "blend_factor": factor, "blend_mode": mode,
+                    "output_dir": str(out_dir)})
+
+    def _gen_upscale(self, body: dict) -> None:
+        """纯放大（超分模型）：把一张图放到 2×/4×。
+
+        **不做二次采样**，所以不会像 `/api/gen/hires` 那样在头发边缘出彩噪/重影，
+        代价是不会"补出"新细节（只是把像素变多、让线条更干净）。
+        要"又大又有新细节"就用 hires；要"又大又干净"就用这个，两者也可以先放大再 hires 低 denoise。
+
+        body: `{file_id|name|base64, scale?:4（0/省略=模型原生倍率）, model?, 
+                width?/height?（精确尺寸，优先于 scale）, import?}`
+        """
+        import datetime
+        api = self.api
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "already_running"})
+            return
+        src, err = self._gen_input_image(body, "src_")
+        if src is None:
+            self._json({"ok": False, "error": err,
+                        "hint": "给 file_id（库里）/ name（输出目录）/ base64"}, 400)
+            return
+        from .comfy_client import ComfyClient
+        client = ComfyClient(self._gen_comfy_url())
+        up_models = self._gen_enum(client, "UpscaleModelLoader", "model_name")
+        up_model = str(body.get("model") or "").strip() or self._pick_name(
+            up_models, "anime", "ultrasharp", "esrgan", "4x")
+        if not up_model:
+            self._json({"ok": False, "error": "no_upscale_model",
+                        "hint": "models/upscale_models 里没有放大模型；"
+                                "可用 POST /api/gen/models/fetch {ids:['upscale-anime-4x']} 下（18MB）"}, 400)
+            return
+        iw, ih = self._gen_image_size(src)
+        try:
+            want_w = int(body.get("width") or 0)
+            want_h = int(body.get("height") or 0)
+        except (TypeError, ValueError):
+            want_w = want_h = 0
+        if not (want_w and want_h):
+            try:
+                scale = float(body.get("scale") or 0)
+            except (TypeError, ValueError):
+                scale = 0.0
+            if scale > 0:
+                scale = max(1.0, min(8.0, scale))
+                want_w, want_h = int(round(iw * scale)), int(round(ih * scale))
+            else:
+                want_w = want_h = 0          # 0 = 用模型原生倍率（4× 模型就是 4 倍）
+        if want_w and want_h:
+            # 上限 8192：再大 PNG 编解码本身就慢，而且没意义
+            cap = 8192
+            if max(want_w, want_h) > cap:
+                k = cap / float(max(want_w, want_h))
+                want_w, want_h = int(round(want_w * k)), int(round(want_h * k))
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = self._gen_out_dir()
+        api._gen_running = True
+        api.bump("gen_advanced_started", kind="upscale", source=str(src),
+                 upscale_model=up_model, source_size=[iw, ih], size=[want_w or 0, want_h or 0])
+
+        def job() -> None:
+            try:
+                up = client.upload_image(src)
+                wf = ComfyClient.upscale_workflow(up, up_model, want_w, want_h,
+                                                  method=str(body.get("method") or "lanczos"),
+                                                  prefix=f"up_{stamp}")
+                pid = client.submit(wf)
+                files = client.wait(pid, out_dir, f"upscale_{stamp}", timeout=1800,
+                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
+                                                               kind="upscale"))
+                made = [str(f) for f in files]
+                ids = api.library.import_generated(made) if body.get("import") else []
+                api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="upscale")
+            except Exception as exc:                          # noqa: BLE001
+                api.bump("gen_failed", error=str(exc), kind="upscale")
+            finally:
+                api._gen_running = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-upscale").start()
+        self._json({"ok": True, "started": True, "kind": "upscale",
+                    "upscale_model": up_model, "source": str(src), "source_size": [iw, ih],
+                    "size": [want_w, want_h] if want_w else "native",
+                    "output_dir": str(out_dir)})
+
+    def _gen_hires(self, body: dict) -> None:
+        """高分辨率修复：拿一张已有的图（生成结果或库里任意图）放大重绘一遍。
+
+        这是"想要比 1024 更大的图"的推荐做法：直接开 2048 出图在 8 GB 显存上基本必 OOM，
+        而这条路显存开销跟 1024 出图同量级（只放大潜空间 + 低 denoise 补细节）。
+
+        body: `{file_id|name|base64, prompt, scale?:1.5, denoise?:0.45, steps?:20, cfg?, seed?, model?, import?}`
+        """
+        import datetime
+        import random as _rnd
+        api = self.api
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "already_running"})
+            return
+        src, err = self._gen_input_image(body, "src_")
+        if src is None:
+            self._json({"ok": False, "error": err,
+                        "hint": "给 file_id（库里）/ name（输出目录）/ base64"}, 400)
+            return
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            self._json({"ok": False, "error": "no_prompt",
+                        "hint": "放大重绘需要提示词来补细节（不知道原词可以直接描述画面）"}, 400)
+            return
+        from .comfy_client import ComfyClient
+        cfg = self._gen_cfg()
+        client = ComfyClient(self._gen_comfy_url())
+        model = str(body.get("model") or "").strip() or self._gen_default_model(client)
+        if not model:
+            self._json({"ok": False, "error": "no_model"}, 400)
+            return
+        iw, ih = self._gen_image_size(src)
+        try:
+            scale = float(body.get("scale") or 1.5)
+        except (TypeError, ValueError):
+            scale = 1.5
+        scale = max(1.0, min(3.0, scale))
+        out_w, out_h = self._gen_clamp_size(int(round(iw * scale)), int(round(ih * scale)))
+        if out_w <= iw and out_h <= ih:
+            self._json({"ok": False, "error": "already_big_enough", "size": [iw, ih],
+                        "hint": f"原图已经 {iw}×{ih}，到达接口上限 {self.GEN_MAX_SIDE}，无法再放大"}, 400)
+            return
+        steps = int(body.get("steps") or 20)
+        cfg_v = float(body.get("cfg") or 6.0)
+        negative = str(body.get("negative") or cfg.get("neg_prompt") or "")
+        seed = int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1)
+        denoise = float(body.get("denoise") or 0.3)     # 开大容易把细节重画成噪点，默认给保守值
+        method = str(body.get("upscale_method") or "bislerp")
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = self._gen_out_dir()
+        api._gen_running = True
+        api.bump("gen_advanced_started", kind="hires", source=str(src), model=model,
+                 width=out_w, height=out_h)
+
+        def job() -> None:
+            try:
+                up = client.upload_image(src)
+                wf = ComfyClient.hires_workflow(
+                    model, up, prompt, negative,
+                    width=out_w, height=out_h,       # 图像像素；LatentUpscale 内部自己 //8
+                    steps=steps, cfg=cfg_v, seed=seed, denoise=denoise, upscale_method=method,
+                    sampler=str(body.get("sampler") or "dpmpp_2m"),
+                    scheduler=str(body.get("scheduler") or "karras"),
+                    prefix=f"hires_{stamp}")
+                pid = client.submit(wf)
+                files = client.wait(pid, out_dir, f"hires_{stamp}",
+                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s),
+                                                               kind="hires"))
+                made = [str(f) for f in files]
+                ids = api.library.import_generated(made) if body.get("import") else []
+                api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="hires",
+                         source_size=[iw, ih], size=[out_w, out_h])
+            except Exception as exc:                          # noqa: BLE001
+                api.bump("gen_failed", error=str(exc), kind="hires")
+            finally:
+                api._gen_running = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-hires").start()
+        self._json({"ok": True, "started": True, "kind": "hires", "model": model,
+                    "source": str(src), "source_size": [iw, ih], "size": [out_w, out_h],
+                    "scale": scale, "denoise": denoise, "upscale_method": method,
+                    "output_dir": str(out_dir)})
+
     def _similar(self, q: dict) -> None:
         try:
             fid = int(q.get("id") or 0)

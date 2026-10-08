@@ -87,6 +87,29 @@
       "required": false,
       "recommended": true,
       "download_url": "https://hf-mirror.com/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
+    },
+    {
+      "id": "upscale-anime-4x",
+      "name": "Real-ESRGAN anime 6B 4×（二次元放大，无彩噪）",
+      "file": "RealESRGAN_x4plus_anime_6B.pth",
+      "target": "models/upscale_models",
+      "size_bytes": 17938799,
+      "arch": "ESRGAN",
+      "required": false,
+      "recommended": true,
+      "download_url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+      "note": "只有 18MB。**想把图放大就用它**：纯超分，不会像'潜空间放大+重采样'那样出彩噪/重影"
+    },
+    {
+      "id": "upscale-4x-ultrasharp",
+      "name": "4x-UltraSharp 4×（写实/通用放大）",
+      "file": "4x-UltraSharp.pth",
+      "target": "models/upscale_models",
+      "size_bytes": 66961958,
+      "arch": "ESRGAN",
+      "required": false,
+      "download_url": "https://hf-mirror.com/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth",
+      "note": "真人照片放大更合适；二次元优先用上面那个 anime 6B"
     }
   ],
   "wordlists": [

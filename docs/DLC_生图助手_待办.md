@@ -35,12 +35,50 @@
 | 2 | 批量队列 | 队列化 + 可取消 + 断点续跑（`scripts/batch_gen.py` 已有跳过已出图的思路） | 3h | 待做 |
 | 3 | 一键入库并自动打标 | 入库后接 `host.tag_files()` | 1h | 待做 |
 | 4 | 按模型过滤词表 | NoobAI 14.2 万 / Illustrious 9.4 万 / Anima 10.8 万，加"当前模型认不认"的开关 | 2h | 待做 |
-| 5 | 模型下载/校验入口 | 脚本齐全，缺界面入口与进度显示 | 2h | 待做 |
-| 6 | 参考图 / 姿势控制 | IP-Adapter（xl + clip_h 本地已有）+ ControlNet++ SDXL union | 5h | 待做 |
-| 7 | 局部重绘 / 换装 | inpaint 工作流（VAEEncodeForInpaint + denoise 0.5~0.65）+ 界面画遮罩（宿主配合） | 6h | 待做 |
+| 5 | 模型下载/校验入口 | **PC 侧已完成**（见下）；DLC 自己的界面入口待接 | 2h | 宿主已完成 |
+| 6 | 参考图 / 姿势控制 | **PC 侧已完成**（`/api/gen/caps` + `/api/gen/ipadapter` + `/api/gen/controlnet`）；DLC 界面待接 | 5h | 宿主已完成 |
+| 7 | 局部重绘 / 换装 | **PC 侧已完成**（`POST /api/gen/inpaint` + `MaskCanvas`）；DLC 界面待接 | 6h | 宿主已完成 |
 | — | SwarmUI 组件 | 保持"可选组件、默认不装" | — | 维持 |
 
 合计约 **20~25 小时**，可按批次给。
+
+## 宿主侧 2026-10-08 新增（生图高级功能一并打通）
+
+> 生图端只管 DLC 自己的窗口；**凡是"PC 出图 + 移动端遥控"要用的，宿主这边都做成接口了**，
+> 移动端不必等 DLC 界面。生图端的待办只剩"给自己界面加按钮"。
+
+| 接口 | 作用 |
+|---|---|
+| `GET /api/gen/caps` | 能力探测（局部重绘/参考图/姿势控制各自 ok、缺什么、提示）+ 可选文件列表 + 按架构给的默认选项；60 秒缓存，`?fresh=1` 强制重探 |
+| `GET /api/gen/models` | 模型清单 + **本机是否已有**（含实际字节数、绝对路径、能不能直链下载） |
+| `POST /api/gen/models/fetch` | 后台下缺失模型（复用 `scripts/fetch_model.py`，断点续传），进度走 SSE `gen_dl_started/progress/done/failed` |
+| `POST /api/gen/ipadapter` | 参考图：`{ref_file_id｜ref_name｜ref_base64, prompt, weight?}`，可 `import:true` 入库 |
+| `POST /api/gen/controlnet` | 姿势/线稿：`{pose_file_id｜pose_name｜pose_base64, prompt, strength?, preprocessor?}` |
+| `POST /api/gen/img2img` | 图生图 / **图融合**：`{file_id｜name, prompt, denoise?, blend_file_id?, blend_factor?, blend_mode?}` |
+| `POST /api/gen/upscale` | **纯放大**（ESRGAN 超分，不出彩噪）：`{file_id｜name, scale?}`；实测 1024→4096 只要 9 秒 |
+| `POST /api/gen/hires` | 潜空间放大 + 低 denoise 重采样（会长细节，但边缘有彩噪风险）：`{file_id｜name, prompt, scale?}` |
+
+### 两个"踩过才知道"的坑，已经写进代码
+
+1. **IP-Adapter 和 ControlNet 都必须跟底模架构配套**：
+   - ControlNet 配错 → ComfyUI 直接报 `y is None, did you try using a controlnet for SDXL on SD1?`；
+   - IP-Adapter 配错 → **不报错，只出噪声图**（更难发现）。
+   - 宿主现在会读 safetensors 头部判断底模是 SDXL 还是 SD1.5（`ComfyClient.checkpoint_arch()`：
+     优先 metadata `modelspec.architecture`，没有就看交叉注意力上下文维度 768/2048），再自动挑对应文件。
+     实测：SD1.5 底模（AWPainting）→ `ip-adapter_sd15_plus.pth` + `control_v11p_sd15_openpose_fp16`；
+     SDXL 底模（WAI-illustrious）→ `ip-adapter-plus_sdxl_vit-h` + `controlnet++_union_sdxl_promax`。两组都出图正常。
+2. **`/history` 里"执行失败"和"跑完没图"长得一样**：原来的 `ComfyClient.wait()` 只数 `outputs`，
+   遇到执行报错会静默返回空列表。现在会解析 `status.messages` 里的 `execution_error` 并抛出真实原因。
+3. `models.json` 的 `target` 字段是**相对 ComfyUI 根目录**的（`models/checkpoints`），
+   拼路径时不能再补一层 `models`，否则会下到 `models\models\vae\…`（已修，误建目录已清理）。
+4. **新版 ComfyUI 的下拉定义换了写法**：`["COMBO", {"options":[…]}]` 取代了老的 `[[选项…]]`。
+   旧解析会把字符串 `"COMBO"` 拆成 `['C','O','M','B','O']`（实测把放大模型名解析成了 `"C"`，
+   提交工作流直接失败）。现在两种写法都认（`ComfyClient._parse_enum`）。
+5. **要更大的图别硬开大分辨率**：8GB 显存上 SDXL 出 2048² 基本必 OOM，超训练分辨率还容易出
+   重复肢体。正解是"先出 1024，再 `/api/gen/upscale` 放大"。
+6. **分辨率的正确量级**：SDXL 原生 1024，**低于 ~0.6MP（比如 512×512）会糊成一团**——
+   之前 PC 侧接口冒烟测试就踩了这个（用了 SD1.5 时代的 512/8 步参数），
+   现在接口会自动抬到 ~1024 并在响应里回 `warning`。
 
 ## 打包结论
 

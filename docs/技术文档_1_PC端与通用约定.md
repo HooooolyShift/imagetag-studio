@@ -170,8 +170,59 @@ models/         本地模型（约 3 GB）
 - 日常减少风险的土办法：看过的对比图/截图尽量不反复贴；需要长期留存的图直接写文件
   （例如 `.splash_gen/`、`docs/`），别只留在对话里。
 
+## 七·补3　生图（DLC）接口（2026-10-08）
+
+生图 DLC 装在 `dlc/comfyui_helper/`（可选安装）。**凡是"PC 出图 + 移动端遥控"要用的都在宿主
+`app/lan_api.py` 里**，移动端不必依赖 DLC 自己的窗口：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/gen/info` | ComfyUI 在线状态 / 底模 / 预设 / 输出目录 / 安装目录（`comfyui_path`，没配会自动探测） |
+| `GET /api/gen/caps` | 能力探测：局部重绘 / 参考图 / 姿势控制各自 `{ok, missing[], hint}` + 可选文件列表 + 按架构的默认值；60 秒缓存，`?fresh=1` 重探 |
+| `GET /api/gen/models` | `models.json` 清单 + 本机是否已有（`present / actual_bytes / path / can_fetch`） |
+| `POST /api/gen/models/fetch` | 后台下缺失模型（`{ids:[…]}` / `{all:true}`），断点续传；SSE `gen_dl_*` |
+| `POST /api/gen/run` | 出图（`import:true` 自动入库）；SSE `gen_started/progress/done/failed` |
+| `POST /api/gen/inpaint` | 局部重绘，遮罩**白=重绘**（`mask_base64` PNG） |
+| `POST /api/gen/ipadapter` | 参考图（IP-Adapter）：`ref_file_id` / `ref_name` / `ref_base64` 三选一 |
+| `POST /api/gen/controlnet` | 姿势/线稿：`pose_file_id` / `pose_name` / `pose_base64` + `strength` |
+| `POST /api/gen/img2img` | 图生图 / **图融合**：`denoise` 控改造强度；给 `blend_file_id` 就先混两张图 |
+| `POST /api/gen/upscale` | **纯放大**（ESRGAN 超分，不重绘不出彩噪）；要更大的图走这条 |
+| `POST /api/gen/hires` | 潜空间放大 + 低 denoise 重采样（会长细节，但边缘有彩噪风险） |
+| `GET /api/gen/file?name=&size=` | 生成结果下载；带 `size` 就回 JPEG 缩略图（移动端列表别拉原图） |
+| `GET /api/gen/results`、`GET /api/gen/file` | 结果列表 / 下载 |
+| `GET /api/lex/zh`、`POST /api/lex/prompt_fix` | 共享词库（中文→标签 / 提示词规范化） |
+
+**三个必须记住的坑**（都已在代码里兜住，改的时候别退回去）：
+
+1. **IP-Adapter / ControlNet 必须跟底模架构配套**。ControlNet 配错会报
+   `y is None, did you try using a controlnet for SDXL on SD1?`；**IP-Adapter 配错不报错、只出噪声图**。
+   `ComfyClient.checkpoint_arch(ckpt)` 读 safetensors 头部判断 SDXL/SD1.5
+   （先看 metadata `modelspec.architecture`，没有就看 `attn2.to_k.weight` 的上下文维度 768/2048），
+   接口层据此自动挑文件。实测 SD1.5 → `ip-adapter_sd15_plus.pth` + `control_v11p_sd15_openpose_fp16`；
+   SDXL → `ip-adapter-plus_sdxl_vit-h` + `controlnet++_union_sdxl_promax`，两组都出图正常。
+2. **`/history` 里"执行失败"和"跑完没图"长得一样**：`ComfyClient.wait()` 现在会解析
+   `status.messages` 的 `execution_error` 并抛 `ComfyError`，不再静默返回空列表。
+3. **`models.json` 的 `target` 是相对 ComfyUI 根目录**（形如 `models/checkpoints`），
+   拼路径时**不能再补一层 `models`**（补了会下到 `models\models\vae\…`；已修）。
+4. **新版 ComfyUI 的下拉定义是 `["COMBO", {"options":[…]}]`**，旧解析会把字符串 `"COMBO"`
+   拆成 `['C','O','M','B','O']`（实测把放大模型名解析成了 `"C"`）。`ComfyClient._parse_enum`
+   现在两种写法都认。
+5. **SDXL 的分辨率纪律**：原生 1024；**低于 ~0.6MP（512×512 这种）会糊成一团**，
+   PC 接口会自动抬到 ~1024 并在响应里回 `warning`；默认底模**优先挑 SDXL**
+   （SD1.5 已明确弃用），尺寸边界 256–2048（8 对齐），`/api/gen/info → limits` 给客户端画滑杆。
+   要更大的图用 `/api/gen/upscale`（实测 1024→4096 9 秒），别硬开 2048²（8GB 显存会 OOM）。
+6. **放大模型的彩噪问题**：潜空间放大 + 重采样（`/api/gen/hires`）在 SDXL 二次元模型上会让
+   头发边缘出彩虹色噪点（DLC 预设里也写了"二段放大与锐化都关掉"）。想干净就用
+   `/api/gen/upscale`（纯超分），或先超分再 hires 极低 denoise（0.15~0.25）。
+
+ComfyUI 客户端**只有一份**：`app/comfy_client.py`（宿主）。DLC 里的 `comfy.py` 只是 forwarding，
+不要各写一套（生图端 2026-10-08 已确认，并提醒：改之前先 grep 一下 DLC 侧有没有同名方法）。
+
 ## 八、变更记录
 
 - 2026-10-07：建立本套 5 份技术文档；E/D 双副本 + 便携数据 + BETA 标识；测试图迁入 E 的 `测试图/`。
 - 2026-10-07：加入 413 巡查约定；1.5 范围补充 PC 端（浏览模式/右键菜单/多实例开屏/设备管理菜单/最小化托盘）
   与移动端（局域网、平板两档模式、手机端只做浏览+图谱）。
+- 2026-10-08：生图（DLC）在 PC 侧的接口补齐——`/api/gen/caps`、`/api/gen/models`、
+  `/api/gen/models/fetch`、`/api/gen/ipadapter`、`/api/gen/controlnet`（详见「七·补3」）；
+  `ComfyClient` 新增 `checkpoint_arch()`，`wait()` 会抛出 `/history` 里的真实执行错误。
