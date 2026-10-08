@@ -337,6 +337,7 @@ class GenWindow(QWidget):
         root.addWidget(more_wrap)
         self._saved: list[Path] = []
         self._helper_worker = None
+        self._cancel_requested = False
         self.reload_hot_words()
         self.refresh_status()
 
@@ -729,6 +730,8 @@ class GenWindow(QWidget):
         self.host.save_config()
         seed_txt = self.seed.text().strip()
         self._busy = True
+        self._cancel_requested = False
+        self.more.b_cancel.setEnabled(True)
         self.status.setText("提交中…")
 
         def one(i: int) -> None:
@@ -740,6 +743,11 @@ class GenWindow(QWidget):
             files = self.client.wait(pid, out, base,
                                      on_tick=lambda s: self.status.setText(
                                          f"第 {i+1}/{self.count.value()} 张生成中… {s:.0f}s"))
+            if self._cancel_requested:
+                self._busy = False
+                self.more.b_cancel.setEnabled(False)
+                self.status.setText("已取消（未出图）")
+                return
             for fp in files:
                 self._add_thumb(fp)
                 self._saved.append(fp)
@@ -751,8 +759,14 @@ class GenWindow(QWidget):
         one(0)
 
     def _next(self, i: int) -> None:
+        if self._cancel_requested:
+            self._busy = False
+            self.more.b_cancel.setEnabled(False)
+            self.status.setText(f"已取消（已出 {len(self._saved)} 张）")
+            return
         if i >= self._tot:
             self._busy = False
+            self.more.b_cancel.setEnabled(False)
             self.status.setText(f"全部完成，共 {len(self._saved)} 张 → {self.out_dir.text()}")
             return
         try:
@@ -770,6 +784,11 @@ class GenWindow(QWidget):
         files = self.client.wait(pid, Path(self.out_dir.text()), f"gen_{stamp}_{seed}",
                                  on_tick=lambda s: self.status.setText(
                                      f"第 {i+1}/{self._tot} 张生成中… {s:.0f}s"))
+        if self._cancel_requested:
+            self._busy = False
+            self.more.b_cancel.setEnabled(False)
+            self.status.setText("已取消（未出图）")
+            return
         for fp in files:
             self._add_thumb(fp)
             self._saved.append(fp)

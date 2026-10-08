@@ -475,12 +475,19 @@ class MorePanel(QGroupBox):
         self.queue_list.clear()
 
     def cancel_queue(self) -> None:
+        """取消当前任务（队列里的或单张/放大/图生图/重绘都算）——
+        语义与宿主 /api/gen/interrupt 对齐：立刻转发 ComfyUI /interrupt；
+        **还没提交的队列任务不再提交**；不把"用户主动取消"当成失败弹框。"""
         self._cancel = True
+        try:
+            self.win._cancel_requested = True
+        except Exception:
+            pass
         try:
             self.win.client.interrupt()
         except Exception:
             pass
-        self.win.status.setText("已请求取消（当前这张会停下）")
+        self.win.status.setText("已取消（当前任务停下，未提交的队列任务不再提交）")
 
     def run_queue(self) -> None:
         if self._queue_running:
@@ -490,6 +497,10 @@ class MorePanel(QGroupBox):
             return
         self._queue_running = True
         self._cancel = False
+        try:
+            self.win._cancel_requested = False
+        except Exception:
+            pass
         self.b_run.setEnabled(False)
         self.b_cancel.setEnabled(True)
         self._run_next()
@@ -523,9 +534,18 @@ class MorePanel(QGroupBox):
         client = self.win.client
         pid = client.submit(wf)
         files = client.wait(pid, out, f"gen_s{seed}", timeout=1800)
+        if self._cancel or getattr(self.win, "_cancel_requested", False):
+            return None                      # 用户取消：没出图是正常的，别当失败
         return files[0] if files else out / f"gen_s{seed}.png"
 
     def _job_done(self, path, worker=None) -> None:
+        cancelled = self._cancel or getattr(self.win, "_cancel_requested", False)
+        if cancelled and not path:
+            self.win.status.setText("已取消（未出图）")
+            if bool(getattr(worker, "is_queue", False)):
+                self._cancel = False
+                self._finish_queue()
+            return
         if path:
             self.win._saved.append(Path(path))
             self.win._add_thumb(Path(path))
@@ -544,6 +564,14 @@ class MorePanel(QGroupBox):
             self.win.status.setText(f"完成 → {Path(path).name}" if path else "完成（没有产物）")
 
     def _job_fail(self, message: str, worker=None) -> None:
+        cancelled = self._cancel or getattr(self.win, "_cancel_requested", False)
+        if cancelled:
+            # 用户主动取消：ComfyUI 会抛中断异常，按"已取消"处理，不弹失败框
+            self.win.status.setText("已取消")
+            if bool(getattr(worker, "is_queue", False)):
+                self._cancel = False
+                self._finish_queue()
+            return
         if bool(getattr(worker, "is_queue", False)):
             self._finish_queue()
         QMessageBox.warning(self, "队列", f"这一张失败：{message}")
@@ -552,7 +580,11 @@ class MorePanel(QGroupBox):
         self._queue_running = False
         self.b_run.setEnabled(True)
         self.b_cancel.setEnabled(False)
-        self.win.status.setText(f"队列结束，剩余 {len(self.jobs)} 个任务")
+        if self._cancel:
+            self.win.status.setText(f"已取消：已出 {len(self.win._saved)} 张，队列剩余 {len(self.jobs)} 个"
+                                    "（再点「开始队列」可继续，已出过的会自动跳过）")
+        else:
+            self.win.status.setText(f"队列结束，剩余 {len(self.jobs)} 个任务")
 
     def _after_image(self, path: Path) -> None:
         """生成后：可选入库、可选打标（失败只提示，不打断）。"""
@@ -620,6 +652,8 @@ class MorePanel(QGroupBox):
                 sampler=self.win.sampler_box.currentText(), scheduler=self.win.sched_box.currentText())
             pid = c.submit(wf)
             files = c.wait(pid, out_dir, f"inpaint_s{seed}", timeout=1800)
+            if self._cancel or getattr(self.win, "_cancel_requested", False):
+                return None
             return files[0] if files else None
 
         self._worker = _Worker(job)
@@ -662,6 +696,8 @@ class MorePanel(QGroupBox):
                 prefix = f"hires_{int(time.time())}"
             pid = c.submit(wf)
             files = c.wait(pid, out_dir, prefix, timeout=1800)
+            if self._cancel or getattr(self.win, "_cancel_requested", False):
+                return None
             return files[0] if files else None
 
         self._worker = _Worker(job)
@@ -697,6 +733,8 @@ class MorePanel(QGroupBox):
                                               blend_factor=factor)
             pid = c.submit(wf)
             files = c.wait(pid, out_dir, f"i2i_s{seed}", timeout=1800)
+            if self._cancel or getattr(self.win, "_cancel_requested", False):
+                return None
             return files[0] if files else None
 
         self._worker = _Worker(job)
@@ -756,6 +794,8 @@ class MorePanel(QGroupBox):
                              sampler=sampler, scheduler=sched, prefix=prefix)
             pid = c.submit(wf)
             files = c.wait(pid, out_dir, f"{prefix}_s{seed}", timeout=1800)
+            if self._cancel or getattr(self.win, "_cancel_requested", False):
+                return None
             return files[0] if files else None
 
         self._worker = _Worker(job)
