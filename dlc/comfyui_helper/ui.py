@@ -205,9 +205,10 @@ class GenWindow(QWidget):
         b_chk.setToolTip("检查词在主程序词表里能不能对上；对不上的会列出来，避免自造 tag")
         b_chk.clicked.connect(self.check_prompt)
         self.hot = QComboBox()
-        self.hot.setMinimumWidth(150)
+        self.hot.setMinimumWidth(120)
         self.hot.setToolTip("库里确认过的高频标签：插入它，让生成风格更贴近你自己的库")
         b_hot = QPushButton("插入热词")
+        self.b_hot = b_hot
         b_hot.clicked.connect(self.insert_hot)
         lh.addWidget(b_zh)
         lh.addWidget(b_chk)
@@ -247,6 +248,8 @@ class GenWindow(QWidget):
         self.size_preset.currentIndexChanged.connect(self.apply_size_preset)
         self.w = QSpinBox(); self.w.setRange(256, 2048); self.w.setSingleStep(8); self.w.setValue(1024)
         self.h = QSpinBox(); self.h.setRange(256, 2048); self.h.setSingleStep(8); self.h.setValue(1024)
+        for _s in (self.w, self.h):        # 别让 4 位数把这一行撑太宽（横向截断的来源之一）
+            _s.setMinimumWidth(84)
         self.w.valueChanged.connect(self._size_guard)
         self.h.valueChanged.connect(self._size_guard)
         self.size_warn = QLabel("")
@@ -266,8 +269,18 @@ class GenWindow(QWidget):
         self.sched_box.addItems(["karras", "simple", "normal", "beta", "sgm_uniform"])
         ph.addWidget(QLabel("步数")); ph.addWidget(self.steps)
         ph.addWidget(QLabel("CFG")); ph.addWidget(self.cfg_s)
-        ph.addWidget(self.sampler_box); ph.addWidget(self.sched_box)
+        ph.addStretch(1)
         f.addRow("采样", p_row)
+        # 采样器/调度器单独一行：原来 6 个控件挤一行，这一行的最小宽度有 515px，
+        # 直接把整个左栏撑到 ~640px（1280 宽的屏幕上右半边就被切掉了）。
+        samp_row = QWidget()
+        samp = QHBoxLayout(samp_row)
+        samp.setContentsMargins(0, 0, 0, 0)
+        self.sampler_box.setToolTip("采样器（dpmpp_2m 是 SDXL 二次元的稳妥选择）")
+        self.sched_box.setToolTip("调度器（karras 最通用）")
+        samp.addWidget(self.sampler_box, 1)
+        samp.addWidget(self.sched_box, 1)
+        f.addRow("采样器", samp_row)
         n_row = QWidget()
         nh = QHBoxLayout(n_row)
         nh.setContentsMargins(0, 0, 0, 0)
@@ -294,14 +307,27 @@ class GenWindow(QWidget):
         left.addWidget(b_import)
         left.addStretch(1)
         # 左侧「参数」表单最高能到 700+ 像素，包一层滚动区，窗口矮的时候能滚（不截断）。
+        #
+        # 宽度也要管：这一列原来是"一行塞四五个控件"（词库行 4 个、采样行 6 个、助手行 3 个），
+        # 整列最小宽度 667px；而 split 里左右是 1:2，1280 宽的屏幕上左栏只分到 ~350px，
+        # 于是右边被切掉（用户 2026-10-08 报"参数页横向显示不全"）。
+        # 两步解决：①把按钮/下拉的下限压到"还看得清文字"的程度；②把左栏最小宽度锁成
+        # 压缩后的内容宽度，让 split 给它留够位置；实在窄了还有横向滚动条兜底。
+        for _b in form.findChildren(QPushButton):
+            _b.setMinimumWidth(min(_b.minimumSizeHint().width(), 92))
+        for _c in form.findChildren(QComboBox):
+            if _c is not self.model:              # 底模独占一行，名字要能看全，不压
+                _c.setMinimumWidth(min(_c.minimumSizeHint().width(), 132))
         self.left_host = QWidget()
         self.left_host.setLayout(left)
         self.left_scroll = QScrollArea()
         self.left_scroll.setWidgetResizable(True)
         self.left_scroll.setFrameShape(QFrame.NoFrame)
-        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.left_scroll.setWidget(self.left_host)
-        self.left_scroll.setMinimumWidth(430)
+        # 记一下"内容真正需要多宽"，宽度不够时按它撑开（上限 760，再宽就靠横向滚动条）
+        self._left_need = self.left_host.minimumSizeHint().width() + 14
+        self.left_scroll.setMinimumWidth(min(760, self._left_need))
         split.addWidget(self.left_scroll, 1)
 
         right = QVBoxLayout()
@@ -548,18 +574,43 @@ class GenWindow(QWidget):
         return None
 
     def reload_hot_words(self) -> None:
-        """热词 = 主程序库里确认过的标签（按图片数排序）——让生成风格贴近用户自己的库。"""
+        """热词 = 主程序库里确认过的标签（按图片数排序）——让生成风格贴近用户自己的库。
+
+        注意两个容易误会的地方（2026-10-08 用户报"词库选项仅有全年龄"）：
+        · 只统计 `file_tags.status='confirmed'` —— 待审(pending)的不算，否则会把错的标签喂进提示词；
+        · 测试版(E:)和正式版(D:)各用各的库。E: 那个库被清空过一次，confirmed 只剩 1 行，
+          于是下拉里真的只有一项。列表为空时这里会放一行说明，别让它看起来像坏了。
+        """
         self.hot.clear()
         lex = self._lex()
-        if lex is None:
-            return
-        try:
-            self.hot.addItems(lex.hot_tags(40))
+        tags: list[str] = []
+        if lex is not None:
+            try:
+                tags = [str(t) for t in (lex.hot_tags(40) or []) if str(t).strip()]
+            except Exception:
+                tags = []
+        where = ""
+        try:                       # 把"当前读的是哪个库"写进提示，免得测试版/正式版互相误会
+            from app.config import data_dir
+            where = f"\n当前图库数据目录：{data_dir()}"
         except Exception:
-            pass
+            where = ""
+        if tags:
+            for t in tags:
+                self.hot.addItem(t, t)
+            self.hot.setToolTip(f"库里「已确认」的标签（按图片数排序，最多 40 个，当前 {len(tags)} 个）；"
+                                "插入它能让生成风格贴近你自己的库" + where)
+        else:
+            self.hot.addItem("（库里还没有已确认的标签）")
+            self.hot.setToolTip("热词只统计图库里「已确认」的标签（待审的不算）。"
+                                "先去审核台通过一些标签就会出现；"
+                                "另外测试版和正式版各用各的图库，标签不互通。" + where)
+        if getattr(self, "b_hot", None) is not None:
+            self.b_hot.setEnabled(bool(tags))
 
     def insert_hot(self) -> None:
-        tag = self.hot.currentText().strip()
+        # 用 itemData：占位行（"（库里还没有已确认的标签）"）没有 data，点了也不会插进去
+        tag = str(self.hot.currentData() or "").strip()
         if not tag:
             return
         cur = self.pos.toPlainText().strip().rstrip(",")
