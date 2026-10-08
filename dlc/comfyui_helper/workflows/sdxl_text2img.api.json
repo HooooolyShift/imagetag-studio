@@ -1,0 +1,12 @@
+{
+  "_name": "SDXL 文生图（示例模板）",
+  "_note": "自定义工作流模板示例：把这种 *.api.json 丢进 workflows/ 目录，界面「工作流」下拉里就会多一个档位。以 _ 开头的键是元信息，不会被提交给 ComfyUI；{{...}} 占位符由程序按界面当前参数替换。可用的占位符见 README「自定义工作流」。",
+  "_needs": [],
+  "3": { "class_type": "KSampler", "inputs": { "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "{{sampler}}", "scheduler": "{{scheduler}}", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] } },
+  "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "{{ckpt}}" } },
+  "5": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 } },
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{positive}}", "clip": ["4", 1] } },
+  "7": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{negative}}", "clip": ["4", 1] } },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
+  "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "{{prefix}}", "images": ["8", 0] } }
+}

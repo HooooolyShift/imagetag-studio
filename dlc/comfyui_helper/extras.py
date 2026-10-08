@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from pathlib import Path
 
@@ -82,6 +83,18 @@ class MorePanel(QGroupBox):
         ph.addWidget(self.preset_box, 1)
         ph.addWidget(b_preset)
         form.addRow("预设", preset_row)
+
+        # ---------- 工作流（内置 / workflows 目录里的 *.api.json 模板 / 自选文件） ----------
+        wf_row = QWidget()
+        wh = QHBoxLayout(wf_row)
+        wh.setContentsMargins(0, 0, 0, 0)
+        self.workflow_box = QComboBox()
+        self.workflow_box.setToolTip("内置＝按「模型类型」自动出图；也可以选 workflows/ 里的自定义模板"
+                                     "（丢一个 *.api.json 进去就多一个档位）")
+        b_wf_refresh = QPushButton("刷新")
+        b_wf_refresh.clicked.connect(self.refresh_workflows)
+        wh.addWidget(self.workflow_box, 1); wh.addWidget(b_wf_refresh)
+        form.addRow("工作流", wf_row)
 
         # ---------- 自动入库 / 自动打标（可选项） ----------
         auto_row = QWidget()
@@ -177,11 +190,29 @@ class MorePanel(QGroupBox):
         rh2.setContentsMargins(0, 0, 0, 0)
         self.ref_weight = QDoubleSpinBox(); self.ref_weight.setRange(0.1, 1.5)
         self.ref_weight.setSingleStep(0.1); self.ref_weight.setValue(0.8)
+        self.ref_start = QDoubleSpinBox(); self.ref_start.setRange(0.0, 1.0)
+        self.ref_start.setSingleStep(0.05); self.ref_start.setValue(0.0)
+        self.ref_end = QDoubleSpinBox(); self.ref_end.setRange(0.0, 1.0)
+        self.ref_end.setSingleStep(0.05); self.ref_end.setValue(1.0)
+        self.ref_start.setToolTip("参考图从第几步开始生效（0=一开始就生效，0.2=前 20% 不受影响）")
+        self.ref_end.setToolTip("参考图到第几步停止生效（1=全程生效）")
+        rh2.addWidget(QLabel("权重")); rh2.addWidget(self.ref_weight)
+        rh2.addWidget(QLabel("起效")); rh2.addWidget(self.ref_start)
+        rh2.addWidget(QLabel("结束")); rh2.addWidget(self.ref_end)
+        rh2.addStretch(1)
+        form.addRow("", ref_row2)
+        ref_row3 = QWidget()
+        rh3 = QHBoxLayout(ref_row3)
+        rh3.setContentsMargins(0, 0, 0, 0)
+        self.ref_weight_type = QComboBox()
+        for label, val in (("线性 linear（默认）", "linear"), ("缓入 ease in", "ease in"),
+                           ("缓出 ease out", "ease out"), ("缓入缓出 ease in-out", "ease in-out"),
+                           ("强风格 style transfer", "style transfer")):
+            self.ref_weight_type.addItem(label, val)
         b_ref_go = QPushButton("用参考图生成")
         b_ref_go.clicked.connect(self.do_reference)
-        rh2.addWidget(QLabel("权重")); rh2.addWidget(self.ref_weight)
-        rh2.addWidget(b_ref_go); rh2.addStretch(1)
-        form.addRow("", ref_row2)
+        rh3.addWidget(self.ref_weight_type, 1); rh3.addWidget(b_ref_go)
+        form.addRow("", ref_row3)
 
         # ---------- 姿势（ControlNet） ----------
         pose_row = QWidget()
@@ -197,11 +228,24 @@ class MorePanel(QGroupBox):
         pose_row2 = QWidget()
         ph3 = QHBoxLayout(pose_row2)
         ph3.setContentsMargins(0, 0, 0, 0)
+        ph3.addWidget(QLabel("强度")); ph3.addWidget(self.pose_strength)
+        self.pose_start = QDoubleSpinBox(); self.pose_start.setRange(0.0, 1.0)
+        self.pose_start.setSingleStep(0.05); self.pose_start.setValue(0.0)
+        self.pose_end = QDoubleSpinBox(); self.pose_end.setRange(0.0, 1.0)
+        self.pose_end.setSingleStep(0.05); self.pose_end.setValue(1.0)
+        self.pose_start.setToolTip("ControlNet 从第几步开始生效（0.1~0.2 常用于让姿势更自然）")
+        self.pose_end.setToolTip("ControlNet 到第几步停止生效（过早结束会让姿势跑掉）")
+        ph3.addWidget(QLabel("起效")); ph3.addWidget(self.pose_start)
+        ph3.addWidget(QLabel("结束")); ph3.addWidget(self.pose_end)
+        ph3.addStretch(1)
+        form.addRow("", pose_row2)
+        pose_row3 = QWidget()
+        ph4 = QHBoxLayout(pose_row3)
+        ph4.setContentsMargins(0, 0, 0, 0)
         b_pose_go = QPushButton("用姿势生成")
         b_pose_go.clicked.connect(self.do_pose)
-        ph3.addWidget(QLabel("强度")); ph3.addWidget(self.pose_strength)
-        ph3.addWidget(self.pose_cn, 1); ph3.addWidget(b_pose_go)
-        form.addRow("", pose_row2)
+        ph4.addWidget(QLabel("ControlNet")); ph4.addWidget(self.pose_cn, 1); ph4.addWidget(b_pose_go)
+        form.addRow("", pose_row3)
 
         # ---------- 参考图用哪套 IP-Adapter / 图像编码器（自动挑配对的那套） ----------
         ipm_row = QWidget()
@@ -282,6 +326,7 @@ class MorePanel(QGroupBox):
         form.addRow("", i2_row2)
 
         self._load_models_json()
+        self.refresh_workflows()
         # 压一下本面板里控件的最小宽度：PC 端会话的教训——单行控件太多会把整列撑宽、右边被切。
         # 这里把按钮/下拉/输入框的下限压到"还看得清文字"的程度，行宽不够时靠滚动条兜底。
         for _b in self.findChildren(QPushButton):
@@ -291,6 +336,134 @@ class MorePanel(QGroupBox):
         for _l in self.findChildren(QLineEdit):
             _l.setMinimumWidth(60)
         QTimer.singleShot(800, self.refresh_caps)
+
+    # ---------- 自定义工作流模板 ----------
+    def _load_workflow_templates(self) -> dict:
+        """扫 workflows/*.json：值是 dict 且带 class_type 的才算工作流模板（presets.json 不算）。"""
+        out: dict[str, str] = {}
+        wf_dir = Path(__file__).resolve().parent / "workflows"
+        for p in sorted(wf_dir.glob("*.json")):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if not any(isinstance(v, dict) and "class_type" in v for v in data.values()):
+                continue
+            out[str(data.get("_name") or p.stem)] = str(p)
+        extra = self.cfg.get("extra_workflows") or {}
+        if isinstance(extra, dict):
+            out.update({str(k): str(v) for k, v in extra.items()})
+        return out
+
+    def refresh_workflows(self) -> None:
+        cur = self.workflow_box.currentData() if hasattr(self, "workflow_box") else ""
+        self._wf_templates = self._load_workflow_templates()
+        self.workflow_box.clear()
+        self.workflow_box.addItem("内置（按模型类型自动出图）", "")
+        for label, path in self._wf_templates.items():
+            self.workflow_box.addItem(label, path)
+        self.workflow_box.addItem("选择工作流文件…", "__browse__")
+        if cur:
+            for i in range(self.workflow_box.count()):
+                if self.workflow_box.itemData(i) == cur:
+                    self.workflow_box.setCurrentIndex(i)
+                    break
+        self.workflow_box.currentIndexChanged.connect(self._on_workflow_changed)
+
+    def _on_workflow_changed(self) -> None:
+        if self.workflow_box.currentData() != "__browse__":
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "选择 ComfyUI 工作流（API 格式 JSON）",
+                                              str(Path(__file__).resolve().parent / "workflows"),
+                                              "工作流 (*.json)")
+        if not path:
+            self.workflow_box.setCurrentIndex(0)
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            label = str(data.get("_name") or Path(path).stem)
+        except Exception as exc:                             # noqa: BLE001
+            QMessageBox.warning(self, "工作流", f"这个文件不是合法 JSON：{exc}")
+            self.workflow_box.setCurrentIndex(0)
+            return
+        extra = dict(self.cfg.get("extra_workflows") or {})
+        extra[label] = path
+        self.cfg["extra_workflows"] = extra
+        self.win.host.save_config()
+        self.refresh_workflows()
+        for i in range(self.workflow_box.count()):
+            if self.workflow_box.itemText(i) == label:
+                self.workflow_box.setCurrentIndex(i)
+                break
+
+    def _workflow_context(self, seed: int):
+        """当前界面上的所有可替换参数（给 {{占位符}} 用）。"""
+        w = self.win
+        is_anima = w.model_kind.currentIndex() == 1
+        ctx = {
+            "positive": w.pos.toPlainText().strip(),
+            "negative": w.neg.toPlainText().strip(),
+            "width": w.w.value(), "height": w.h.value(), "batch": 1,
+            "steps": w.steps.value(), "cfg": w.cfg_s.value(), "seed": int(seed),
+            "sampler": w.sampler_box.currentText(), "scheduler": w.sched_box.currentText(),
+            "prefix": f"custom_{seed}",
+            "ckpt": w.model.currentText(),
+            "unet": w.model.currentText() if is_anima else "",
+            "clip": w.anima_clip.currentText(), "vae": w.anima_vae.currentText(),
+            "ipadapter_file": self.ip_model.currentText(), "clip_vision": self.ip_clip.currentText(),
+            "control_net": self.pose_cn.currentText(), "preprocessor": "openpose",
+            "weight": self.ref_weight.value(), "strength": self.pose_strength.value(),
+            "start": self.ref_start.value(), "end": self.ref_end.value(),
+            "weight_type": self.ref_weight_type.currentData() or "linear",
+            "denoise": self.inpaint_denoise.value(),
+            "scale": self.upscale_scale.value(), "grow_mask": 6,
+            "upscale_model": self.upscale_model_box.currentText(),
+        }
+        # 需要图片的占位符：按需上传（哪个字段对应哪张图）
+        srcs = {
+            "image": self.inpaint_src.text().strip() or self.i2i_src.text().strip() or self._last_image(),
+            "ref": self.ref_image.text().strip(),
+            "pose": self.pose_image.text().strip(),
+            "upscale": self.upscale_src.text().strip() or self._last_image(),
+        }
+        return ctx, srcs
+
+    @staticmethod
+    def _fill(node, ctx: dict, srcs: dict, client):
+        """递归替换 {{占位符}}；整串就是占位符时保留原始类型（数字/布尔）。"""
+        def conv(name: str):
+            if name in ctx:
+                return ctx[name]
+            if name in srcs:
+                path = srcs[name]
+                if not path or not Path(path).exists():
+                    raise RuntimeError(f"这个工作流需要图片参数 {{${name}}}，但界面上没有选图"
+                                       f"（或文件不存在）")
+                return client.upload_image(path)
+            raise RuntimeError(f"工作流里有不认识的占位符 {{{{{name}}}}}")
+
+        if isinstance(node, dict):
+            return {k: MorePanel._fill(v, ctx, srcs, client) for k, v in node.items()}
+        if isinstance(node, list):
+            return [MorePanel._fill(v, ctx, srcs, client) for v in node]
+        if isinstance(node, str):
+            m = re.fullmatch(r"\{\{\s*([a-zA-Z_]+)\s*\}\}", node)
+            if m:
+                return conv(m.group(1))
+            return re.sub(r"\{\{\s*([a-zA-Z_]+)\s*\}\}", lambda mm: str(conv(mm.group(1))), node)
+        return node
+
+    def build_custom_workflow(self, seed: int):
+        """选了自定义工作流就返回填好的图；没选（内置）返回 None。"""
+        path = self.workflow_box.currentData()
+        if not path or path == "__browse__":
+            return None
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        body = {k: v for k, v in data.items() if not str(k).startswith("_")}
+        ctx, srcs = self._workflow_context(seed)
+        return self._fill(body, ctx, srcs, self.win.client)
 
     # ---------- 基础 ----------
     def _save_flag(self, box, key: str) -> None:
@@ -813,12 +986,19 @@ class MorePanel(QGroupBox):
             c = self.win.client
             name = c.upload_image(ref)
             if title == "参考图":
+                if self.ref_start.value() >= self.ref_end.value():
+                    raise RuntimeError("参考图的「起效」必须小于「结束」")
                 wf = builder(ckpt, name, pos, neg, w, h, steps, cfg, seed, weight=weight,
                              ipadapter_file=self.ip_model.currentText(),
                              clip_vision=self.ip_clip.currentText(),
+                             start_at=self.ref_start.value(), end_at=self.ref_end.value(),
+                             weight_type=self.ref_weight_type.currentData() or "linear",
                              sampler=sampler, scheduler=sched, prefix=prefix)
             else:
+                if self.pose_start.value() >= self.pose_end.value():
+                    raise RuntimeError("姿势的「起效」必须小于「结束」")
                 wf = builder(ckpt, name, cn, pos, neg, w, h, steps, cfg, seed, strength=weight,
+                             start_percent=self.pose_start.value(), end_percent=self.pose_end.value(),
                              sampler=sampler, scheduler=sched, prefix=prefix)
             pid = c.submit(wf)
             files = c.wait(pid, out_dir, f"{prefix}_s{seed}", timeout=1800)

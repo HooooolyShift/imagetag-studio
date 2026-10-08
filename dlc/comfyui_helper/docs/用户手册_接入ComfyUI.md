@@ -132,10 +132,34 @@ python scripts\fetch_anima.py          # 一次性下 Anima 三件套（模型 +
 | **模型下载 / 校验** | 下拉里是 `models.json` 的推荐模型，点「下载 / 校验」会后台走断点续传下载到对应目录，完成后自动刷新模型列表 | 无 |
 | **放大** | 选图 + 倍率 + 方式：**干净超分（ESRGAN，快、无彩噪，默认）** 或 潜空间放大（细节更多但**可能出彩边**，标了提醒）。实测 1024→4096 约 4 秒 | 超分需 `models/upscale_models` 里有 ESRGAN 模型（推荐 `RealESRGAN_x4plus_anime_6B`） |
 | **图生图 / 融合** | 源图（留空=最近生成的那张）+ 可选"再融合一张图"+ 融合比例 + 重绘强度（denoise）→ 执行。**换装**用 denoise 0.6~0.75；**融合**用 0.4~0.6 更保形 | 只用 ComfyUI 原生节点 |
+| **工作流下拉（自定义）** | 默认「内置（按模型类型自动出图）」；把 API 格式的工作流 JSON 丢进 `workflows/` 就**多一个档位**，也可以「选择工作流文件…」临时选 | 无（见下方「自定义工作流」一节） |
+| **参考图 / 姿势的精细控制** | 参考图：权重 + **起效/结束**（0~1，整条采样过程的哪一段生效）+ 权重类型（线性/缓入/缓出/缓入缓出/强风格）；姿势：强度 + **起效/结束** | 无 |
 
 > 参考图 / 姿势用的模型（IP-Adapter、图像编码器、ControlNet）**不是写死的**：程序按当前底模架构自动配对
 > （SDXL → `ip-adapter-plus_sdxl_vit-h` + ViT-H 编码器 + `controlnet++ union SDXL`；SD1.5 → `ip-adapter_sd15_plus` + `control_v11p_sd15_openpose`），
 > 也可以在下拉里手动换。**配错不会报错但会画出噪声图**，所以别乱改——改了记得重选底模让程序重新配对。
+
+### 自定义工作流（丢文件就多一个档位）
+
+1. 在 ComfyUI 里搭好流程 → 菜单「工作流 → **Save (API Format)**」导出 JSON；
+2. 丢进 `dlc/comfyui_helper/workflows/`（文件名随意，JSON 里可以写 `"_name": "我的工作流"` 当显示名）；
+3. 回到界面点「工作流」旁边的**刷新**，下拉里就多一项；选它再点「开始生成」即可。
+   （也可以点「选择工作流文件…」临时选，程序会记进 DLC 配置，下次还在。）
+
+**占位符**（写进 JSON 的字符串里，程序按界面当前参数替换）：
+
+```
+{{positive}} {{negative}} {{width}} {{height}} {{batch}} {{steps}} {{cfg}} {{seed}}
+{{sampler}} {{scheduler}} {{prefix}} {{ckpt}} {{unet}} {{clip}} {{vae}}
+{{image}} {{ref}} {{pose}} {{upscale}}          ← 会自动把界面上选的那张图上传给 ComfyUI
+{{denoise}} {{scale}} {{grow_mask}} {{weight}} {{strength}} {{start}} {{end}}
+{{weight_type}} {{ipadapter_file}} {{clip_vision}} {{control_net}} {{preprocessor}} {{upscale_model}}
+```
+
+- 整串就是一个占位符时保留原始类型（`{{width}}` 会变成数字而不是字符串）；
+- 以 `_` 开头的键（`_name` / `_note` / `_needs`…）**不会**提交给 ComfyUI；
+- 选回「内置（按模型类型自动出图）」就是用内置的 SDXL / Anima 图；
+- 占位符写错或需要图片但没选图时，界面会弹窗说明并**自动切回内置**，不会把坏图提交上去。
 
 > **如果 IP-Adapter / 姿势显示 ⚠️**：多半是 ComfyUI 以「**干净模式**」（启动参数带 `--disable-all-custom-nodes`）跑着的，
 > 自定义节点全被禁用。点面板上的 **「用完整模式重启 ComfyUI」**（会弹确认框）即可；

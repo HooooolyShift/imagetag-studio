@@ -265,6 +265,8 @@ class ComfyClient:
                            weight: float = 0.8,
                            ipadapter_file: str = "ip-adapter-plus_sdxl_vit-h.safetensors",
                            clip_vision: str = "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+                           start_at: float = 0.0, end_at: float = 1.0,
+                           weight_type: str = "linear", embeds_scaling: str = "V only",
                            sampler: str = "dpmpp_2m", scheduler: str = "karras",
                            prefix: str = "imtag_ipadapter") -> dict:
         """参考图影响风格/角色（需要 ComfyUI_IPAdapter_plus）。
@@ -280,8 +282,8 @@ class ComfyClient:
             "4": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": clip_vision}},
             "5": {"class_type": "IPAdapterAdvanced", "inputs": {
                 "model": ["2", 0], "ipadapter": ["3", 0], "image": ["1", 0],
-                "weight": float(weight), "weight_type": "linear", "combine_embeds": "concat",
-                "start_at": 0.0, "end_at": 1.0, "embeds_scaling": "V only",
+                "weight": float(weight), "weight_type": weight_type, "combine_embeds": "concat",
+                "start_at": float(start_at), "end_at": float(end_at), "embeds_scaling": embeds_scaling,
                 "clip_vision": ["4", 0]}},
             "6": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
             "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
@@ -299,6 +301,7 @@ class ComfyClient:
     def controlnet_workflow(ckpt: str, pose_name: str, control_net: str, positive: str, negative: str,
                             width: int, height: int, steps: int, cfg: float, seed: int,
                             strength: float = 0.8, preprocessor: str = "openpose",
+                            start_percent: float = 0.0, end_percent: float = 1.0,
                             sampler: str = "dpmpp_2m", scheduler: str = "karras",
                             prefix: str = "imtag_pose") -> dict:
         """姿势控制：姿势图 → Openpose 预处理 → ControlNet → 采样（需要 comfyui_controlnet_aux + ControlNet 模型）。"""
@@ -314,7 +317,7 @@ class ComfyClient:
             "7": {"class_type": "ControlNetApplyAdvanced", "inputs": {
                 "positive": ["5", 0], "negative": ["6", 0], "control_net": ["4", 0],
                 "image": ["2", 0], "strength": float(strength),
-                "start_percent": 0.0, "end_percent": 1.0}},
+                "start_percent": float(start_percent), "end_percent": float(end_percent)}},
             "8": {"class_type": "EmptyLatentImage", "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
             "9": {"class_type": "KSampler", "inputs": {
                 "seed": int(seed), "steps": int(steps), "cfg": float(cfg),

@@ -514,6 +514,15 @@ class GenWindow(QWidget):
 
     def _build_workflow(self, seed: int) -> dict:
         """按当前"模型类型"出对应的工作流（SDXL checkpoint / Anima）。"""
+        # 选了「工作流」下拉里的自定义模板就优先用它（占位符按界面当前参数填）
+        try:
+            custom = self.more.build_custom_workflow(seed)
+        except Exception as exc:                             # noqa: BLE001
+            QMessageBox.warning(self, "自定义工作流", f"模板填充失败：{exc}\n已改回内置工作流。")
+            self.more.workflow_box.setCurrentIndex(0)
+            custom = None
+        if custom:
+            return custom
         pos = self.pos.toPlainText().strip()
         neg = self.neg.toPlainText().strip()
         common = dict(positive=pos, negative=neg, width=self.w.value(), height=self.h.value(),
