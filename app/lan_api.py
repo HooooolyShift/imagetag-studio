@@ -2822,7 +2822,11 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     last = time.time()
                 elif time.time() - last > 15:
-                    self.wfile.write(b": ping\n\n")
+                    # 保活心跳：以前发的是 SSE **注释**（`: ping`），但注释在客户端的 JS 里根本看不见
+                    # —— 移动端就没法判断这条长连接是不是已经"半死"（readyState 仍是 OPEN、也不触发
+                    # onerror，却一条消息都收不到；MuMu/Android 15 实测能稳定复现，平板 Wi-Fi 休眠/
+                    # 切网后必现）。改成**真事件**：内容极短，不认识 kind 的客户端直接忽略。
+                    self.wfile.write(b'data: {"kind": "ping"}\n\n')
                     self.wfile.flush()
                     last = time.time()
                 else:
