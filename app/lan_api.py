@@ -40,6 +40,7 @@
   POST /api/cleanup                     → 清理失效目录与文件 {confirm:true}
   GET  /api/gen/info                    → 生图 DLC 状态（ComfyUI 是否在线/模型/预设/输出目录）
   POST /api/gen/run                     → **在 PC 上生图**（平板遥控）{prompt, model?, preset?, count?, import?}
+  POST /api/gen/inpaint                 → **局部重绘**：{file_id|name, mask_base64, prompt, denoise?} 白=重绘
   GET  /api/gen/results?limit=          → 最近生成的文件（输出目录扫描）
   GET  /api/gen/file?name=              → 下载/预览生成结果
   GET  /api/lex/zh?text=                → 中文→规范英文标签（共享词库，平板提示词用）
@@ -396,6 +397,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._cleanup(body)
         elif path == "/api/gen/run":
             self._gen_run(body)
+        elif path == "/api/gen/inpaint":
+            self._gen_inpaint(body)
         elif path == "/api/lex/prompt_fix":
             self._lex_prompt_fix(body)
         else:
@@ -1354,6 +1357,106 @@ class _ApiHandler(BaseHTTPRequestHandler):
         threading.Thread(target=job, daemon=True, name="imtag-gen").start()
         self._json({"ok": True, "started": True, "count": count, "model": model,
                     "output_dir": str(out_dir), "preset": preset_name})
+
+    def _gen_inpaint(self, body: dict) -> None:
+        """局部重绘：底图 + 遮罩（**白=要重绘**）在 PC 上跑 inpaint，结果落输出目录。
+
+        底图两种给法：`file_id`（库里已有）或 `name`（输出目录里刚生成的）；
+        遮罩：`mask_base64`（PNG，白=重绘；和宿主 MaskCanvas 导出的一致）。
+        """
+        import base64
+        import datetime
+        import random as _rnd
+        api = self.api
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "already_running"})
+            return
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            self._json({"ok": False, "error": "no_prompt"}, 400)
+            return
+        # 底图
+        base_path: Path | None = None
+        fid = body.get("file_id")
+        if fid:
+            row = api.store.one("SELECT path FROM files WHERE id=?", (int(fid),))
+            if row is not None:
+                base_path = Path(str(row["path"]))
+        if base_path is None:
+            name = str(body.get("name") or "")
+            if name and "/" not in name and "\\" not in name and ".." not in name:
+                cand = self._gen_out_dir() / name
+                if cand.exists():
+                    base_path = cand
+        if base_path is None or not base_path.exists():
+            self._json({"ok": False, "error": "no_base_image",
+                        "hint": "给 file_id（库里）或 name（输出目录里的文件名）"}, 400)
+            return
+        raw_mask = str(body.get("mask_base64") or "")
+        if raw_mask.startswith("data:"):
+            raw_mask = raw_mask.split(",", 1)[-1]
+        try:
+            mask_bytes = base64.b64decode(raw_mask, validate=False)
+        except Exception:
+            mask_bytes = b""
+        if len(mask_bytes) < 100:
+            self._json({"ok": False, "error": "bad_mask",
+                        "hint": "mask_base64 要是 PNG（白=重绘）"}, 400)
+            return
+        from .comfy_client import ComfyClient, ComfyError
+        cfg = self._gen_cfg()
+        client = ComfyClient(str(cfg.get("comfy_url") or "http://127.0.0.1:8188"))
+        model = str(body.get("model") or cfg.get("default_model") or "").strip()
+        if not model:
+            try:
+                names = client.checkpoints()
+                model = names[0] if names else ""
+            except ComfyError as exc:
+                self._json({"ok": False, "error": "comfy_unavailable", "detail": str(exc)}, 503)
+                return
+        out_dir = self._gen_out_dir()
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        mask_path = out_dir / f"_mask_{stamp}.png"
+        try:
+            mask_path.write_bytes(mask_bytes)
+        except Exception as exc:
+            self._json({"ok": False, "error": "mask_write_failed", "detail": str(exc)}, 500)
+            return
+        api._gen_running = True
+        api.bump("gen_inpaint_started", base=str(base_path), model=model)
+
+        def job() -> None:
+            try:
+                up_img = client.upload_image(base_path)
+                up_mask = client.upload_image(mask_path)
+                try:                      # inpaint 工作流要宽高（和底图一致）
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(base_path) as im:
+                        iw, ih = im.size
+                except Exception:
+                    iw = ih = int(body.get("size") or 1024)
+                wf = ComfyClient.inpaint_workflow(
+                    model, up_img, up_mask, prompt,
+                    str(body.get("negative") or cfg.get("neg_prompt") or ""),
+                    width=iw, height=ih,
+                    steps=int(body.get("steps") or 28), cfg=float(body.get("cfg") or 6.0),
+                    seed=int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1),
+                    denoise=float(body.get("denoise") or 0.55),
+                    grow_mask=int(body.get("grow_mask") or 6))
+                pid = client.submit(wf)
+                files = client.wait(pid, out_dir, f"inpaint_{stamp}",
+                                    on_tick=lambda s: api.bump("gen_progress", elapsed=round(s)))
+                made = [str(f) for f in files]
+                ids = api.library.scan_paths_into_library(made) if body.get("import") else []
+                api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="inpaint")
+            except Exception as exc:
+                api.bump("gen_failed", error=str(exc), kind="inpaint")
+            finally:
+                api._gen_running = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-inpaint").start()
+        self._json({"ok": True, "started": True, "model": model,
+                    "base": str(base_path), "output_dir": str(out_dir)})
     def _similar(self, q: dict) -> None:
         try:
             fid = int(q.get("id") or 0)

@@ -77,6 +77,31 @@ class DlcInfo:
         return (self.path / self.entry) if self.path else None
 
 
+def _norm_settings(raw) -> list[dict]:
+    """把清单里的配置项归一成宿主认识的字段。
+
+    兼容两种写法（AI 生图会话用的是后者，宿主最早提的是前者）：
+      1) `"settings": [{"key","type":"dir|str|bool","label","default"}]`
+      2) `"config_schema": [{"key","type":"path|string|bool","label","default","hint"}]`
+    """
+    type_map = {"path": "dir", "dir": "dir", "folder": "dir",
+                "string": "str", "str": "str", "text": "str", "url": "str",
+                "int": "int", "number": "int", "bool": "bool", "boolean": "bool"}
+    out: list[dict] = []
+    for item in (raw or []):
+        if not isinstance(item, dict) or not item.get("key"):
+            continue
+        out.append({
+            "key": str(item["key"]),
+            "type": type_map.get(str(item.get("type") or "str").lower(), "str"),
+            "label": str(item.get("label") or item["key"]),
+            "default": item.get("default", ""),
+            "hint": str(item.get("hint") or ""),
+            "required": bool(item.get("required", False)),
+        })
+    return out
+
+
 def scan_dlcs() -> list[DlcInfo]:
     """扫描 DLC 根目录（每个子目录一个 DLC）。坏清单不抛异常，只标 error。"""
     out: list[DlcInfo] = []
@@ -96,9 +121,13 @@ def scan_dlcs() -> list[DlcInfo]:
                 name=str(data.get("name") or sub.name),
                 version=str(data.get("version") or ""),
                 description=str(data.get("description") or ""),
+                # 入口：`entry`（宿主提案）与 `entry_module`（AI 生图会话）都能认。
+                # 注意对方若写的是包名（如 "prompt_helper"），实际入口仍是同目录的 main.py。
                 entry=str(data.get("entry") or "main.py"),
-                requires=list(data.get("requires") or []),
-                settings=list(data.get("settings") or []),
+                requires=(list(data.get("requires") or [])
+                          if not isinstance(data.get("requires"), dict)
+                          else [str(k) for k in (data.get("requires") or {})]),
+                settings=_norm_settings(data.get("settings") or data.get("config_schema")),
                 path=sub,
             )
             if not info.entry_path().exists():

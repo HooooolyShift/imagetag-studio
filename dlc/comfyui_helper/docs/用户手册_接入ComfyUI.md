@@ -124,13 +124,17 @@ python scripts\fetch_anima.py          # 一次性下 Anima 三件套（模型 +
 | **批量队列** | 设张数+起始种子 → 「加入队列」→「开始队列」。跑的时候可以「取消」；勾了「跳过已存在（断点续跑）」时，同名产物（`gen_s<种子>.png`）会直接跳过——**断电/中断后重跑不会重复出图** | 无 |
 | **自动入库 / 自动打标**（可选项，默认关） | 勾上后每出一张就自动扫进主程序图库；再勾"自动打标"就顺带跑 WD14+CLIP+分级进待审队列。失败只提示、不打断出图 | 自动入库需要输出目录在主程序的来源/图库根目录下；自动打标需要主程序模型引擎 |
 | **局部重绘 / 换装** | 选一张图（留空=用最近生成的那张）+ 选区域（整图/上半身/下半身/中间）+ 调重绘强度（0.1~1.0，换装常用 0.6~0.8）+ 写新提示词 → 执行。图与遮罩会自动传给 ComfyUI | 只用 ComfyUI 原生节点，一般都有 |
-| **参考图（IP-Adapter）** | 选参考图 + 权重（0.8 左右）→ 生成风格/角色接近的图 | `ComfyUI_IPAdapter_plus` 节点 + `ip-adapter_xl.pth` + `clip_h.pth` |
+| **参考图（IP-Adapter）** | 选参考图 + 权重（0.8 左右）→ 生成风格/角色接近的图；面板上还能选"IP-Adapter 模型 / 图像编码器"两件套 | `ComfyUI_IPAdapter_plus` 节点 + **配对的两件套**：`ip-adapter-plus_sdxl_vit-h.safetensors`（models/ipadapter）+ `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors`（models/clip_vision） |
 | **姿势 / 线稿（ControlNet）** | 选姿势图 + 强度 + 选 ControlNet 模型（会自动优先选 union/SDXL） | `comfyui_controlnet_aux` 预处理节点 + ControlNet 模型（本项目已有 `controlnet++_union_sdxl_promax`） |
 | **模型下载 / 校验** | 下拉里是 `models.json` 的推荐模型，点「下载 / 校验」会后台走断点续传下载到对应目录，完成后自动刷新模型列表 | 无 |
 
 > **如果 IP-Adapter / 姿势显示 ⚠️**：多半是 ComfyUI 以「**干净模式**」（启动参数带 `--disable-all-custom-nodes`）跑着的，
 > 自定义节点全被禁用。点面板上的 **「用完整模式重启 ComfyUI」**（会弹确认框）即可；
 > 重启后重新点「检测可用功能」，一般就变 ✅ 了。重启会中断正在跑的出图。
+>
+> **如果提示缺模型文件**：点面板「模型下载」里的 **IP-Adapter SDXL plus** 与 **ViT-H 图像编码器** 两项即可（合计约 3.2 GB，后台断点续传）。
+> 注意：只装旧的 `ip-adapter_xl.pth` + `clip_h.pth` 会报 `size mismatch ... [8192,1280] vs [8192,1024]`——
+> 那是编码器维度不匹配（前者要 1280 维的 ViT-H），换成本页推荐的"两件套"就好。
 
 - **局部重绘 / 换装**：DLC 已提供 `workflows/` 模板与固化预设，宿主界面会在后续版本补"画遮罩"的交互；
   在补上之前，可以先在 ComfyUI 原生界面用同样的模型+参数做 inpaint。

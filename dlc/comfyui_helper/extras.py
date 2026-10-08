@@ -192,6 +192,18 @@ class MorePanel(QGroupBox):
         ph2.addWidget(self.pose_cn); ph2.addWidget(b_pose); ph2.addWidget(b_pose_go)
         form.addRow("姿势/线稿", pose_row)
 
+        # ---------- 参考图用哪套 IP-Adapter / 图像编码器（自动挑配对的那套） ----------
+        ipm_row = QWidget()
+        imh = QHBoxLayout(ipm_row)
+        imh.setContentsMargins(0, 0, 0, 0)
+        self.ip_model = QComboBox()
+        self.ip_clip = QComboBox()
+        self.ip_model.setToolTip("SDXL 建议用 ip-adapter-plus_sdxl_vit-h.safetensors")
+        self.ip_clip.setToolTip("要和 IP-Adapter 配套：ViT-H 版编码器（CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors）")
+        imh.addWidget(QLabel("IP-Adapter 模型")); imh.addWidget(self.ip_model, 1)
+        imh.addWidget(QLabel("图像编码器")); imh.addWidget(self.ip_clip, 1)
+        form.addRow("", ipm_row)
+
         # ---------- 模型下载 ----------
         dl_row = QWidget()
         dh = QHBoxLayout(dl_row)
@@ -251,6 +263,25 @@ class MorePanel(QGroupBox):
             for i in range(self.pose_cn.count()):
                 if "union" in self.pose_cn.itemText(i).lower() or "sdxl" in self.pose_cn.itemText(i).lower():
                     self.pose_cn.setCurrentIndex(i)
+                    break
+        except Exception:
+            pass
+        # IP-Adapter 两件套：优先挑配对（vit-h / plus_sdxl）
+        try:
+            self.ip_model.clear()
+            for name in self.win.client._enum("IPAdapterModelLoader", "ipadapter_file"):
+                self.ip_model.addItem(name)
+            self.ip_clip.clear()
+            for name in self.win.client._enum("CLIPVisionLoader", "clip_name"):
+                self.ip_clip.addItem(name)
+            for i in range(self.ip_model.count()):
+                t = self.ip_model.itemText(i).lower()
+                if "plus_sdxl" in t or "vit-h" in t:
+                    self.ip_model.setCurrentIndex(i)
+                    break
+            for i in range(self.ip_clip.count()):
+                if "vit-h" in self.ip_clip.itemText(i).lower():
+                    self.ip_clip.setCurrentIndex(i)
                     break
         except Exception:
             pass
@@ -531,6 +562,8 @@ class MorePanel(QGroupBox):
             name = c.upload_image(ref)
             if title == "参考图":
                 wf = builder(ckpt, name, pos, neg, w, h, steps, cfg, seed, weight=weight,
+                             ipadapter_file=self.ip_model.currentText(),
+                             clip_vision=self.ip_clip.currentText(),
                              sampler=sampler, scheduler=sched, prefix=prefix)
             else:
                 wf = builder(ckpt, name, cn, pos, neg, w, h, steps, cfg, seed, strength=weight,

@@ -94,8 +94,26 @@ class ComfyClient:
             rep[feature] = {"ok": not missing, "missing": missing, "hint": hint}
 
         need("局部重绘 / 换装", ["LoadImage", "ImageToMask", "VAEEncodeForInpaint", "GrowMask"])
-        need("参考图（IP-Adapter）", ["IPAdapterUnifiedLoader", "IPAdapter", "CLIPVisionLoader"],
-             hint="需要 ComfyUI_IPAdapter_plus 节点包 + ip-adapter_xl.pth + clip_h.pth（并让 ComfyUI 以完整模式启动）")
+        # IP-Adapter 要"配对的"两件套：SDXL plus（ViT-H 版）+ ViT-H 图像编码器。
+        # 只有 ip-adapter_xl.pth + clip_h.pth 时会报 size mismatch（1280 vs 1024），所以分开判。
+        ip_missing = [n for n in ("IPAdapterModelLoader", "CLIPVisionLoader", "IPAdapterAdvanced")
+                      if not self.has_node(n)]
+        if not ip_missing:
+            try:
+                ip_files = self._enum("IPAdapterModelLoader", "ipadapter_file")
+            except ComfyError:
+                ip_files = []
+            try:
+                cv_files = self._enum("CLIPVisionLoader", "clip_name")
+            except ComfyError:
+                cv_files = []
+            if not [i for i in ip_files if "plus_sdxl" in i.lower() or "vit-h" in i.lower()]:
+                ip_missing.append("models/ipadapter 里缺 SDXL 版（建议 ip-adapter-plus_sdxl_vit-h.safetensors）")
+            if not [c for c in cv_files if "vit-h" in c.lower() or "vit_h" in c.lower()]:
+                ip_missing.append("models/clip_vision 里缺 ViT-H 图像编码器（CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors）")
+        rep["参考图（IP-Adapter）"] = {
+            "ok": not ip_missing, "missing": ip_missing,
+            "hint": "缺的模型文件可以用 DLC 的「模型下载」一键补齐（scripts/fetch_ipadapter.py）"}
         need("姿势/线稿（ControlNet）", ["ControlNetLoader", "ControlNetApplyAdvanced", "OpenposePreprocessor"],
              models=[("ControlNetLoader", "control_net_name")],
              hint="需要 comfyui_controlnet_aux 预处理器 + ControlNet 模型（本项目已有 controlnet++ union SDXL）")
@@ -158,8 +176,6 @@ class ComfyClient:
             return str(self._post("/prompt", {"prompt": wf})["prompt_id"])
         except Exception as exc:
             raise ComfyError(f"提交任务失败：{exc}") from exc
-
-    # ---------- Anima（UNETLoader + ModelSamplingAuraFlow + CLIPLoader + VAELoader） ----------
     @staticmethod
     def anima_workflow(unet: str, clip: str, vae: str, positive: str, negative: str,
                        width: int, height: int, steps: int, cfg: float, seed: int,
@@ -190,8 +206,11 @@ class ComfyClient:
                          denoise: float = 0.6, grow_mask: int = 6,
                          sampler: str = "dpmpp_2m", scheduler: str = "karras",
                          prefix: str = "imtag_inpaint") -> dict:
-        """局部重绘：遮罩图里**白色=要重画**的地方。
-        mask 走 LoadImage → ImageToMask(red)，黑白语义明确（不用纠结 alpha 通道反不反）。"""
+        """局部重绘：遮罩图里**白色 = 要重画**的地方（和宿主 MaskCanvas 导出一致）。
+
+        mask 走 LoadImage → ImageToMask(red)，黑白语义明确，不用纠结 PNG 的 alpha 反没反。
+        （这是 AI 生图会话的实现，2026-10-08 被我的去重脚本误删过一次，已恢复。）
+        """
         return {
             "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
             "2": {"class_type": "LoadImage", "inputs": {"image": mask_name}},
@@ -209,30 +228,39 @@ class ComfyClient:
             "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["9", 0]}},
         }
 
-    # ---------- 参考图（IP-Adapter） ----------
     @staticmethod
     def ipadapter_workflow(ckpt: str, ref_name: str, positive: str, negative: str,
                            width: int, height: int, steps: int, cfg: float, seed: int,
-                           weight: float = 0.8, preset: str = "PLUS (high strength)",
+                           weight: float = 0.8,
+                           ipadapter_file: str = "ip-adapter-plus_sdxl_vit-h.safetensors",
+                           clip_vision: str = "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
                            sampler: str = "dpmpp_2m", scheduler: str = "karras",
                            prefix: str = "imtag_ipadapter") -> dict:
-        """参考图影响风格/角色（需要 ComfyUI_IPAdapter_plus）。"""
+        """参考图影响风格/角色（需要 ComfyUI_IPAdapter_plus）。
+
+        这里走**手动加载**路径（IPAdapterModelLoader + CLIPVisionLoader + IPAdapterAdvanced），
+        而不是 IPAdapterUnifiedLoader：后者按预设名去找固定文件名（会报 ClipVision model not found），
+        手动路径直接用我们已有的 ip-adapter_xl.pth + clip_h.pth，不用额外下载。
+        """
         return {
             "1": {"class_type": "LoadImage", "inputs": {"image": ref_name}},
             "2": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
-            "3": {"class_type": "IPAdapterUnifiedLoader", "inputs": {"model": ["2", 0], "preset": preset}},
-            "4": {"class_type": "IPAdapter", "inputs": {
-                "model": ["3", 0], "ipadapter": ["3", 1], "image": ["1", 0],
-                "weight": float(weight), "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
-            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
-            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
-            "7": {"class_type": "EmptyLatentImage", "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
-            "8": {"class_type": "KSampler", "inputs": {
+            "3": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ipadapter_file}},
+            "4": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": clip_vision}},
+            "5": {"class_type": "IPAdapterAdvanced", "inputs": {
+                "model": ["2", 0], "ipadapter": ["3", 0], "image": ["1", 0],
+                "weight": float(weight), "weight_type": "linear", "combine_embeds": "concat",
+                "start_at": 0.0, "end_at": 1.0, "embeds_scaling": "V only",
+                "clip_vision": ["4", 0]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
+            "8": {"class_type": "EmptyLatentImage", "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
+            "9": {"class_type": "KSampler", "inputs": {
                 "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
                 "sampler_name": sampler, "scheduler": scheduler, "denoise": 1.0,
-                "model": ["4", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["7", 0]}},
-            "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["2", 2]}},
-            "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["9", 0]}},
+                "model": ["5", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["8", 0]}},
+            "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["2", 2]}},
+            "11": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["10", 0]}},
         }
 
     # ---------- 姿势 / 线稿（ControlNet） ----------

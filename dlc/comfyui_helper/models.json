@@ -65,6 +65,28 @@
       "size_bytes": 242000000,
       "required": false,
       "download_url": "https://hf-mirror.com/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors"
+    },
+    {
+      "id": "ipadapter-plus-sdxl",
+      "name": "IP-Adapter SDXL plus（参考图功能用）",
+      "file": "ip-adapter-plus_sdxl_vit-h.safetensors",
+      "target": "models/ipadapter",
+      "size_bytes": 847000000,
+      "arch": "SDXL",
+      "required": false,
+      "recommended": true,
+      "download_url": "https://hf-mirror.com/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
+      "note": "要和下面的 ViT-H 图像编码器配对使用；只装旧的 ip-adapter_xl.pth + clip_h.pth 会报 size mismatch"
+    },
+    {
+      "id": "clip-vision-vit-h",
+      "name": "ViT-H 图像编码器（IP-Adapter 配套）",
+      "file": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+      "target": "models/clip_vision",
+      "size_bytes": 2520000000,
+      "required": false,
+      "recommended": true,
+      "download_url": "https://hf-mirror.com/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
     }
   ],
   "wordlists": [
