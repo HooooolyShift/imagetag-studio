@@ -10,6 +10,7 @@ import json
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 
@@ -72,6 +73,69 @@ class ComfyClient:
     def samplers(self) -> list[str]:
         return self._enum("KSampler", "sampler_name")
 
+    def has_node(self, node: str) -> bool:
+        """ComfyUI 里有没有这个节点（用于能力探测：能连上就用，缺啥就提示）。"""
+        try:
+            return bool(self._get(f"/object_info/{node}", timeout=15).get(node))
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def capability_report(self) -> dict:
+        """探测各高级功能的可用性。返回 {功能: {"ok":bool,"missing":[...],"hint":str}}"""
+        rep: dict[str, dict] = {}
+
+        def need(feature: str, nodes: list[str], models: list[tuple[str, str]] = None, hint: str = "") -> None:
+            missing = [n for n in nodes if not self.has_node(n)]
+            for node, field in (models or []):
+                try:
+                    if not self._enum(node, field):
+                        missing.append(f"{node}.{field}（没有可用模型文件）")
+                except ComfyError:
+                    missing.append(f"{node}.{field}（读取失败）")
+            rep[feature] = {"ok": not missing, "missing": missing, "hint": hint}
+
+        need("局部重绘 / 换装", ["LoadImage", "ImageToMask", "VAEEncodeForInpaint", "GrowMask"])
+        need("参考图（IP-Adapter）", ["IPAdapterUnifiedLoader", "IPAdapter", "CLIPVisionLoader"],
+             hint="需要 ComfyUI_IPAdapter_plus 自定义节点 + ip-adapter_xl.pth + clip_h.pth")
+        need("姿势/线稿（ControlNet）", ["ControlNetLoader", "ControlNetApplyAdvanced", "OpenposePreprocessor"],
+             models=[("ControlNetLoader", "control_net_name")],
+             hint="需要 comfyui_controlnet_aux 预处理器 + ControlNet 模型（本项目已有 controlnet++ union SDXL）")
+        return rep
+
+    # ---------- 图片上传 / 取消 ----------
+    def upload_image(self, path: str | Path) -> str:
+        """把本地图片传给 ComfyUI（/upload/image），返回可在 LoadImage 里用的名字。"""
+        path = Path(path)
+        boundary = "----imtag" + uuid.uuid4().hex
+        data = path.read_bytes()
+        ctype = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        body = bytearray()
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="image"; filename="{path.name}"\r\n'.encode()
+        body += f"Content-Type: {ctype}\r\n\r\n".encode()
+        body += data + b"\r\n"
+        for key, val in (("overwrite", "true"), ("type", "input")):
+            body += f"--{boundary}\r\n".encode()
+            body += f'Content-Disposition: form-data; name="{key}"\r\n\r\n{val}\r\n'.encode()
+        body += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(self.url + "/upload/image", data=bytes(body),
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                info = json.load(r)
+        except Exception as exc:                             # noqa: BLE001
+            raise ComfyError(f"上传图片失败：{exc}") from exc
+        name = info.get("name") or path.name
+        sub = info.get("subfolder") or ""
+        return f"{sub}/{name}" if sub else name
+
+    def interrupt(self) -> None:
+        """取消当前正在跑的任务。"""
+        try:
+            self._post("/interrupt", {})
+        except Exception:                                    # noqa: BLE001
+            pass
+
     # ---------- 出图 ----------
     @staticmethod
     def workflow(ckpt: str, positive: str, negative: str, width: int, height: int,
@@ -119,6 +183,88 @@ class ComfyClient:
                 "model": ["2", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["7", 0]}},
             "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 0]}},
             "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["9", 0]}},
+        }
+
+    # ---------- 局部重绘 / 换装 ----------
+    @staticmethod
+    def inpaint_workflow(ckpt: str, image_name: str, mask_name: str, positive: str, negative: str,
+                         width: int, height: int, steps: int, cfg: float, seed: int,
+                         denoise: float = 0.6, grow_mask: int = 6,
+                         sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                         prefix: str = "imtag_inpaint") -> dict:
+        """局部重绘：白色=要重画的地方。
+        mask 走 LoadImage → ImageToMask(red)，这样黑白语义明确（不用纠结 alpha 通道反不反）。"""
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "LoadImage", "inputs": {"image": mask_name}},
+            "3": {"class_type": "ImageToMask", "inputs": {"image": ["2", 0], "channel": "red"}},
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "5": {"class_type": "VAEEncodeForInpaint", "inputs": {
+                "pixels": ["1", 0], "vae": ["4", 2], "mask": ["3", 0], "grow_mask_by": int(grow_mask)}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["4", 1]}},
+            "8": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": float(denoise),
+                "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+            "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 2]}},
+            "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["9", 0]}},
+        }
+
+    # ---------- 参考图（IP-Adapter） ----------
+    @staticmethod
+    def ipadapter_workflow(ckpt: str, ref_name: str, positive: str, negative: str,
+                           width: int, height: int, steps: int, cfg: float, seed: int,
+                           weight: float = 0.8, preset: str = "PLUS (high strength)",
+                           sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                           prefix: str = "imtag_ipadapter") -> dict:
+        """用参考图影响风格/角色（需要 ComfyUI_IPAdapter_plus）。"""
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": ref_name}},
+            "2": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "3": {"class_type": "IPAdapterUnifiedLoader", "inputs": {"model": ["2", 0], "preset": preset}},
+            "4": {"class_type": "IPAdapter", "inputs": {
+                "model": ["3", 0], "ipadapter": ["3", 1], "image": ["1", 0],
+                "weight": float(weight), "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
+            "7": {"class_type": "EmptyLatentImage", "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
+            "8": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": 1.0,
+                "model": ["4", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["7", 0]}},
+            "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["2", 2]}},
+            "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["9", 0]}},
+        }
+
+    # ---------- 姿势 / 线稿（ControlNet） ----------
+    @staticmethod
+    def controlnet_workflow(ckpt: str, pose_name: str, control_net: str, positive: str, negative: str,
+                            width: int, height: int, steps: int, cfg: float, seed: int,
+                            strength: float = 0.8, preprocessor: str = "openpose",
+                            sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                            prefix: str = "imtag_pose") -> dict:
+        """姿势控制：姿势图 → 预处理 → ControlNet → 采样（需要 comfyui_controlnet_aux + ControlNet 模型）。"""
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": pose_name}},
+            "2": {"class_type": "OpenposePreprocessor", "inputs": {
+                "image": ["1", 0], "detect_hand": "enable", "detect_body": "enable",
+                "detect_face": "enable", "resolution": 512}},
+            "3": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "4": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": control_net}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["3", 1]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["3", 1]}},
+            "7": {"class_type": "ControlNetApplyAdvanced", "inputs": {
+                "positive": ["5", 0], "negative": ["6", 0], "control_net": ["4", 0],
+                "image": ["2", 0], "strength": float(strength),
+                "start_percent": 0.0, "end_percent": 1.0}},
+            "8": {"class_type": "EmptyLatentImage", "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
+            "9": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": 1.0,
+                "model": ["3", 0], "positive": ["7", 0], "negative": ["7", 1], "latent_image": ["8", 0]}},
+            "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["3", 2]}},
+            "11": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["10", 0]}},
         }
 
     def wait(self, prompt_id: str, out_dir: Path, base_name: str,

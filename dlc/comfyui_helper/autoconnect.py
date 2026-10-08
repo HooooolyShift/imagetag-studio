@@ -162,6 +162,48 @@ def start_comfy(comfy_dir: str, port: int = 8188, clean: bool = False,
     return False, "已尝试启动，但 2 分钟内没连上（看 ComfyUI 控制台的报错）"
 
 
+def find_comfy_pid(port: int = 8188) -> int | None:
+    """找正在跑的 ComfyUI 进程（按命令行里的 --port 判断）。"""
+    try:
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+              f"Where-Object {{ $_.CommandLine -like '*main.py*' -and $_.CommandLine -like '*--port {port}*' }} | "
+              "Select-Object -ExpandProperty ProcessId")
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=20)
+        for line in (out.stdout or "").splitlines():
+            line = line.strip()
+            if line.isdigit():
+                return int(line)
+    except Exception:                                        # noqa: BLE001
+        pass
+    return None
+
+
+def stop_comfy(port: int = 8188) -> tuple[bool, str]:
+    """停掉正在跑的 ComfyUI（只停监听这个端口的那个进程）。"""
+    pid = find_comfy_pid(port)
+    if pid is None:
+        return False, f"没找到监听 {port} 的 ComfyUI 进程"
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=20)
+    except Exception as exc:                                 # noqa: BLE001
+        return False, f"停止失败：{exc}"
+    for _ in range(10):
+        time.sleep(1)
+        if not probe_api(f"http://127.0.0.1:{port}"):
+            return True, f"已停止（PID {pid}）"
+    return False, f"已发停止命令，但 {port} 还在响应"
+
+
+def restart_comfy_full(comfy_dir: str, port: int = 8188) -> tuple[bool, str]:
+    """用**完整模式**重启 ComfyUI（启用自定义节点：IP-Adapter、ControlNet 预处理等）。"""
+    if probe_api(f"http://127.0.0.1:{port}"):
+        ok, msg = stop_comfy(port)
+        if not ok:
+            return False, msg
+    return start_comfy(comfy_dir, port=port, clean=False)
+
+
 if __name__ == "__main__":                                    # 方便命令行自检
     import pprint
     pprint.pprint(detect())

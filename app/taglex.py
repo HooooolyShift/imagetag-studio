@@ -25,6 +25,7 @@ class TagLex:
         self.library = library
         self._zh_index: dict[str, str] | None = None
         self._ascii_index: dict[str, str] | None = None
+        self._aliases: dict[str, str] | None = None
         self._child_map: dict[str, list[str]] | None = None
         self._parent_map: dict[str, list[str]] | None = None
 
@@ -49,14 +50,62 @@ class TagLex:
         t = (text or "").strip()
         if not t:
             return ""
+        if t.isascii():
+            return t                     # 已经是英文标签：原样返回，别再拿它去反查（会撞别名）
+        alias = self.aliases().get(t)
+        if alias:
+            return alias
         hit = self.ascii_index().get(t)
         if hit:
             return hit
-        from . import tag_i18n
-        try:
-            return str(tag_i18n.resolve(t, index=self.zh_index(), store=self.store) or t)
-        except Exception:
-            return self.zh_index().get(t, t)
+        hit = self.zh_index().get(t)
+        if hit:
+            return hit
+        # ⚠ 这里**故意不做模糊/子串匹配**：以前退回 tag_i18n.resolve(fuzzy=True)，
+        # 结果出现过「微笑看镜头 → newhalf」「半身 → asahina mirai（子串'未来'命中）」
+        # 这类离谱误配（生图端报的 bug）。短语请用 prompt_fix()/segment_zh() 切词。
+        return t
+
+    def aliases(self) -> dict[str, str]:
+        """人工中文别名表（`app/tag_zh_aliases.json`）：口头说法 → 规范英文标签。
+
+        优先级最高。danbooru 词表里没覆盖的常用说法（如「看镜头」= looking_at_viewer）放这里，
+        生图端原来的"小对照表"也并进这个文件，两边共用一份。
+        """
+        if self._aliases is None:
+            import json
+            p = Path(__file__).with_name("tag_zh_aliases.json")
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                self._aliases = {k: str(v) for k, v in raw.items() if not k.startswith("_")}
+            except Exception:
+                self._aliases = {}
+        return self._aliases
+
+    def segment_zh(self, s: str, max_len: int = 6) -> list[str]:
+        """把一段中文**贪心切成词表里认识的标签**（尽量长优先），切不出的片段原样保留。
+
+        "微笑看镜头" → ['smile', 'looking_at_viewer']（只要词表里有这两条）。
+        生图端的提示词助手可以直接用它，比自己写切分更省事、也和主程序一致。
+        """
+        out: list[str] = []
+        i, n_all = 0, len(s or "")
+        while i < n_all:
+            hit = None
+            for n in range(min(max_len, n_all - i), 1, -1):
+                frag = s[i:i + n]
+                tag = (self.aliases().get(frag) or self.ascii_index().get(frag)
+                       or self.zh_index().get(frag))
+                if tag:
+                    hit = (n, tag)
+                    break
+            if hit:
+                out.append(hit[1])
+                i += hit[0]
+            else:
+                out.append(s[i])
+                i += 1
+        return out
 
     def ascii_index(self) -> dict[str, str]:
         """中文/别名 → **英文规范标签名**（生图/提示词专用）。
@@ -221,8 +270,19 @@ class TagLex:
             tag = self.zh_to_tag(p)
             if tag != p or p in self.zh_index() or tag in self.ascii_index().values():
                 out.append(tag)
-            else:
-                (out if keep_unknown else unknown).append(p)
+                continue
+            # 长短语（≥3 个汉字）：先试着按词表切成若干已知标签，成功就用切出来的
+            if len(p) >= 3 and re.fullmatch(r"[\u4e00-\u9fff]+", p):
+                seg = self.segment_zh(p)
+                known = [x for x in seg if x in self.ascii_index().values() or
+                         x in set(self.zh_index().values())]
+                if known:
+                    out.extend(known)
+                    leftover = [x for x in seg if x not in known]
+                    if leftover:
+                        (out if keep_unknown else unknown).extend(leftover)
+                    continue
+            (out if keep_unknown else unknown).append(p)
         return ", ".join(out), unknown
 
     def booru_rows(self, limit: int = 0) -> list[dict]:

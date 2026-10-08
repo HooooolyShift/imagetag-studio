@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout
 import re
 
 from .comfy import ComfyClient, ComfyError
+from .extras import MorePanel
 
 
 class _PromptHelperWorker(QThread):
@@ -284,12 +285,29 @@ class GenWindow(QWidget):
         right.addWidget(self.results, 1)
         split.addLayout(right, 2)
         root.addLayout(split, 1)
+        self.more = MorePanel(self)
+        root.addWidget(self.more)
         self._saved: list[Path] = []
         self._helper_worker = None
         self.reload_hot_words()
         self.refresh_status()
 
     # ---------- ComfyUI 接入 ----------
+    def _api_port(self) -> int:
+        try:
+            return int(self.api_row.text().rsplit(":", 1)[-1].strip("/ "))
+        except Exception:
+            return 8188
+
+    def _add_thumb(self, fp: Path) -> None:
+        """把生成结果加进右侧缩略图列表。"""
+        it = QListWidgetItem(Path(fp).name)
+        pm = QPixmap(str(fp))
+        if not pm.isNull():
+            it.setIcon(pm.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        it.setData(Qt.UserRole, str(fp))
+        self.results.addItem(it)
+
     def apply_api_url(self) -> None:
         url = self.api_row.text().strip() or "http://127.0.0.1:8188"
         self.client = ComfyClient(url)
@@ -631,13 +649,9 @@ class GenWindow(QWidget):
                                      on_tick=lambda s: self.status.setText(
                                          f"第 {i+1}/{self.count.value()} 张生成中… {s:.0f}s"))
             for fp in files:
-                it = QListWidgetItem(fp.name)
-                pm = QPixmap(str(fp))
-                if not pm.isNull():
-                    it.setIcon(pm.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                it.setData(Qt.UserRole, str(fp))
-                self.results.addItem(it)
+                self._add_thumb(fp)
                 self._saved.append(fp)
+                self.more._after_image(fp)
             self.status.setText(f"第 {i+1}/{self.count.value()} 张完成 → {out}")
             QTimer.singleShot(10, lambda: self._next(i + 1))
 
@@ -665,13 +679,9 @@ class GenWindow(QWidget):
                                  on_tick=lambda s: self.status.setText(
                                      f"第 {i+1}/{self._tot} 张生成中… {s:.0f}s"))
         for fp in files:
-            it = QListWidgetItem(fp.name)
-            pm = QPixmap(str(fp))
-            if not pm.isNull():
-                it.setIcon(pm.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            it.setData(Qt.UserRole, str(fp))
-            self.results.addItem(it)
+            self._add_thumb(fp)
             self._saved.append(fp)
+            self.more._after_image(fp)
         self.status.setText(f"第 {i+1}/{self._tot} 张完成")
         QTimer.singleShot(10, lambda: self._next(i + 1))
 
