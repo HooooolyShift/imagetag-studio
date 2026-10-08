@@ -326,3 +326,39 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   前端也在报错时补了一句"双击 `D:\LocalAI\start-ollama.cmd` 启动"的提示。
   显存纪律：启动前后看 `nvidia-smi`，qwen3-8b 约占 4.9 GB，用完 `ollama stop qwen3-8b` 让位。
 
+### 8.8 生图 DLC（`dlc/comfyui_helper/`）与"额外功能"落地（2026-10-08）
+
+> 用户决定：把原来那套 SwarmUI 封装整体改成主程序的**可选安装 DLC**，主界面重做成原生窗口；
+> "浏览器页面不要了"。分工：宿主（PC 端会话）做 DLC 机制/原生窗口骨架/共享词库，
+> 生图端（本会话）做提示词助手、工作流、额外功能与文档。**ComfyUI 客户端实现统一在
+> `app/comfy_client.py`**（DLC 的 `comfy.py` 只是转发，别再复制一份）。
+
+- **中文 → 提示词**：一次输出**正向 + 负向**（`generate_both`，不用切模式）；词表校验规则按用户要求——
+  能对上就用词表的规范写法、对不上保留并回报；质量词白名单（masterpiece/absurdres…）不受模型过滤影响。
+  界面上新增「提示词词表范围」＝ 全部 / NoobAI / Illustrious / Anima（回答"这个 tag 目标模型认不认"）。
+- **悬浮英文 tag 显示中文**：`TagHoverTextEdit`（只显示词表命中的），中文来源 = 项目词典 + 主程序
+  `app/tag_zh_dict.json`，实测 12.6 万条；人工口头说法统一走共享表 `app/tag_zh_aliases.json`
+  （本会话往里补了 34 条：大头照/侧面/背面/看镜头/闭眼/微笑/坐站躺趴/手牵手/冷色调/逆光/柔光/白天夜景/海边/室内外/雪雨樱花/纯色背景…）。
+- **自动接入**：`dlc/comfyui_helper/autoconnect.py` 找安装目录 + 探活 8188/8189/8000 + 一键后台启动/停止/完整模式重启。
+- **模型切换**：SDXL（checkpoints）/ Anima（diffusion_models + Qwen3 编码器 + Qwen-Image VAE），切家族自动套预设
+  （SDXL 1536×648/60/5.5/dpmpp_2m+karras；Anima 768×768/30/4.5/euler+simple）。Anima 实跑 34.4s。
+- **额外功能（都做成"能连上就用、缺啥就提示"）**：
+  - 能力探测 `ComfyClient.capability_report()`；面板常驻 ✅/⚠️；点用不了的功能弹窗列出**缺什么 + 怎么补**；
+    还给了「用完整模式重启 ComfyUI」按钮（本机原来为了批量稳定一直是 `--disable-all-custom-nodes` 干净模式，
+    自定义节点被禁用，IP-Adapter/预处理自然就没了）。
+  - **局部重绘/换装**：`inpaint_workflow`（LoadImage → ImageToMask(red) → VAEEncodeForInpaint），白=重画；
+    实测 512² 换装 39 秒、遮罩外不动（对比图 `.verify_pics\inpaint_compare.jpg`）。
+  - **参考图 IP-Adapter**：走**手动加载**（`IPAdapterModelLoader` + `CLIPVisionLoader` + `IPAdapterAdvanced`），
+    **不要用 UnifiedLoader**——它按预设名找固定文件名，会报 `ClipVision model not found`。
+  - **姿势 ControlNet**：`OpenposePreprocessor` + `ControlNetLoader(controlnet++ union SDXL)` + `ControlNetApplyAdvanced`；
+    实测 512²/12 步 72.6 秒出图。
+  - **批量队列**：可取消 + **断点续跑**（产物名 `gen_s<种子>.png`，存在就跳过；实测重跑 0.5 秒全跳过）。
+  - **自动入库 / 自动打标**：两个**可选项**（勾选框），调 `host.scan_into_library()` / `host.tag_files()`，失败只提示不打断。
+  - **模型下载/校验**：`models.json` 驱动，后台 `scripts/fetch_model.py` 断点续传，完成后自动刷新列表。
+- **本机补齐的东西（2026-10-08）**：自定义节点包其实早就装好（`ComfyUI_IPAdapter_plus` / `comfyui_controlnet_aux` 等），
+  缺的是 **①完整模式启动 ②配对的 IP-Adapter 两件套**：
+  `ip-adapter-plus_sdxl_vit-h.safetensors`（808MB，models/ipadapter）+
+  `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors`（2411MB，models/clip_vision）。
+  旧组合 `ip-adapter_xl.pth` + `clip_h.pth` 会报 `size mismatch ... [8192,1280] vs [8192,1024]`（编码器维度不对）。
+  下载脚本 `tools/fetch_ipadapter.py`（DLC 里也有一份）。开机自启与 SwarmUI 启动脚本已从干净模式改为**完整模式**。
+
