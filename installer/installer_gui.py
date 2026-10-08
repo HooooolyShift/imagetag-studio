@@ -44,12 +44,14 @@ class InstallWorker(QThread):
     progress = Signal(int, str)
     done = Signal(bool, str)
 
-    def __init__(self, target: Path, mode: str, make_shortcut: bool, keep_models_in_dir: bool):
+    def __init__(self, target: Path, mode: str, make_shortcut: bool, keep_models_in_dir: bool,
+                 install_dlc: bool = True):
         super().__init__()
         self.target = target
         self.mode = mode
         self.make_shortcut = make_shortcut
         self.models_in_dir = keep_models_in_dir
+        self.install_dlc = install_dlc
 
     def run(self) -> None:
         try:
@@ -73,6 +75,12 @@ class InstallWorker(QThread):
         for name in ("README.md", "requirements.txt", "run.cmd"):
             if (PAYLOAD / name).exists():
                 shutil.copy2(PAYLOAD / name, t / name)
+        # 1b) 可选扩展包（DLC）：勾了才复制；不勾就跳过（已装过的会被保留，不动它）
+        if self.install_dlc and (PAYLOAD / "dlc").is_dir():
+            shutil.copytree(PAYLOAD / "dlc", t / "dlc", dirs_exist_ok=True)
+            self.log.emit("已安装可选扩展包（DLC）：AI 生图助手（在程序里「更多 ▾ → 扩展包（DLC）…」启用）")
+        elif (PAYLOAD / "dlc").is_dir():
+            self.log.emit("按你的选择跳过扩展包（DLC）；以后可用更新包或手动放入 dlc\\ 目录再启用")
         for pdf in PAYLOAD.glob("*.pdf"):           # 说明书
             shutil.copy2(pdf, t / pdf.name)
         for exe in PAYLOAD.glob("*.exe"):          # 启动器 exe
@@ -252,6 +260,20 @@ class Installer(QWidget):
         self.cb_run = QCheckBox("安装完成后立即启动")
         self.cb_run.setChecked(True)
         b2.addWidget(self.cb_run)
+        # 可选扩展包（DLC）：默认勾上（才 8 MB），装了也要在程序里手动启用才生效
+        dlc_size = 0
+        try:
+            dlc_dir = PAYLOAD / "dlc"
+            if dlc_dir.is_dir():
+                dlc_size = sum(f.stat().st_size for f in dlc_dir.rglob("*") if f.is_file())
+        except Exception:
+            dlc_size = 0
+        self.cb_dlc = QCheckBox(
+            f"安装可选扩展包「AI 生图助手」（ComfyUI 生图，{dlc_size / 1024 ** 2:.0f} MB；"
+            "装完在程序里「更多 ▾ → 扩展包（DLC）…」启用）")
+        self.cb_dlc.setChecked(True)
+        self.cb_dlc.setEnabled(dlc_size > 0)
+        b2.addWidget(self.cb_dlc)
         v.addWidget(box2)
 
         self.bar = QProgressBar()
@@ -342,7 +364,7 @@ class Installer(QWidget):
             return
         self.b_install.setEnabled(False)
         self.worker = InstallWorker(target, self.mode.currentData(), self.cb_shortcut.isChecked(),
-                                    self.cb_models.isChecked())
+                                    self.cb_models.isChecked(), self.cb_dlc.isChecked())
         self.worker.log.connect(self.log_view.append)
         self.worker.progress.connect(lambda v, s: (self.bar.setValue(v), self.status.setText(s)))
         self.worker.done.connect(self.finished)

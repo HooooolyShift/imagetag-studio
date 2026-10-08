@@ -56,6 +56,10 @@ echo 正在更新程序文件（不会动 models / python / 你的数据）...
 robocopy "app" "%TARGET%\app" /MIR /NFL /NDL /NJH /NJS /NP >nul
 robocopy "tools" "%TARGET%\tools" /MIR /NFL /NDL /NJH /NJS /NP >nul
 robocopy "assets" "%TARGET%\assets" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if exist "dlc" (
+  robocopy "dlc" "%TARGET%\dlc" /E /NFL /NDL /NJH /NJS /NP >nul
+  echo 已更新可选扩展包（DLC）。首次使用请在程序里「更多 ▾ → 扩展包（DLC）…」启用「AI 生图助手」。
+)
 if exist "说明书_图片标签工坊.pdf" copy /y "说明书_图片标签工坊.pdf" "%TARGET%\" >nul
 if exist "图片标签工坊_安装程序.exe" copy /y "图片标签工坊_安装程序.exe" "%TARGET%\" >nul
 echo.
@@ -69,9 +73,11 @@ def main() -> int:
     if DEST.exists():
         shutil.rmtree(DEST, ignore_errors=True)
     DEST.mkdir(parents=True, exist_ok=True)
-    for name in ("app", "tools", "assets"):
+    for name in ("app", "tools", "assets", "dlc"):
+        if not (HERE / name).is_dir():
+            continue
         shutil.copytree(HERE / name, DEST / name,
-                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "obj", "bin"))
     pdf = HERE / "说明书_图片标签工坊.pdf"
     if pdf.exists():
         shutil.copy2(pdf, DEST / pdf.name)

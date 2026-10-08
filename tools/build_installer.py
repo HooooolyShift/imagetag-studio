@@ -95,6 +95,15 @@ def copy_app() -> None:
         if dst.exists():
             shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # 可选安装的扩展包（DLC）：放进 payload，装不装由安装界面的勾选决定
+    dlc_src, dlc_dst = HERE / "dlc", PAYLOAD / "dlc"
+    if dlc_src.is_dir():
+        if dlc_dst.exists():
+            shutil.rmtree(dlc_dst, ignore_errors=True)
+        shutil.copytree(dlc_src, dlc_dst,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "obj", "bin"))
+        size = sum(f.stat().st_size for f in dlc_dst.rglob("*") if f.is_file())
+        print(f"  扩展包 DLC：{len(list(dlc_dst.iterdir()))} 个，{size / 1024 ** 2:.1f} MB（安装时可选）")
     for name in ("README.md", "run.cmd", "图片标签工坊.exe", "说明书_图片标签工坊.pdf"):
         if (HERE / name).exists():
             shutil.copy2(HERE / name, PAYLOAD / name)

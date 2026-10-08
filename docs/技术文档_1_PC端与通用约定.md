@@ -108,6 +108,11 @@ models/         本地模型（约 3 GB）
 3. 重建完整包：同步 `K:\ImageTagStudio\安装包\payload` 后压成 `K:\ImageTagStudio\安装包.7z`
 4. 切分卷：`python tools\split_release.py "K:\ImageTagStudio\安装包" "<输出目录>"`（GitHub 单文件 2 GB 上限）
 5. 说明书有界面改动时：`python tools\make_manual.py`
+6. **可选扩展包（DLC）**：`tools\build_update.py` 与 `tools\build_installer.py` 已把
+   `dlc\` 打进更新包 / 安装包 payload；安装器界面有「安装可选扩展包『AI 生图助手』」勾选框
+   （默认勾上、约 8 MB；不勾就跳过，已装过的不会被删）。更新包的 `更新.cmd` 用 `/E` 覆盖
+   `dlc\`（不清旧文件）。**装完默认是"未启用"**——用户要在程序里
+   「更多 ▾ → 扩展包（DLC）…」启用，菜单里才会出现「AI 生图（DLC）」。
 6. 刷新 GitHub release `HooooolyShift/imagetag-studio` 的 v1.4 资产（更新包 / 说明书 / 公告 / 封面 / payload 分卷 / 合并脚本 / SHA256）
 7. 同步正式版副本：`git -C "D:\图片标签分类" pull --ff-only origin master`
 
