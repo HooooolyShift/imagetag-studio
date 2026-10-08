@@ -133,6 +133,9 @@ class GenWindow(QWidget):
         bar = QHBoxLayout()
         self.status = QLabel("")
         self.status.setStyleSheet("color:#8f96a3;")
+        # 这行会显示很长的状态（显卡名 / 当前提示词模型…），不设下限的话它会把整窗最小宽度顶到 1200+
+        self.status.setMinimumWidth(120)
+        self.status.setToolTip("状态栏：ComfyUI 连接、当前底模/提示词模型、队列进度等")
         b_check = QPushButton("检查 ComfyUI")
         b_check.clicked.connect(self.check_comfy)
         b_models = QPushButton("拉取模型列表")
@@ -600,11 +603,64 @@ class GenWindow(QWidget):
                 self.hot.addItem(t, t)
             self.hot.setToolTip(f"库里「已确认」的标签（按图片数排序，最多 40 个，当前 {len(tags)} 个）；"
                                 "插入它能让生成风格贴近你自己的库" + where)
-        else:
-            self.hot.addItem("（库里还没有已确认的标签）")
+        # 库里已确认的太少（比如测试库只有 1 条）时，补几条**词表里的高频通用标签**，
+        # 让下拉不至于是空的；这些是"词表补充"而不是你库里的数据，插进去最多是通用好看，不会带偏。
+        # 说明：只用词表统计（不碰 pending），所以不会把没审核的错标签喂进提示词。
+        if len(tags) < 8:
+            extra = self._generic_hot_tags(12 - len(tags))
+            for t in extra:
+                self.hot.addItem(t, t)
+            if extra:
+                self.hot.setToolTip(
+                    f"你库里「已确认」的标签只有 {len(tags)} 个，下面额外补了 {len(extra)} 个"
+                    "**词表高频通用标签**（不是你的库数据，纯通用）" + where)
+        if self.hot.count() == 0:
+            self.hot.addItem("（库里还没有已确认的标签，词表也没读到）", "")
             self.hot.setToolTip("热词只统计图库里「已确认」的标签（待审的不算）。"
                                 "先去审核台通过一些标签就会出现；"
                                 "另外测试版和正式版各用各的图库，标签不互通。" + where)
+
+    def _generic_hot_tags(self, n: int = 12) -> list[str]:
+        """兜底用的"通用好看"标签：**人工白名单 + 按热度排序**。
+
+        为什么不用"词表里 count 最高的 12 个"：那会混进 meta 词（commentary request）、
+        e621 遗留（mammal / anthro）和露骨词（breasts），塞进提示词只会添乱。
+        """
+        if n <= 0:
+            return []
+        cache = getattr(self, "_generic_cache", None)
+        if cache is None:
+            candidates = [
+                # 构图 / 镜头
+                "upper body", "full body", "portrait", "cowboy shot", "from side", "from above",
+                "looking at viewer", "looking away", "front view",
+                # 表情
+                "smile", "open mouth", "closed eyes", "blush", "grin",
+                # 头发
+                "long hair", "twintails", "ponytail", "short hair", "hair between eyes",
+                # 服装
+                "school uniform", "dress", "skirt", "thighhighs", "jacket", "shirt", "hat",
+                # 姿势 / 动作
+                "standing", "sitting", "holding hands", "holding book", "arms up", "hand on hip",
+                # 背景 / 氛围
+                "simple background", "white background", "outdoors", "night", "day", "sky",
+                "cherry blossoms", "city", "forest", "beach", "indoor",
+                # 光线 / 质感
+                "detailed background", "soft lighting", "depth of field", "backlighting",
+            ]
+            try:
+                d = self._dict()
+                pairs = []
+                for tag in candidates:
+                    key = tag.replace(" ", "_")
+                    if d.resolve(tag) or key in d.by_name:      # 词表里真有这个 tag 才用
+                        pairs.append((d.counts.get(key, 0), tag))
+                pairs.sort(reverse=True)
+                cache = [t for _, t in pairs]
+            except Exception:
+                cache = []
+            self._generic_cache = cache
+        return cache[:n]
         if getattr(self, "b_hot", None) is not None:
             self.b_hot.setEnabled(bool(tags))
 

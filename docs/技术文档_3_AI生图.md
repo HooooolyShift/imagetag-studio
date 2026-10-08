@@ -362,3 +362,17 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   旧组合 `ip-adapter_xl.pth` + `clip_h.pth` 会报 `size mismatch ... [8192,1280] vs [8192,1024]`（编码器维度不对）。
   下载脚本 `tools/fetch_ipadapter.py`（DLC 里也有一份）。开机自启与 SwarmUI 启动脚本已从干净模式改为**完整模式**。
 
+### 8.9 界面宽度/热词的三个修正（2026-10-08，与 PC 端会话配合）
+
+- **参数页横向被切**（用户报）：PC 端会话把"采样器/调度器"拆成独立行、尺寸框收窄到 84px、
+  左栏最小宽度改为"内容实际需要"（上限 760）、横向滚动条改 `AsNeeded`。
+- **窗口最小宽度 1250px 的根因是状态栏**：`self.status` 那行会显示"显卡名 + 当前提示词模型"，
+  QLabel 的 minimumSizeHint 直接顶到 1200+，导致窗口缩不小。给它 `setMinimumWidth(120)` 后
+  **最小宽度 1250 → 664**；1100×700 下实测左栏可视 552px、无横向滚动条、不截断。
+- **「更多功能」面板的行也按"单行 ≤500px"整改**：放大、图生图/融合、参考图、姿势各自拆成两行，
+  并统一压低按钮(≤92)/下拉(≤150)/输入框(60) 的最小宽度；最宽行 476px，面板最小宽度 824 → 578。
+- **热词下拉兜底**：用户报"词库选项仅有全年龄"——根因是热词只统计 `file_tags.status='confirmed'`
+  （测试库被清过，只剩 1 条），不是 bug。现在库里 confirmed < 8 条时会**补 12 条"人工白名单 + 按热度排序"**
+  的通用标签。**不要用"词表 count 最高的 N 个"**：实测会混进 `commentary request`（meta）、
+  `mammal`/`anthro`（e621 遗留）、`breasts`（露骨），塞进提示词只会添乱；也**绝不统计 pending**。
+
