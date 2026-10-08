@@ -199,7 +199,18 @@ class LanApi:
         """数据有变化时喊一声，所有连着的移动端立刻知道。"""
         # 注意：参数名不能叫 kind —— 调用方经常要传 `kind=`（比如打标类型），
         # 撞名会直接 TypeError（2026-10-07 就是这么把 /api/tag/run 打成 500 的）。
-        msg = {"kind": event, "at": time.time(), **data}
+        #
+        # ⚠ 光改参数名还不够：`{"kind": event, **data}` 里 **data 里的 kind 会把事件名**盖掉
+        #   （dict 字面量后面同名的键赢），事件名就这样在总线上丢了 —— 移动端是按事件名分派
+        #   的，整条事件会被当成不相干的类型丢掉。2026-10-08 实测：参考图/姿势/图生图/放大/
+        #   高清修复/局部重绘出图后，`gen_done(kind="ipadapter")` 变成 kind="ipadapter"，
+        #   平板上「最近生成」列表不刷新、也没有"出图完成"提示（文本生图不带 kind，所以一直好的）。
+        #   所以这里把调用方的 kind 挪到 `op_kind`：事件名保住，操作类型也不丢。
+        extra = dict(data)
+        op_kind = extra.pop("kind", None)
+        msg = {"kind": event, "at": time.time(), **extra}
+        if op_kind is not None:
+            msg["op_kind"] = op_kind
         with self._lock:
             for q in list(self._clients):
                 q.append(msg)
