@@ -236,9 +236,23 @@ class GenWindow(QWidget):
         size_row = QWidget()
         sh = QHBoxLayout(size_row)
         sh.setContentsMargins(0, 0, 0, 0)
-        self.w = QSpinBox(); self.w.setRange(256, 4096); self.w.setSingleStep(64); self.w.setValue(1024)
-        self.h = QSpinBox(); self.h.setRange(256, 4096); self.h.setSingleStep(64); self.h.setValue(1024)
-        sh.addWidget(self.w); sh.addWidget(QLabel("×")); sh.addWidget(self.h)
+        # 尺寸按 ComfyUI/PC 侧的 limits 来：256~2048、步进 8；**不提供 512/768 档**（SDXL 低于约 0.8MP 会出色块）
+        self.size_preset = QComboBox()
+        self.size_preset.addItem("自定义", None)
+        for label, pw, ph in (("1024×1024 方图", 1024, 1024), ("1216×832 横图", 1216, 832),
+                              ("1536×648 开屏比例", 1536, 648), ("832×1216 竖图", 832, 1216),
+                              ("1024×1536 竖版海报", 1024, 1536)):
+            self.size_preset.addItem(label, (pw, ph))
+        self.size_preset.setToolTip("直接选档位最省事；SDXL 请保持 ≥1024 边长，低于约 0.8MP 会出色块")
+        self.size_preset.currentIndexChanged.connect(self.apply_size_preset)
+        self.w = QSpinBox(); self.w.setRange(256, 2048); self.w.setSingleStep(8); self.w.setValue(1024)
+        self.h = QSpinBox(); self.h.setRange(256, 2048); self.h.setSingleStep(8); self.h.setValue(1024)
+        self.w.valueChanged.connect(self._size_guard)
+        self.h.valueChanged.connect(self._size_guard)
+        self.size_warn = QLabel("")
+        self.size_warn.setStyleSheet("color:#d08a2a;")
+        sh.addWidget(self.size_preset); sh.addWidget(self.w); sh.addWidget(QLabel("×")); sh.addWidget(self.h)
+        sh.addWidget(self.size_warn, 1)
         f.addRow("尺寸", size_row)
         p_row = QWidget()
         ph = QHBoxLayout(p_row)
@@ -430,6 +444,22 @@ class GenWindow(QWidget):
         QMessageBox.information(self, "ComfyUI 连接", ("✅ 连接正常：" if ok else "❌ ") + info)
 
     # ---------- 模型家族切换 ----------
+    def apply_size_preset(self) -> None:
+        data = self.size_preset.currentData()
+        if not data:
+            return
+        w, h = data
+        self.w.setValue(int(w))
+        self.h.setValue(int(h))
+        self._size_guard()
+
+    def _size_guard(self) -> None:
+        """SDXL 低于约 0.8MP 会出色块（PC 侧踩过），这里给个黄字提醒；Anima 阈值低一些。"""
+        mp = self.w.value() * self.h.value() / 1_000_000
+        is_anima = self.model_kind.currentIndex() == 1
+        floor = 0.5 if is_anima else 0.85
+        self.size_warn.setText("" if mp >= floor else f"⚠️ 约 {mp:.2f}MP 偏小（{'Anima' if is_anima else 'SDXL'} 建议 ≥{floor}MP），容易出色块")
+
     def on_kind_changed(self) -> None:
         is_anima = self.model_kind.currentIndex() == 1
         self.anima_clip.setVisible(is_anima)
@@ -443,6 +473,7 @@ class GenWindow(QWidget):
             self.w.setValue(1536); self.h.setValue(648)
             self.steps.setValue(60); self.cfg_s.setValue(5.5)
             self.sampler_box.setCurrentText("dpmpp_2m"); self.sched_box.setCurrentText("karras")
+        self._size_guard()
         self.reload_models()
 
     def _pick_default(self, combo: QComboBox, keyword: str) -> None:

@@ -35,6 +35,49 @@
 - 手机端 UI 预期：竖屏单列——提示词框（带"中文→标签"）+ 预设/底模下拉 + 张数 + 开始生成 +
   进度 + 结果单列瀑布流（点开看大图、可入库）。
 
+#### PC 侧接口现状（2026-10-08 下午 · PC 端会话同步：**已全部做完并实测通过**）
+
+算力全在 PC，手机只发指令、看结果。**封装可直接照抄**
+`docs/handover/tablet_gen_page/pc-client-additions.js`（方法名/字段名以它为准）：
+
+| 接口 | 作用 | 手机端要不要用 |
+|---|---|---|
+| `GET /api/gen/info` | 在线状态、底模列表、`default_model` / `default_arch` / `model_arch`、预设、输出路径、默认负向词、**`limits`（尺寸边界）** | 要（进页先调） |
+| `GET /api/gen/caps` | 能力探测：局部重绘 / 参考图 / 姿势控制能不能用、缺什么（60 秒缓存，`?fresh=1` 强探） | 要（决定哪些入口可点） |
+| `GET /api/gen/models` + `POST /api/gen/models/fetch` | 模型清单（`present` 决定要不要显示"下载"；`configured=false` 表示 PC 没配 ComfyUI 目录）+ 一键补模型（断点续传） | 要（缺模型时给提示/一键补） |
+| `POST /api/gen/run` | 文本出图 | 要（手机端主打） |
+| `POST /api/gen/img2img` | 图生图 / 两张图先融合再重绘 | 可要（从图库选底图的入口轻） |
+| `POST /api/gen/upscale` / `genHires` | 纯超分（1024→4096 实测 9 秒、不出彩噪）/ 潜空间放大（长细节但可能出彩噪） | 要（放大比硬开大分辨率靠谱） |
+| `POST /api/gen/ipadapter` | 参考图（IP-Adapter） | 建议不做（留给平板端） |
+| `POST /api/gen/controlnet` | 姿势 / 线稿 | 建议不做（留给平板端） |
+| `POST /api/gen/inpaint` | 局部重绘（换装），`mask_base64` PNG **白=要重绘** | 建议不做（手机上画蒙版手感差，见下） |
+| `GET /api/gen/results?limit=` | 最近生成的结果 | 要 |
+| `GET /api/gen/file?name=&size=340` | 看/下载结果图 —— **列表必须带 `size`**，否则每张都拉整张 PNG（缓存爆、滚动卡） | 要 |
+| `GET /api/lex/zh?text=` / `POST /api/lex/prompt_fix` | 共享词库：中文→规范标签 / 提示词规范化（回 `{fixed, unknown}`） | 要 |
+
+**事件（同一套 SSE，用 `kind` 区分）**：
+`gen_advanced_started {kind}` / `gen_progress {elapsed,kind}` / `gen_done {files,file_ids,imported,kind}` /
+`gen_failed {error,kind}`；模型下载另一套 `gen_dl_started / gen_dl_progress / gen_dl_done / gen_dl_failed`。
+
+**两条必须遵守的约定（PC 端特别叮嘱）**：
+
+1. **尺寸滑杆照 `/api/gen/info → limits` 画**（`min_side 256` / `max_side 2048` / `step 8` / 甜点区 1024）；
+   **别给 SDXL 提供 512/768 档**——低于约 0.6 MP 出的是色块；PC 会兜底抬到 1024 并在 `genRun` 响应里回
+   `warning`。`genRun` 响应现在带 `width/height/warning/model_arch`，按实际值刷新界面即可。
+2. **参考图 / 姿势控制不要硬编码模型文件名**：省略 `ipadapter_file` / `clip_vision` / `control_net`
+   这些字段，让 PC 按底模架构（SDXL / SD1.5）自动配对。配错的代价不对称——**IP-Adapter 配错不报错、
+   只出噪声图；ControlNet 配错直接报错**。
+
+**其它记下来的坑**（照抄封装时注意）：
+
+- 图融合：`blend_factor` **0.25~0.3** + `denoise` **0.7~0.85** 才成画；0.4/0.45 会出"双重曝光"式重影。
+  只给底图（不融合）时，换装类 `denoise` **0.55~0.65** 最自然。
+- 想要比 2048 更大 → 用放大接口，别硬开大分辨率。
+- 请求字段一律下划线（`file_id` / `mask_base64` / `blend_factor` / `grow_mask`…），底图二选一：
+  `file_id`（库里图片）或 `name`（输出目录里的文件名）。
+- 局部重绘若要接：蒙版交互要求和 PC 的 `MaskCanvas` 一致（用户已熟悉），组件参考
+  `docs/handover/tablet_gen_page/gen-inpaint.js`，说明见同目录 `README.md` 第三节。
+
 #### 手机端生图页 · 设计口径（本会话细化，2026-10-08；**仍不写代码**）
 
 **前提**：生图**只在"已连接 PC"时存在**。离线档（本机 / OTG 图库）功能集仍是"浏览 + 图谱"两项；
@@ -52,20 +95,27 @@
 | 提示词 | 输入框 + 「整理」按钮走 `POST /api/lex/prompt_fix` → `{fixed, unknown}`；`unknown` 用醒目提示列出来，别静默丢掉 |
 | 中→标签 | 词库 `GET /api/lex/zh?text=`（和 PC / 生图端同一份词表，不要自己维护） |
 | 提交 | `POST /api/gen/run`，带 `import:true` 让产物自动进库并回 `file_ids` |
-| 进度 | SSE `gen_started / gen_progress / gen_done / gen_failed`；**进度存在应用状态里，不在页面里** —— 切到浏览/图谱页不该中断，切回来要接着显示 |
-| 结果 | `GET /api/gen/results?limit=` 列表（单列瀑布流）；看图/下载一律用 `GET /api/gen/file?name=`，**不要自己拼输出路径** |
+| 进度 | SSE（按 `kind` 区分，见上表）；**进度存在应用状态里，不在页面里** —— 切到浏览/图谱页不该中断，切回来要接着显示 |
+| 结果 | `GET /api/gen/results?limit=` 列表（单列瀑布流）；看图**必须用 `GET /api/gen/file?name=&size=340`**（不带 `size` 会拉整张 PNG），**不要自己拼输出路径** |
 | 入库联动 | `gen_done` 带回 `file_ids` → 给一个「去图库看」的入口，跳到浏览页并按该图定位 |
 | 分级安全 | 生成结果沿用四档分级的同一套遮挡规则（R18 / R18G 默认模糊，与浏览页一致）；生成成人参数时给提示 |
 | 失败处理 | `gen_failed` 的原因要**留在界面上**（可复制），不要一闪而过 |
 | 参数记忆 | 底模 / 预设 / 尺寸 / 步数 / CFG 记住上次选择（本机 localStorage 即可） |
 
-**待确认（先记着，等 PC 端 / 平板端给结论）**：
+**待确认（2026-10-08 下午按 PC 侧接口现状修订）**：
 
-1. **CORS / SSE**：手机端 WebUI 与平板端一样是"另一个源"，`EventSource` 连 PC 的 SSE 需要 PC 端回
-   `Access-Control-Allow-Origin`（以及 `text/event-stream` + 关缓冲）。这条不落实，进度就只能轮询兜底。
-2. **取消**：接口清单里没有 cancel —— 是不支持取消，还是后续补 `POST /api/gen/cancel`？
-3. **多张的语义**：`count>1` 时 PC 是逐张出、逐张推 `gen_progress`，还是一次性给结果？（决定手机端画一个进度条还是 N 个占位格子。）
-4. **端口发现**：`/api/gen/*` 是和图库 API 同端口，还是 `SERVICE_PORT_PLACEHOLDER` 那个独立端口？（《技术文档 4》5.5 里那个占位常量要落实。）
+> 已解决：**端口**——`pc-client-additions.js` 里 `genThumbUrl` 用 `${this.base}` 拼，
+> 说明 `/api/gen/*` 与图库 API **同一个 base**，不用再猜独立端口。
+
+1. **CORS / SSE**（仍未确认）：手机 WebUI 是"另一个源"，`EventSource` 连 PC 的 SSE 需要 PC 端回
+   `Access-Control-Allow-Origin` + `text/event-stream` 且关缓冲。平板端也要连同一套，**这条建议两端一起确认**，
+   不落实的话进度只能轮询兜底。
+2. **取消**：接口清单里仍然没有 cancel —— 是不支持取消，还是后面补？
+3. **`count>1` 的语义**：PC 是逐张出、逐张推 `gen_progress`，还是一次性给结果？
+   （决定手机端画一个进度条还是 N 个占位格子。）
+4. **手机端要不要做"局部重绘"**：它要画蒙版（PC `MaskCanvas` 的交互），竖屏上手指挡视线、放大细画很别扭。
+   本会话的建议是**手机端不做，留给平板端/PC**，手机只做「文本出图 + 放大 + 结果看/入库」；
+   参考图 / 姿势控制同理。请用户或 PC 端会话定一下边界。
 
 **明确不做**（手机端）：ComfyUI / DLC 的安装与模型下载、工作流编辑、批量任务队列管理、生成历史在手机端落盘。
 
@@ -387,6 +437,20 @@ PC 端的连接 API（图库树 / 缩略图 / 原图 Range / 事件流）落地�
     `text/event-stream` 关缓冲），否则进度只能轮询兜底；② 有没有取消接口；③ `count>1` 是逐张出还是批量出；
     ④ `/api/gen/*` 与图库 API 是否同端口（落实《技术文档 4》里那个占位端口常量）。
   - 原来的"手机端连 PC 也只开两个功能"已改口径：连上 PC 后开三项，审核台仍然只在平板端。
+- 2026-10-08（下午）：**按 PC 端会话同步的接口现状更新生图计划**（接口已全部做完并实测通过，仍**不实现**）。
+  - 补全接口清单：`info`（含 `limits` / `default_model` / `default_arch` / `model_arch`）、`caps`（能力探测）、
+    `models` + `models/fetch`（清单与一键补模型）、`run` / `img2img` / `upscale` / `hires` /
+    `ipadapter` / `controlnet` / `inpaint`、`results`、`file?name=&size=340`、`lex/zh` + `lex/prompt_fix`；
+    事件统一 `gen_advanced_started / gen_progress / gen_done / gen_failed`（都带 `kind`），下载另走 `gen_dl_*`。
+  - 记下 PC 端特别叮嘱的两条：**尺寸照 `limits` 画**（256–2048 / 8 的倍数 / 甜点 1024，**别给 SDXL 512 档**，
+    PC 会兜底抬到 1024 并回 `warning`）；**参考图 / 姿势控制别硬编码模型文件名**（省略字段让 PC 按架构配对，
+    IP-Adapter 配错只出噪声、ControlNet 配错直接报错）。
+  - 另记：结果列表**必须带 `size=340`**；图融合 `blend_factor 0.25~0.3` + `denoise 0.7~0.85` 才成画；
+    只给底图换装 `denoise 0.55~0.65`；要更大用放大接口。封装直接照抄
+    `docs/handover/tablet_gen_page/pc-client-additions.js`，局部重绘组件参考同目录 `gen-inpaint.js` + `README.md`。
+  - **待确认项修订**：端口问题已解决（`/api/gen/*` 与图库 API 同 base）；仍开着的是 SSE 的 CORS、
+    取消接口、`count>1` 的进度语义；**新增**一条给用户/PC 端定边界：手机端要不要做"局部重绘"
+    （要画蒙版，竖屏手感差，本会话建议留给平板端，手机只做文本出图 + 放大 + 结果看/入库）。
   - **下一步（从这里继续）**：① 真机（S24 Ultra / OTG）装 APK，验证「扫描 → 浏览 → 图谱」与
     大图；② 真机跑通后把壳回赠平板端（同一份 `nativeSource` 契约）；③ M2 连 PC —— 等 PC 端
     连接 API 落地后照搬平板端调用层。

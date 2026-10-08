@@ -91,6 +91,10 @@ class ComfyClient:
     def samplers(self) -> list[str]:
         return self._enum("KSampler", "sampler_name")
 
+    def upscale_models(self) -> list[str]:
+        """ESRGAN 等超分模型（models/upscale_models）。"""
+        return self._enum("UpscaleModelLoader", "model_name")
+
     def has_node(self, node: str) -> bool:
         """ComfyUI 里有没有这个节点（能力探测用：能连上就用，缺啥就提示）。"""
         try:
@@ -319,6 +323,71 @@ class ComfyClient:
             "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["3", 2]}},
             "11": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["10", 0]}},
         }
+
+    # ---------- 放大（干净超分 / 潜空间放大） ----------
+    @staticmethod
+    def upscale_workflow(image_name: str, upscale_model: str,
+                         prefix: str = "imtag_upscale") -> dict:
+        """纯 ESRGAN 超分：干净、快、无彩噪（推荐默认走这条）。"""
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "UpscaleModelLoader", "inputs": {"model_name": upscale_model}},
+            "3": {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["2", 0], "image": ["1", 0]}},
+            "4": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["3", 0]}},
+        }
+
+    @staticmethod
+    def hires_workflow(ckpt: str, image_name: str, positive: str, negative: str,
+                       scale: float = 1.5, denoise: float = 0.3, seed: int = 0,
+                       steps: int = 20, cfg: float = 5.0,
+                       sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                       prefix: str = "imtag_hires") -> dict:
+        """潜空间放大 + 重采样。**可能出彩噪**（SDXL 二次元模型头发边缘容易出彩边），
+        只在真的需要额外细节时用；默认建议用 upscale_workflow。"""
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "3": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["2", 2]}},
+            "4": {"class_type": "LatentUpscaleBy", "inputs": {
+                "samples": ["3", 0], "upscale_method": "bislerp", "scale_by": float(scale)}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
+            "7": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": float(denoise),
+                "model": ["2", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["4", 0]}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["2", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["8", 0]}},
+        }
+
+    # ---------- 图生图 / 两图融合 ----------
+    @staticmethod
+    def img2img_workflow(ckpt: str, image_name: str, positive: str, negative: str,
+                         steps: int, cfg: float, seed: int, denoise: float = 0.6,
+                         blend_name: str = "", blend_factor: float = 0.5, blend_mode: str = "normal",
+                         sampler: str = "dpmpp_2m", scheduler: str = "karras",
+                         prefix: str = "imtag_i2i") -> dict:
+        """图生图；给了 blend_name 就先和另一张图按比例融合再重绘（换装/融合两种玩法）。"""
+        g = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "3": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["2", 1]}},
+            "4": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 1]}},
+            "9": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["2", 2]}},
+            "10": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": float(denoise),
+                "model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0], "latent_image": ["9", 0]}},
+            "11": {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0], "vae": ["2", 2]}},
+            "12": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["11", 0]}},
+        }
+        if blend_name:
+            g["5"] = {"class_type": "LoadImage", "inputs": {"image": blend_name}}
+            g["6"] = {"class_type": "ImageBlend", "inputs": {
+                "image1": ["1", 0], "image2": ["5", 0],
+                "blend_factor": float(blend_factor), "blend_mode": blend_mode}}
+            g["9"]["inputs"]["pixels"] = ["6", 0]
+        return g
 
     # ---------- 放大（高分辨率） ----------
     @staticmethod

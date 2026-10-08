@@ -11,6 +11,8 @@
 | **自动接入** | `autoconnect.py` + 界面「ComfyUI 接入」栏 | 自动找安装目录（常见盘符/整合包/用户目录）+ 探测 8188/8189/8000 上是否已在跑；一键后台启动 |
 | **模型切换** | 界面「模型类型」+「底模」下拉 | SDXL（checkpoints）/ Anima（diffusion_models + Qwen 编码器 + Qwen VAE）随时切换，参数自动套预设 |
 | **更多功能面板** | `extras.py` | 预设下拉、批量队列（可取消 + 断点续跑）、**可选**自动入库/自动打标、局部重绘换装、参考图（IP-Adapter）、姿势（ControlNet）、模型下载/校验 |
+| **放大 / 图生图 / 融合** | `app/comfy_client.py` | `upscale_workflow`（ESRGAN 干净超分）/ `hires_workflow`（潜空间放大，标注彩噪风险）/ `img2img_workflow`（含两图融合） |
+| **尺寸按架构守规矩** | `ui.py` | 尺寸预设档 + 256–2048/步进 8 + SDXL 低于 ~0.85MP 黄字提醒（避免出色块）；默认底模已是 SDXL |
 | **能力探测（能连上就用，缺啥就提示）** | `comfy.py::capability_report()` | 依赖自定义节点/模型的功能会先探测；缺失时弹窗列出**具体缺哪一项 + 怎么补**，并给「用完整模式重启 ComfyUI」按钮 |
 | **中文 → danbooru 提示词** | `prompt_helper/` | 本机 Ollama（离线）+ **23.3 万条 danbooru 词表校验**：能匹配就必须用词表里的规范写法，匹配不到才保留原词并单独回报 |
 | **一次给出正向 + 负向** | `generate_both()` | 用户在原生窗口点一下「中文→正+负标签」就同时填好两个框，不用切模式 |

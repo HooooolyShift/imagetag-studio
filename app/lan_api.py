@@ -49,6 +49,8 @@
   POST /api/gen/hires                   → **高分辨率修复**：{file_id|name, prompt, scale?=1.5, denoise?}
   POST /api/gen/upscale                 → **纯放大（超分模型，无彩噪）**：{file_id|name, scale?=4}
   POST /api/gen/img2img                 → **图生图 / 图融合**：{file_id|name, prompt, denoise?, blend_file_id?}
+  GET  /api/gen/status                  → 生图相关任务状态 {running, fetching}
+  POST /api/gen/interrupt               → **取消当前生成/重绘/放大**（调 ComfyUI /interrupt）
   GET  /api/gen/results?limit=          → 最近生成的文件（输出目录扫描）
   GET  /api/gen/file?name=              → 下载/预览生成结果
   GET  /api/lex/zh?text=                → 中文→规范英文标签（共享词库，平板提示词用）
@@ -317,6 +319,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._gen_caps(q)
         elif path == "/api/gen/models":
             self._gen_models()
+        elif path == "/api/gen/status":
+            self._json({"ok": True,
+                        "running": bool(getattr(self.api, "_gen_running", False)),
+                        "fetching": bool(getattr(self.api, "_gen_fetching", False))})
         elif path == "/api/gen/results":
             self._gen_results(q)
         elif path == "/api/gen/file":
@@ -338,6 +344,24 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "internal", "detail": str(exc)}, 500)
             except Exception:
                 pass
+
+    def do_OPTIONS(self) -> None:               # noqa: N802
+        """CORS 预检。
+
+        移动端在 WebView 里用 `fetch(..., {method:'POST', headers:{'Content-Type':'application/json'}})`
+        时，浏览器会先发一个 OPTIONS 预检（`application/json` 不在简单请求白名单里）。
+        `BaseHTTPRequestHandler` 默认对 OPTIONS 回 501，表现就是"请求根本发不出去"。
+        Android WebView 通常开了 allowUniversalAccessFromFileURLs 就绕过 CORS，
+        但浏览器调试 / 别的壳子里没有这层豁免，所以这里统一放行。
+        """
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, X-Imtag-Code, X-Imtag-Device")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _route_post(self) -> None:
         q = self._query()
@@ -421,6 +445,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._gen_upscale(body)
         elif path == "/api/gen/img2img":
             self._gen_img2img(body)
+        elif path == "/api/gen/interrupt":
+            self._gen_interrupt(body)
         elif path == "/api/gen/models/fetch":
             self._gen_fetch_models(body)
         elif path == "/api/lex/prompt_fix":

@@ -48,7 +48,8 @@
     { "key": "ollama_url", "type": "string", "required": false, "default": "http://127.0.0.1:11434", "label": "Ollama 地址" },
     { "key": "ollama_model", "type": "string", "required": false, "default": "", "label": "提示词模型",
       "hint": "留空 = 自动用本机已有的最合适模型（优先 qwen3-8b；不会自动下载新模型）" },
-    { "key": "default_model", "type": "string", "required": false, "default": "WAI-illustrious-SDXL-v17.safetensors", "label": "默认生图底模" },
+    { "key": "default_model", "type": "string", "required": false, "default": "WAI-illustrious-SDXL-v17.safetensors", "label": "默认生图底模",
+      "hint": "默认用 SDXL（WAI-illustrious-SDXL-v17 或 NoobAI-XL-v1.1）；用户 2026-10-08 明确说 SD1.5 太老，不再作为默认" },
     { "key": "auto_start_prompt_service", "type": "bool", "required": false, "default": true, "label": "打开生图界面时自动启动提示词服务" }
   ],
   "capabilities": [

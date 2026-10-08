@@ -78,12 +78,15 @@ python scripts\fetch_anima.py          # 一次性下 Anima 三件套（模型 +
 ### 2. 出图参数（都已按实测固化，默认不用动）
 | | SDXL | Anima |
 |---|---|---|
-| 尺寸 | 1536×648（开屏比例）或 1024×1024 | 768×768 起 |
+| 尺寸 | **≥1024 边长**（预设：1024×1024 / 1216×832 / 1536×648 开屏比例 / 832×1216 竖图） | 768×768 起 |
 | 步数 | 60 | 30 |
 | CFG | 5.5 | 4.5 |
 | 采样 | dpmpp_2m + karras | euler + simple |
 
 切换「模型类型」时这些参数会自动套好。**二段放大和锐化都不用开**（会把平涂模型弄出重影/彩噪）。
+
+> **尺寸别往小调**：尺寸框范围是 256–2048、步进 8，但 **SDXL 低于约 0.8MP（比如 512×512、768×768）出来的就是色块**——
+> 界面会在尺寸旁边给黄字提醒，选档位（1024 起）最稳。Anima 另算（2B 模型，768 起即可）。
 
 ### 3. 输出路径
 「输出路径」就是用户自己指定的存图目录（DLC 配置项 `output_dir`）。生成完的图会落在那里，
@@ -127,6 +130,12 @@ python scripts\fetch_anima.py          # 一次性下 Anima 三件套（模型 +
 | **参考图（IP-Adapter）** | 选参考图 + 权重（0.8 左右）→ 生成风格/角色接近的图；面板上还能选"IP-Adapter 模型 / 图像编码器"两件套 | `ComfyUI_IPAdapter_plus` 节点 + **配对的两件套**：`ip-adapter-plus_sdxl_vit-h.safetensors`（models/ipadapter）+ `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors`（models/clip_vision） |
 | **姿势 / 线稿（ControlNet）** | 选姿势图 + 强度 + 选 ControlNet 模型（会自动优先选 union/SDXL） | `comfyui_controlnet_aux` 预处理节点 + ControlNet 模型（本项目已有 `controlnet++_union_sdxl_promax`） |
 | **模型下载 / 校验** | 下拉里是 `models.json` 的推荐模型，点「下载 / 校验」会后台走断点续传下载到对应目录，完成后自动刷新模型列表 | 无 |
+| **放大** | 选图 + 倍率 + 方式：**干净超分（ESRGAN，快、无彩噪，默认）** 或 潜空间放大（细节更多但**可能出彩边**，标了提醒）。实测 1024→4096 约 4 秒 | 超分需 `models/upscale_models` 里有 ESRGAN 模型（推荐 `RealESRGAN_x4plus_anime_6B`） |
+| **图生图 / 融合** | 源图（留空=最近生成的那张）+ 可选"再融合一张图"+ 融合比例 + 重绘强度（denoise）→ 执行。**换装**用 denoise 0.6~0.75；**融合**用 0.4~0.6 更保形 | 只用 ComfyUI 原生节点 |
+
+> 参考图 / 姿势用的模型（IP-Adapter、图像编码器、ControlNet）**不是写死的**：程序按当前底模架构自动配对
+> （SDXL → `ip-adapter-plus_sdxl_vit-h` + ViT-H 编码器 + `controlnet++ union SDXL`；SD1.5 → `ip-adapter_sd15_plus` + `control_v11p_sd15_openpose`），
+> 也可以在下拉里手动换。**配错不会报错但会画出噪声图**，所以别乱改——改了记得重选底模让程序重新配对。
 
 > **如果 IP-Adapter / 姿势显示 ⚠️**：多半是 ComfyUI 以「**干净模式**」（启动参数带 `--disable-all-custom-nodes`）跑着的，
 > 自定义节点全被禁用。点面板上的 **「用完整模式重启 ComfyUI」**（会弹确认框）即可；

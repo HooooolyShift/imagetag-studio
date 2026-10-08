@@ -49,6 +49,7 @@ class MorePanel(QGroupBox):
         self._queue_running = False
         self._cancel = False
         self._worker = None
+        self._current_is_queue = False
         lay = QVBoxLayout(self)
 
         # ---------- 能力状态 ----------
@@ -214,6 +215,52 @@ class MorePanel(QGroupBox):
         dh.addWidget(self.dl_model, 1); dh.addWidget(b_dl)
         form.addRow("模型下载", dl_row)
 
+        # ---------- 放大 ----------
+        up_row = QWidget()
+        uh = QHBoxLayout(up_row)
+        uh.setContentsMargins(0, 0, 0, 0)
+        self.upscale_src = QLineEdit()
+        self.upscale_src.setPlaceholderText("要放大的图（留空=用最近生成的那张）")
+        b_up_pick = QPushButton("选择…")
+        b_up_pick.clicked.connect(lambda: self._pick(self.upscale_src))
+        self.upscale_mode = QComboBox()
+        self.upscale_mode.addItem("干净超分（ESRGAN，快、无彩噪）", "esrgan")
+        self.upscale_mode.addItem("潜空间放大（可能出彩边，谨慎）", "hires")
+        self.upscale_scale = QDoubleSpinBox(); self.upscale_scale.setRange(1.2, 4.0)
+        self.upscale_scale.setSingleStep(0.1); self.upscale_scale.setValue(1.5)
+        self.upscale_model_box = QComboBox()
+        b_up = QPushButton("执行放大")
+        b_up.clicked.connect(self.do_upscale)
+        uh.addWidget(self.upscale_src, 1); uh.addWidget(b_up_pick)
+        uh.addWidget(self.upscale_mode); uh.addWidget(QLabel("倍率")); uh.addWidget(self.upscale_scale)
+        uh.addWidget(self.upscale_model_box); uh.addWidget(b_up)
+        form.addRow("放大", up_row)
+
+        # ---------- 图生图 / 融合 ----------
+        i2_row = QWidget()
+        i2h = QHBoxLayout(i2_row)
+        i2h.setContentsMargins(0, 0, 0, 0)
+        self.i2i_src = QLineEdit()
+        self.i2i_src.setPlaceholderText("源图（留空=用最近生成的那张）")
+        b_i2_src = QPushButton("选择…")
+        b_i2_src.clicked.connect(lambda: self._pick(self.i2i_src))
+        self.i2i_blend = QLineEdit()
+        self.i2i_blend.setPlaceholderText("（可选）再融合一张图")
+        b_i2_blend = QPushButton("选择…")
+        b_i2_blend.clicked.connect(lambda: self._pick(self.i2i_blend))
+        self.i2i_factor = QDoubleSpinBox(); self.i2i_factor.setRange(0.0, 1.0)
+        self.i2i_factor.setSingleStep(0.05); self.i2i_factor.setValue(0.5)
+        self.i2i_denoise = QDoubleSpinBox(); self.i2i_denoise.setRange(0.1, 1.0)
+        self.i2i_denoise.setSingleStep(0.05); self.i2i_denoise.setValue(0.6)
+        b_i2 = QPushButton("执行")
+        b_i2.clicked.connect(self.do_img2img)
+        i2h.addWidget(self.i2i_src, 1); i2h.addWidget(b_i2_src)
+        i2h.addWidget(self.i2i_blend, 1); i2h.addWidget(b_i2_blend)
+        i2h.addWidget(QLabel("融合")); i2h.addWidget(self.i2i_factor)
+        i2h.addWidget(QLabel("重绘")); i2h.addWidget(self.i2i_denoise)
+        i2h.addWidget(b_i2)
+        form.addRow("图生图/融合", i2_row)
+
         self._load_models_json()
         QTimer.singleShot(800, self.refresh_caps)
 
@@ -243,6 +290,46 @@ class MorePanel(QGroupBox):
             star = "★ " if m.get("recommended") else ""
             self.dl_model.addItem(f"{star}{m.get('name', m.get('id'))}（{size:.1f} GB）", m.get("id"))
 
+    def current_arch(self) -> str:
+        """按底模名字判断架构（SDXL 名字里基本都有 xl）；用来给 IP-Adapter / ControlNet 配对的模型。"""
+        name = (self.win.model.currentText() or "").lower()
+        return "sdxl" if ("xl" in name or not name) else "sd15"
+
+    def _pick_paired(self) -> None:
+        """按当前底模架构挑配对的 IP-Adapter / 图像编码器 / ControlNet（不硬编码文件名）。"""
+        arch = self.current_arch()
+        # IP-Adapter：SDXL → plus_sdxl / vit-h；SD1.5 → sd15
+        def ip_score(t: str) -> int:
+            t = t.lower()
+            if arch == "sdxl":
+                s = 3 if "plus_sdxl" in t else (2 if "vit-h" in t else (1 if "sdxl" in t else -1))
+            else:
+                s = 0 if "faceid" in t else (3 if "sd15_plus" in t else (2 if "ip-adapter_sd15" in t else -1))
+            return s
+        best = max(range(self.ip_model.count()), key=lambda i: ip_score(self.ip_model.itemText(i)), default=-1)
+        if best >= 0 and ip_score(self.ip_model.itemText(best)) > 0:
+            self.ip_model.setCurrentIndex(best)
+        for i in range(self.ip_clip.count()):
+            if "vit-h" in self.ip_clip.itemText(i).lower():
+                self.ip_clip.setCurrentIndex(i)
+                break
+        # ControlNet：SDXL → sdxl/union；SD1.5 → sd15
+        def cn_score(t: str) -> int:
+            t = t.lower()
+            if any(bad in t for bad in ("ip2p", "shuffle", "tile", "inpaint")):
+                return -1
+            want_arch = ("sdxl" in t or "union" in t) if arch == "sdxl" else ("sd15" in t and "sdxl" not in t)
+            if not want_arch:
+                return -1
+            if "openpose" in t or "union" in t:
+                return 3
+            if any(k in t for k in ("depth", "canny", "lineart", "softedge", "normalbae")):
+                return 2
+            return 1
+        best_cn = max(range(self.pose_cn.count()), key=lambda i: cn_score(self.pose_cn.itemText(i)), default=-1)
+        if best_cn >= 0 and cn_score(self.pose_cn.itemText(best_cn)) > 0:
+            self.pose_cn.setCurrentIndex(best_cn)
+
     # ---------- 能力探测 ----------
     def refresh_caps(self) -> None:
         try:
@@ -263,6 +350,18 @@ class MorePanel(QGroupBox):
             for i in range(self.pose_cn.count()):
                 if "union" in self.pose_cn.itemText(i).lower() or "sdxl" in self.pose_cn.itemText(i).lower():
                     self.pose_cn.setCurrentIndex(i)
+                    break
+        except Exception:
+            pass
+        self._pick_paired()
+        # 超分模型
+        try:
+            self.upscale_model_box.clear()
+            for name in self.win.client.upscale_models():
+                self.upscale_model_box.addItem(name)
+            for i in range(self.upscale_model_box.count()):
+                if "anime" in self.upscale_model_box.itemText(i).lower():
+                    self.upscale_model_box.setCurrentIndex(i)
                     break
         except Exception:
             pass
@@ -412,9 +511,11 @@ class MorePanel(QGroupBox):
         job = self.jobs[0]
         self.win.status.setText(f"队列：seed {job['seed']} 生成中…")
         wf = self.win._build_workflow(job["seed"])
+        self._current_is_queue = True
         self._worker = _Worker(self._run_one_job, wf, job["seed"])
-        self._worker.done.connect(self._job_done)
-        self._worker.fail.connect(self._job_fail)
+        self._worker.is_queue = True
+        self._worker.done.connect(lambda p, w=self._worker: self._job_done(p, w))
+        self._worker.fail.connect(lambda m, w=self._worker: self._job_fail(m, w))
         self._worker.start()
 
     def _run_one_job(self, wf: dict, seed: int) -> Path:
@@ -424,20 +525,27 @@ class MorePanel(QGroupBox):
         files = client.wait(pid, out, f"gen_s{seed}", timeout=1800)
         return files[0] if files else out / f"gen_s{seed}.png"
 
-    def _job_done(self, path) -> None:
-        self.win._saved.append(Path(path))
-        self.win._add_thumb(Path(path))
-        self.jobs.pop(0)
-        if self.queue_list.count():
-            self.queue_list.takeItem(0)
-        self._after_image(Path(path))
-        if self._cancel:
-            self._finish_queue()
-            return
-        QTimer.singleShot(50, self._run_next)
+    def _job_done(self, path, worker=None) -> None:
+        if path:
+            self.win._saved.append(Path(path))
+            self.win._add_thumb(Path(path))
+            self._after_image(Path(path))
+        if bool(getattr(worker, "is_queue", False)):
+            # 只有队列任务才动队列；放大/图生图/重绘这些"临时任务"共用同一个完成回调
+            if self.jobs:
+                self.jobs.pop(0)
+            if self.queue_list.count():
+                self.queue_list.takeItem(0)
+            if self._cancel:
+                self._finish_queue()
+                return
+            QTimer.singleShot(50, self._run_next)
+        else:
+            self.win.status.setText(f"完成 → {Path(path).name}" if path else "完成（没有产物）")
 
-    def _job_fail(self, message: str) -> None:
-        self._finish_queue()
+    def _job_fail(self, message: str, worker=None) -> None:
+        if bool(getattr(worker, "is_queue", False)):
+            self._finish_queue()
         QMessageBox.warning(self, "队列", f"这一张失败：{message}")
 
     def _finish_queue(self) -> None:
@@ -515,8 +623,86 @@ class MorePanel(QGroupBox):
             return files[0] if files else None
 
         self._worker = _Worker(job)
-        self._worker.done.connect(self._job_done)
-        self._worker.fail.connect(self._job_fail)
+        self._worker.is_queue = False
+        self._worker.done.connect(lambda p, w=self._worker: self._job_done(p, w))
+        self._worker.fail.connect(lambda m, w=self._worker: self._job_fail(m, w))
+        self._worker.start()
+
+    # ---------- 放大 / 图生图 ----------
+    def do_upscale(self) -> None:
+        src = self.upscale_src.text().strip() or self._last_image()
+        if not src or not Path(src).exists():
+            QMessageBox.information(self, "放大", "先选一张要放大的图（或先生成一张）。")
+            return
+        mode = self.upscale_mode.currentData()
+        ckpt = self.win.model.currentText()
+        if mode == "hires" and not ckpt:
+            QMessageBox.information(self, "放大", "潜空间放大要用当前 SDXL 底模，请先在「底模」里选一个。")
+            return
+        out_dir = Path(self.win.out_dir.text().strip() or (self.win.host.project_root() / "outputs"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        model = self.upscale_model_box.currentText()
+        scale = self.upscale_scale.value()
+        pos, neg = self.win.pos.toPlainText().strip(), self.win.neg.toPlainText().strip()
+        steps, cfg = self.win.steps.value(), self.win.cfg_s.value()
+        self.win.status.setText(f"放大中（{'干净超分' if mode == 'esrgan' else '潜空间放大'}）…")
+
+        def job():
+            c = self.win.client
+            name = c.upload_image(src)
+            if mode == "esrgan":
+                if not model:
+                    raise RuntimeError("没有可用的超分模型（models/upscale_models 为空）")
+                wf = ComfyClient.upscale_workflow(name, model)
+                prefix = f"upscale_{int(time.time())}"
+            else:
+                wf = ComfyClient.hires_workflow(ckpt, name, pos, neg, scale=scale,
+                                                denoise=0.3, seed=random.randint(1, 2**31 - 1),
+                                                steps=max(12, steps // 3), cfg=cfg)
+                prefix = f"hires_{int(time.time())}"
+            pid = c.submit(wf)
+            files = c.wait(pid, out_dir, prefix, timeout=1800)
+            return files[0] if files else None
+
+        self._worker = _Worker(job)
+        self._worker.is_queue = False
+        self._worker.done.connect(lambda p, w=self._worker: self._job_done(p, w))
+        self._worker.fail.connect(lambda m, w=self._worker: self._job_fail(m, w))
+        self._worker.start()
+
+    def do_img2img(self) -> None:
+        src = self.i2i_src.text().strip() or self._last_image()
+        if not src or not Path(src).exists():
+            QMessageBox.information(self, "图生图", "先选源图（或先生成一张）。")
+            return
+        if self.win.model_kind.currentIndex() != 0 or not self.win.model.currentText():
+            QMessageBox.information(self, "图生图", "图生图目前用 SDXL 底模，请把「模型类型」切到 SDXL 并选底模。")
+            return
+        out_dir = Path(self.win.out_dir.text().strip() or (self.win.host.project_root() / "outputs"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ckpt = self.win.model.currentText()
+        pos, neg = self.win.pos.toPlainText().strip(), self.win.neg.toPlainText().strip()
+        blend = self.i2i_blend.text().strip()
+        factor, denoise = self.i2i_factor.value(), self.i2i_denoise.value()
+        steps, cfg = self.win.steps.value(), self.win.cfg_s.value()
+        seed = random.randint(1, 2 ** 31 - 1)
+        self.win.status.setText("图生图：上传图片…")
+
+        def job():
+            c = self.win.client
+            name = c.upload_image(src)
+            blend_name = c.upload_image(blend) if blend and Path(blend).exists() else ""
+            wf = ComfyClient.img2img_workflow(ckpt, name, pos, neg, steps, cfg, seed,
+                                              denoise=denoise, blend_name=blend_name,
+                                              blend_factor=factor)
+            pid = c.submit(wf)
+            files = c.wait(pid, out_dir, f"i2i_s{seed}", timeout=1800)
+            return files[0] if files else None
+
+        self._worker = _Worker(job)
+        self._worker.is_queue = False
+        self._worker.done.connect(lambda p, w=self._worker: self._job_done(p, w))
+        self._worker.fail.connect(lambda m, w=self._worker: self._job_fail(m, w))
         self._worker.start()
 
     def do_reference(self) -> None:
@@ -573,8 +759,9 @@ class MorePanel(QGroupBox):
             return files[0] if files else None
 
         self._worker = _Worker(job)
-        self._worker.done.connect(self._job_done)
-        self._worker.fail.connect(self._job_fail)
+        self._worker.is_queue = False
+        self._worker.done.connect(lambda p, w=self._worker: self._job_done(p, w))
+        self._worker.fail.connect(lambda m, w=self._worker: self._job_fail(m, w))
         self._worker.start()
 
     # ---------- 模型下载 ----------
