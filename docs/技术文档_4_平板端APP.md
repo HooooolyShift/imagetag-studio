@@ -569,6 +569,41 @@ PC 端图谱在 `app/ui/taxonomy.py`。移动端**节点数可以少**（只画�
 
 ## 八、阶段小结与下一步（2026-10-08 · 推送前记录）
 
+### 2026-10-08 晚：MuMu + CDP 精确验收（框选/精修真跑通）+ 两条纪律
+
+**纪律（重要，写给自己）**
+
+1. **截图一律只落盘、用路径引用，绝不贴进对话**。今天就是因为把 30 张整屏 PNG 贴进对话，
+   本线程下一轮请求体涨到 55.76 MiB → 服务端 413，线程每一轮都失败、自己再也发不出消息；
+   PC 端主程序会话按流程裁剪（→ 9.92 MiB）才恢复。**自己盯 20 MiB 这条线**，逼近就改路径引用。
+2. 不再用 `view_image` 看整屏截图；要看结果就用脚本断言 + 数字，需要人看时给对方文件路径。
+
+**MuMu 上的精确验收方式**：给 APK 开了 `WebView.setWebContentsDebuggingEnabled(true)`（QA 用），
+再用 `adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>` 把页面调试端口映射出来，
+然后用 `tools/mumu-cdp.py`（websocket-client 直连，**不用 Playwright** —— Android WebView 只有页面级端点，
+Playwright 的 `connect_over_cdp` 会因"不支持 context 管理"直接失败）驱动：
+`Runtime.evaluate` 读状态/点按钮 + `Input.dispatchMouseEvent` 发真鼠标事件。
+踩到的两个坑都写进脚本注释了：① 旧 pid 的 forward 映射会让 WebSocket 连上却永不响应（要先 `--remove`）；
+② 页面弹原生对话框时 JS 线程被阻塞，最后那次 `pointerup` 的响应永远不会来（改成"只发不等"）。
+
+**实测结果**
+
+| 项 | 结果 |
+|---|---|
+| ABI | MuMu 自报 `SM-S9280 / Android 15 / x86_64`，`abilist64 = x86_64,arm64-v8a`（含 arm64 转译）；APK 包内无 `.so`，装进即跑 ✓ |
+| 页面状态 | APK 内 `files=134 / conn=online / cssW=1138`（1138 CSS px → 平板布局）✓ |
+| **框选区域** | CDP 真鼠标拖框（1920×1080 的图，拖在 35%/30% 处、大小 25%/30%）→ 原生对话框输入 `anime_style` → **PC 里存下 `x0.322 y0.300 w0.296 h0.300`** ✓、界面画出框 ✓（y/h 正好 0.30，x/w 略宽是因为图片比画布宽、可见区映射使然）|
+| **区域精修** | 点按钮 → PC 跑完（`/api/gen/status` 回 `running:false`）✓ |
+| 参考图 / 姿势 | `POST /api/gen/ipadapter {ref_file_id:1, weight:0.8}` → `ipadapter_20261008-175620.png`；`POST /api/gen/controlnet {pose_file_id:1, strength:0.8}` → `controlnet_20261008-180030.png` ✓（各约 5 分钟，1024² SDXL）|
+| 人物页 | 对 3 张跑 `tag/run kind:"face"` → `/api/persons` 仍是 0（这批素材里没检出人脸）→ **只验了空状态**；PC 有人物时的渲染路径未验 |
+| 图谱间距 | 复测：**15 节点 / 重叠 0 / 最小间隙 12px**（12px 就是约束下限）；之前 219 节点那次同样是 0 重叠 / 12px / 范围 2541×2461（比初版缩小 16%）。截图 `shots/graph-spacing.png`（只给路径）|
+
+**顺带修的两个 APK 体验问题**（都是 MuMu 上暴露的）
+
+1. JS 弹窗原来用 WebView 默认框，标题是"网址为 file:// 的网页显示"，平板上很难看 →
+   在 `MainActivity` 里实现 `onJsAlert/onJsConfirm/onJsPrompt`，统一成标题为「图片标签工坊」的原生对话框；
+2. 对话框里的输入框默认不聚焦 → 用户（和自动化）都得多点一下才能输入 → 加 `requestFocus()` + `selectAllOnFocus`。
+
 ### 2026-10-08 傍晚：MuMu 模拟器验收 + 相似图 / 写回文件名 / 远程打标 实测补齐
 
 **测试环境换成用户指定的 MuMu 模拟器**（`D:\Program Files\Netease\MuMu Player 12`，adb `127.0.0.1:7555`）：
