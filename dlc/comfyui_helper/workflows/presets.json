@@ -1,0 +1,32 @@
+{
+  "_comment": "本项目的固化参数预设（2026-10-07 实测结论）。宿主原生界面可直接套用这些默认值。",
+  "sdxl_splash_1536x648": {
+    "loader": "CheckpointLoaderSimple",
+    "model": "WAI-illustrious-SDXL-v17.safetensors 或 NoobAI-XL-v1.1.safetensors",
+    "width": 1536,
+    "height": 648,
+    "steps": 60,
+    "cfg": 5.5,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
+    "negative": "lowres, worst quality, low quality, bad anatomy, bad hands, extra digits, fewer digits, extra limbs, extra arms, extra legs, deformed, watermark, signature, username, artist name, text, logo, jpeg artifacts, cropped, out of frame, mature female, tall, huge breasts, realistic, 3d, cgi, nsfw, explicit, nude, nipples, pussy, sex, cum, censored",
+    "quality_prefix": "masterpiece, best quality, very aesthetic, absurdres, newest, anime coloring, flat color, cel shading, ",
+    "notes": "二段放大与锐化都关掉（会重影/彩噪）；头发平铺写 twintails, drill hair；网袜画不好改用 black thighhighs；兔女郎要 strapless + high-cut leotard + rabbit tail。"
+  },
+  "sdxl_duo_antibloom": {
+    "base": "sdxl_splash_1536x648",
+    "positive_add": "2girls, (hatsune miku:1.1), (kasane teto:1.1), aqua twintails, red drill twintails, ahoge, bunny girl, black leotard, (high-cut leotard:1.2), strapless, rabbit ears, rabbit tail, black thighhighs, standing side by side, holding hands, interlocked fingers, looking at viewer, plain white studio backdrop",
+    "negative_add": "3girls, 4girls, multiple girls, extra girls, extra person, clone, duplicated, twins, crowd, photo, framed picture, portrait, mirror, reflection, shoulder straps, halterneck, skirt",
+    "notes": "双人题材防克隆：背景别放照片墙（模型会把照片也画成同一个角色）；两个角色必须分别锚定。实测 WAI 3/3 干净、NoobAI 容易多画一个人。"
+  },
+  "anima_default": {
+    "loader": "UNETLoader + ModelSamplingAuraFlow(shift=3.0) + CLIPLoader(qwen_3_06b_base, type=stable_diffusion) + VAELoader(qwen_image_vae)",
+    "width": 768,
+    "height": 768,
+    "steps": 30,
+    "cfg": 4.5,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "notes": "实测 768x768 / 24 步 / CFG 4.5 一张 57.7 秒（RTX 4070 Laptop 8G）。turbo 变体用 CFG 1、8-12 步。"
+  }
+}

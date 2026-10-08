@@ -1,0 +1,13 @@
+{
+  "_comment": "Anima（CircleStone Labs x Comfy Org，2B，二次元专用）API 工作流模板。占位符 {{...}} 由宿主替换。官方建议：常规版 30-50 步 / CFG 4-5；turbo 版 CFG 1 / 8-12 步。注意 CLIPLoader 的 type 必须是 stable_diffusion（不是 qwen_image）。",
+  "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{unet}}", "weight_dtype": "default" } },
+  "2": { "class_type": "ModelSamplingAuraFlow", "inputs": { "shift": 3.0, "model": ["1", 0] } },
+  "3": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{clip}}", "type": "stable_diffusion", "device": "default" } },
+  "4": { "class_type": "VAELoader", "inputs": { "vae_name": "{{vae}}" } },
+  "5": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{positive}}", "clip": ["3", 0] } },
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{negative}}", "clip": ["3", 0] } },
+  "7": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": "{{batch}}" } },
+  "8": { "class_type": "KSampler", "inputs": { "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "{{sampler}}", "scheduler": "{{scheduler}}", "denoise": 1.0, "model": ["2", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["7", 0] } },
+  "9": { "class_type": "VAEDecode", "inputs": { "samples": ["8", 0], "vae": ["4", 0] } },
+  "10": { "class_type": "SaveImage", "inputs": { "filename_prefix": "{{prefix}}", "images": ["9", 0] } }
+}

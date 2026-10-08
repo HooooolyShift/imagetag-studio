@@ -1,0 +1,77 @@
+{
+  "_comment": "DLC 用到的模型清单。DLC 包内不打包模型（太大），安装/运行时按需下载（scripts/fetch_model.py，断点续传）。",
+  "requirements": {
+    "comfyui": "需要本机已有 ComfyUI（可由宿主引导安装或指定路径）；DLC 只通过 HTTP API 调用它",
+    "ollama": "提示词助手需要本机 Ollama（离线）+ qwen3-8b 模型"
+  },
+  "models": [
+    {
+      "id": "noobai-xl-v1.1",
+      "name": "NoobAI-XL v1.1（danbooru/e621 语料，角色还原最好）",
+      "file": "NoobAI-XL-v1.1.safetensors",
+      "target": "models/checkpoints",
+      "size_bytes": 7105349958,
+      "arch": "SDXL",
+      "required": false,
+      "recommended": true
+    },
+    {
+      "id": "wai-illustrious-v17",
+      "name": "WAI-illustrious SDXL v17（线条干净、成图精致）",
+      "file": "WAI-illustrious-SDXL-v17.safetensors",
+      "target": "models/checkpoints",
+      "size_bytes": 6938040682,
+      "sha256": "F116B0C78FF441467B0CDC8F1936E1ED18EA31E9997C7B132B1B8DB533F0BD04",
+      "arch": "SDXL",
+      "required": false,
+      "recommended": true,
+      "download_url": "https://civitai.com/api/download/models/2883731?fileId=2763986"
+    },
+    {
+      "id": "animagine-xl-4.0",
+      "name": "Animagine XL 4.0（老牌二次元 SDXL，平涂）",
+      "file": "animagine-xl-4.0.safetensors",
+      "target": "models/checkpoints",
+      "size_bytes": 6938434056,
+      "arch": "SDXL",
+      "required": false
+    },
+    {
+      "id": "anima-aesthetic-v1.1",
+      "name": "Anima（CircleStone x Comfy Org，2B，专精二次元）",
+      "file": "anima-aesthetic-v1.1.safetensors",
+      "target": "models/diffusion_models",
+      "size_bytes": 3988000000,
+      "arch": "Anima",
+      "required": false,
+      "recommended": true,
+      "download_url": "https://hf-mirror.com/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-aesthetic-v1.1.safetensors",
+      "companions": ["qwen_3_06b_base", "qwen_image_vae"]
+    },
+    {
+      "id": "qwen_3_06b_base",
+      "name": "Anima 的文本编码器（Qwen3 0.6B）",
+      "file": "qwen_3_06b_base.safetensors",
+      "target": "models/text_encoders",
+      "size_bytes": 1136900000,
+      "required": false,
+      "download_url": "https://hf-mirror.com/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors"
+    },
+    {
+      "id": "qwen_image_vae",
+      "name": "Anima 的 VAE（Qwen-Image VAE）",
+      "file": "qwen_image_vae.safetensors",
+      "target": "models/vae",
+      "size_bytes": 242000000,
+      "required": false,
+      "download_url": "https://hf-mirror.com/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors"
+    }
+  ],
+  "wordlists": [
+    { "file": "wordlists/booru_zh/*.csv.gz", "desc": "项目词典（中英对照 + 别名 + 热度）", "tags": 75069 },
+    { "file": "wordlists/models/NoobAIXL1.1_underscore.csv.gz", "desc": "NoobAI-XL v1.1 训练用 tag 表", "tags": 141801 },
+    { "file": "wordlists/models/illustriousV1.0_underscore.csv.gz", "desc": "Illustrious v1.0 tag 表", "tags": 93907 },
+    { "file": "wordlists/models/anima-1.0.csv.gz", "desc": "Anima v1.0 tag 表", "tags": 108248 },
+    { "file": "wordlists/models/anima-2.9B-preview-V1.csv.gz", "desc": "Anima 2.9B 预览版 tag 表", "tags": 136787 }
+  ]
+}

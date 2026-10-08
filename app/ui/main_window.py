@@ -452,6 +452,7 @@ class MainWindow(QMainWindow):
         self.refresh_tags()
         self.refresh_files()
         self.start_lan_if_enabled()      # 让平板/手机端能自动发现这台 PC
+        self.load_dlcs()                 # 已启用的扩展包（DLC）注册菜单
         QTimer.singleShot(900, self.check_unfinished)
 
     # ================================================================= UI
@@ -514,7 +515,11 @@ class MainWindow(QMainWindow):
                  "清掉自训练探针、审核里的否决记录和已审标记，回到干净状态重新积累；"
                  "已确认的标签、类型、连线都不动。中文名错译导致误判时用这个"),
                 ("清理失效目录/文件", self.cleanup_missing_ui,
-                 "删掉的文件夹/库不再留在界面里：失效的库记录删除，已不存在的文件标记为缺失")):
+                 "删掉的文件夹/库不再留在界面里：失效的库记录删除，已不存在的文件标记为缺失"),
+                (None, None, None),
+                ("扩展包（DLC）…", self.open_dlc_manager,
+                 "可选安装的功能包（例如 AI 生图那套）：启用后这里会多出它的菜单；"
+                 "生图输出路径等配置也在里面改")):
             if text is None:
                 menu.addSeparator()
                 continue
@@ -523,6 +528,7 @@ class MainWindow(QMainWindow):
             a.triggered.connect(slot)
             menu.addAction(a)
         more.setMenu(menu)
+        self.more_menu = menu            # DLC 注册的菜单项挂这里
         tb.addWidget(more)
         tb.addSeparator()
         # 「标签管理」已并入图谱页面的左侧标签页，这里不再单独列出
@@ -1327,6 +1333,65 @@ class MainWindow(QMainWindow):
         from .devices_ui import DevicesDialog
         dlg = DevicesDialog(self.lan_service(), self.lan_api(), self)
         dlg.exec()
+
+    # ---------------- 扩展包（DLC） ----------------
+    def open_dlc_manager(self) -> None:
+        from .dlc_ui import DlcManagerDialog
+        dlg = DlcManagerDialog(self.settings, self, on_changed=self.load_dlcs)
+        dlg.exec()
+        self.load_dlcs()
+
+    def _add_dlc_action(self, title: str, callback, tip: str = "") -> None:
+        """DLC 想在「更多 ▾」里加菜单，就调这个（由 DlcHost 转发过来）。"""
+        a = QAction(str(title), self)
+        if tip:
+            a.setToolTip(str(tip))
+        a.triggered.connect(lambda _c=False, cb=callback: cb())
+        self.more_menu.addAction(a)
+        self._dlc_actions.append(a)
+
+    def _open_dlc_window(self, widget) -> None:
+        """DLC 的窗口/对话框统一由主窗口托管引用（避免被 GC）。"""
+        self._dlc_windows.append(widget)
+        try:
+            if hasattr(widget, "exec") and widget.__class__.__name__.endswith("Dialog"):
+                widget.exec()
+            else:
+                widget.show()
+                widget.raise_()
+        except Exception:
+            pass
+
+    def load_dlcs(self) -> None:
+        """扫描并加载已启用的 DLC：失败只提示，不影响主程序。"""
+        from .. import dlc as dlc_mod
+        for a in getattr(self, "_dlc_actions", []):
+            try:
+                self.more_menu.removeAction(a)
+            except Exception:
+                pass
+        self._dlc_actions = []
+        self._dlc_hosts = []
+        if not hasattr(self, "_dlc_windows"):
+            self._dlc_windows = []
+        loaded, failed = 0, []
+        for info in dlc_mod.scan_dlcs():
+            if not info.ok or not dlc_mod.is_enabled(self.settings, info.id):
+                continue
+            host, err = dlc_mod.load_dlc(info, self.settings,
+                                        add_action=self._add_dlc_action,
+                                        open_window=self._open_dlc_window,
+                                        store=self.store, library=self.library, hub=self.hub)
+            if host is not None:
+                self._dlc_hosts.append(host)
+                loaded += 1
+            else:
+                failed.append(f"{info.name}：{err}")
+        if loaded:
+            self.status_label.setText(f"已加载 {loaded} 个扩展包（DLC），菜单在「更多 ▾」里")
+        if failed:
+            QMessageBox.warning(self, "扩展包加载失败",
+                                "以下 DLC 没能加载（主程序不受影响）：\n\n" + "\n".join(failed[:6]))
 
     def open_preview_by_id(self, file_id: int) -> None:
         row = self.store.one("SELECT path FROM files WHERE id=?", (file_id,))

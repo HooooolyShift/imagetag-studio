@@ -1,0 +1,63 @@
+{
+  "_status": "draft - 等待宿主确定最终字段；下面字段按宿主提案里的需求先落一份",
+  "id": "comfyui_helper",
+  "name": "AI 生图助手（ComfyUI + 中文提示词）",
+  "version": "0.1.0",
+  "author": "AI 生图会话",
+  "description": "可选安装：把本机 ComfyUI 变成'选模型→写中文→出图→入库'的一条龙。含中文→danbooru 提示词助手（23.3 万词表校验）、Anima/SDXL 工作流模板、模型下载器与批量出图脚本。不含模型本体与 ComfyUI 本体。",
+  "license": "本仓库同许可",
+  "size_bytes": 8800000,
+  "entry_module": "prompt_helper",
+  "entry_cli": "python -m prompt_helper",
+  "entry_service": {
+    "command": "python -m prompt_helper.service --port 8199",
+    "host": "127.0.0.1",
+    "port": 8199,
+    "endpoints": {
+      "health": "GET /health",
+      "prompt": "POST /prompt {text, mode?, model?}",
+      "validate": "POST /validate {tags}"
+    }
+  },
+  "python": {
+    "min_version": "3.10",
+    "dependencies": []
+  },
+  "requires": {
+    "comfyui": { "type": "service", "address": "http://127.0.0.1:8188", "optional": false,
+                 "note": "宿主需让用户指定 ComfyUI 安装路径/地址；DLC 不修改它" },
+    "ollama": { "type": "service", "address": "http://127.0.0.1:11434", "optional": true,
+                "note": "只影响'中文→提示词'；缺失时其余功能可用", "model": "qwen3-8b:latest" }
+  },
+  "config_schema": [
+    { "key": "comfyui_path", "type": "path", "required": true, "label": "ComfyUI 安装目录",
+      "hint": "例如 E:\\ComfyUI\\ComfyUI-aki-v1.5\\ComfyUI-aki-v1.5" },
+    { "key": "comfyui_url", "type": "string", "required": true, "default": "http://127.0.0.1:8188", "label": "ComfyUI API 地址" },
+    { "key": "output_dir", "type": "path", "required": true, "label": "生图输出路径",
+      "hint": "用户可指定；默认建议 <用户图片目录>\\ImageTagStudio_AI" },
+    { "key": "ollama_url", "type": "string", "required": false, "default": "http://127.0.0.1:11434", "label": "Ollama 地址" },
+    { "key": "ollama_model", "type": "string", "required": false, "default": "qwen3-8b:latest", "label": "提示词模型" },
+    { "key": "default_model", "type": "string", "required": false, "default": "WAI-illustrious-SDXL-v17.safetensors", "label": "默认生图底模" },
+    { "key": "auto_start_prompt_service", "type": "bool", "required": false, "default": true, "label": "打开生图界面时自动启动提示词服务" }
+  ],
+  "capabilities": [
+    "text2image", "natural_language_prompt", "prompt_validation", "batch_generate",
+    "model_download", "wordlist_autocomplete", "workflow_templates"
+  ],
+  "components": [
+    { "id": "prompt_helper", "name": "中文→提示词助手", "path": "prompt_helper", "installed_by_default": true, "size_bytes": 200000 },
+    { "id": "wordlists", "name": "danbooru 词表（23.3 万 tag，gzip）", "path": "wordlists", "installed_by_default": true, "size_bytes": 8460000 },
+    { "id": "workflows", "name": "工作流模板与固化预设", "path": "workflows", "installed_by_default": true, "size_bytes": 4000 },
+    { "id": "scripts", "name": "下载与批量出图脚本", "path": "scripts", "installed_by_default": true, "size_bytes": 32000 },
+    { "id": "models_manifest", "name": "模型清单（不含模型本体）", "path": "models.json", "installed_by_default": true, "size_bytes": 3000 },
+    { "id": "swarmui_component", "name": "（可选）SwarmUI 中文化补丁与扩展", "path": "swarmui_component",
+      "installed_by_default": false, "size_bytes": 25000,
+      "note": "主界面重做后不再需要；只有用户想装 SwarmUI 时才勾选" }
+  ],
+  "post_install": [
+    "让用户确认 ComfyUI 路径与 API 地址，做一次 GET /system_stats 连通性自检",
+    "让用户选择生图输出路径（output_dir），必要时创建目录",
+    "可选：提示用户下载推荐模型（models.json 里 recommended=true 的三项，合计约 12 GB）",
+    "可选：检查 Ollama 是否在跑，不在则提示启动 D:\\LocalAI\\start-ollama.cmd"
+  ]
+}

@@ -183,6 +183,9 @@ class Settings:
     lan_device_name: str = ""              # 本机在设备列表里显示的名字（空=用计算机名）
     lan_trusted: list = field(default_factory=list)   # 已授权设备 [{device_id,name,role}]
     lan_require_pair: bool = True          # 连接是否必须双向确认（对码 + 本机点同意）
+    # 可选安装的扩展包（DLC）：见 app/dlc.py
+    dlc_enabled: list = field(default_factory=list)   # 已启用的 dlc id
+    dlc_config: dict = field(default_factory=dict)    # {dlc_id: {配置项: 值}}
     auto_import_after_review: bool = False # 审核完成后自动把图片收进图库
     dup_threshold: int = 6                 # 感知哈希汉明距离阈值（越小越严格）
     dup_use_clip: bool = True              # 是否用 CLIP 再兜一层
