@@ -274,6 +274,53 @@ class Library:
         self.store.refresh_counts()
         return out
 
+    def import_generated(self, paths: Sequence[str | Path], subdir: str = "AI生成") -> list[int]:
+        """把**刚生成的图**收进图库：在库根里的就地索引，不在库根里的**拷进 `<库根>/AI生成/`** 再索引。
+
+        为什么需要这条：生成目录默认在程序数据目录下（`<data>/generated`），并不在已登记的
+        图库根里，`scan_paths_into_library` 会按规则跳过它们 → 用户在平板上勾了"入库"却什么都没发生
+        （2026-10-08 平板端反馈过）。这里改成：**先尝试就地入库，剩下的复制进图库**，
+        保证"勾了入库就一定入"。
+        """
+        import shutil
+        roots = self.store.library_roots()
+        ids: list[int] = []
+        if not roots:
+            return self.scan_paths_into_library(paths)
+        lib_root = Path(str(roots[0]["path"]))
+        dest_dir = lib_root / subdir
+        pending_copy: list[Path] = []
+        for raw in paths:
+            p = Path(raw)
+            if not p.exists():
+                continue
+            inside = False
+            for r in self.store.list_roots():
+                try:
+                    p.resolve().relative_to(Path(str(r["path"])).resolve())
+                    inside = True
+                    break
+                except Exception:
+                    continue
+            if inside:
+                ids += self.scan_paths_into_library([p])
+            else:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dst = dest_dir / p.name
+                n = 2
+                while dst.exists():
+                    dst = dest_dir / f"{p.stem}_{n}{p.suffix}"
+                    n += 1
+                try:
+                    shutil.copy2(p, dst)
+                    pending_copy.append(dst)
+                except Exception:
+                    continue
+        if pending_copy:
+            ids += self.scan_paths_into_library(pending_copy)
+        self.store.refresh_counts()
+        return ids
+
     def _link_series_from_dirs(self, root_id: int, root: Path) -> None:
         """文件夹名带 [标签] 的目录视为系列，内部图片按文件名当页码。"""
         rows = self.store.query("SELECT id,path,rel FROM files WHERE root_id=? AND missing=0", (root_id,))

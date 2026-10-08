@@ -1347,7 +1347,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     made += [str(f) for f in files]
                     api.bump("gen_progress", index=i + 1, total=count, file=made[-1] if made else "")
                 if do_import:
-                    ids = self.api.library.scan_paths_into_library(made)
+                    ids = self.api.library.import_generated(made)
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids))
             except Exception as exc:
                 api.bump("gen_failed", error=str(exc), files=made)
@@ -1447,7 +1447,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 files = client.wait(pid, out_dir, f"inpaint_{stamp}",
                                     on_tick=lambda s: api.bump("gen_progress", elapsed=round(s)))
                 made = [str(f) for f in files]
-                ids = api.library.scan_paths_into_library(made) if body.get("import") else []
+                ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="inpaint")
             except Exception as exc:
                 api.bump("gen_failed", error=str(exc), kind="inpaint")
