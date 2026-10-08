@@ -1473,6 +1473,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         do_import = bool(body.get("import", False))
         out_dir = self._gen_out_dir()
         api._gen_running = True
+        api._gen_cancel = False
         api.bump("gen_started", count=count, model=model, preset=preset_name)
 
         def job() -> None:
@@ -1482,6 +1483,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
             ids: list[int] = []
             try:
                 for i in range(count):
+                    if api._gen_cancel:        # 被 /api/gen/interrupt 取消：剩下的不再提交
+                        raise RuntimeError("已取消")
                     seed = int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1)
                     wf = ComfyClient.workflow(model, prompt, negative, width, height,
                                               steps, cfg_s, seed, sampler, scheduler)
@@ -1496,7 +1499,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                     ids = self.api.library.import_generated(made)
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids))
             except Exception as exc:
-                api.bump("gen_failed", error=str(exc), files=made)
+                api.bump("gen_failed", error=self._gen_err_text(api, exc), files=made)
             finally:
                 api._gen_running = False
 
@@ -1567,6 +1570,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "mask_write_failed", "detail": str(exc)}, 500)
             return
         api._gen_running = True
+        api._gen_cancel = False
         api.bump("gen_inpaint_started", base=str(base_path), model=model)
 
         def job() -> None:
@@ -1594,7 +1598,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="inpaint")
             except Exception as exc:
-                api.bump("gen_failed", error=str(exc), kind="inpaint")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="inpaint")
             finally:
                 api._gen_running = False
 
@@ -2109,6 +2113,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
         api._gen_running = True
+        api._gen_cancel = False
         api.bump("gen_advanced_started", kind=kind, source=str(src), model=model,
                  width=width, height=height)
 
@@ -2135,7 +2140,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind=kind)
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=str(exc), kind=kind)
+                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind=kind)
             finally:
                 api._gen_running = False
 
@@ -2152,6 +2157,32 @@ class _ApiHandler(BaseHTTPRequestHandler):
     def _gen_controlnet(self, body: dict) -> None:
         """姿势/线稿（ControlNet）：姿势图 → Openpose → ControlNet。见 `_gen_advanced`。"""
         self._gen_advanced(body, "controlnet")
+
+    def _gen_interrupt(self, body: dict) -> None:
+        """取消当前正在跑的生图任务（出图 / 重绘 / 参考图 / 姿势 / 融合 / 放大都管）。
+
+        做法就是给 ComfyUI 发 `/interrupt`：它会让当前那次采样抛中断异常，任务线程随即走
+        `gen_failed`，`_gen_running` 变回 False。**队列里还没开始的那几张不会再提交**
+        （每个生图任务是一张一张提交的，中断后下一次 `submit` 前会看到 `_gen_cancel` 标记）。
+        """
+        api = self.api
+        from .comfy_client import ComfyClient
+        running = bool(getattr(api, "_gen_running", False))
+        api._gen_cancel = True                 # 让正在跑的线程别再提交下一张
+        try:
+            ComfyClient(self._gen_comfy_url()).interrupt()
+        except Exception as exc:               # noqa: BLE001
+            self._json({"ok": False, "error": "interrupt_failed", "detail": str(exc),
+                        "running": running}, 500)
+            return
+        api.bump("gen_interrupted", running=running)
+        self._json({"ok": True, "interrupted": running,
+                    "hint": "已经通知 ComfyUI 停下；正在跑的那张会以 gen_failed 结束"})
+
+    @staticmethod
+    def _gen_err_text(api, exc: Exception) -> str:
+        """报错文案：用户主动取消时说"已取消"，别把 ComfyUI 的英文中断异常甩给用户。"""
+        return "已取消" if getattr(api, "_gen_cancel", False) else str(exc)
 
     def _gen_img2img(self, body: dict) -> None:
         """图生图 / 图融合（ComfyUI 原生就支持，这里做成接口）。
@@ -2208,6 +2239,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
         api._gen_running = True
+        api._gen_cancel = False
         api.bump("gen_advanced_started", kind="img2img", source=str(src),
                  blend=str(blend) if blend else "", denoise=denoise, model=model)
 
@@ -2232,7 +2264,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="img2img")
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=str(exc), kind="img2img")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="img2img")
             finally:
                 api._gen_running = False
 
@@ -2297,6 +2329,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
         api._gen_running = True
+        api._gen_cancel = False
         api.bump("gen_advanced_started", kind="upscale", source=str(src),
                  upscale_model=up_model, source_size=[iw, ih], size=[want_w or 0, want_h or 0])
 
@@ -2314,7 +2347,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 ids = api.library.import_generated(made) if body.get("import") else []
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="upscale")
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=str(exc), kind="upscale")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="upscale")
             finally:
                 api._gen_running = False
 
@@ -2375,6 +2408,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = self._gen_out_dir()
         api._gen_running = True
+        api._gen_cancel = False
         api.bump("gen_advanced_started", kind="hires", source=str(src), model=model,
                  width=out_w, height=out_h)
 
@@ -2397,7 +2431,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
                 api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids), kind="hires",
                          source_size=[iw, ih], size=[out_w, out_h])
             except Exception as exc:                          # noqa: BLE001
-                api.bump("gen_failed", error=str(exc), kind="hires")
+                api.bump("gen_failed", error=self._gen_err_text(api, exc), kind="hires")
             finally:
                 api._gen_running = False
 

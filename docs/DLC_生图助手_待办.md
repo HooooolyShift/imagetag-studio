@@ -57,6 +57,7 @@
 | `POST /api/gen/img2img` | 图生图 / **图融合**：`{file_id｜name, prompt, denoise?, blend_file_id?, blend_factor?, blend_mode?}` |
 | `POST /api/gen/upscale` | **纯放大**（ESRGAN 超分，不出彩噪）：`{file_id｜name, scale?}`；实测 1024→4096 只要 9 秒 |
 | `POST /api/gen/hires` | 潜空间放大 + 低 denoise 重采样（会长细节，但边缘有彩噪风险）：`{file_id｜name, prompt, scale?}` |
+| `GET /api/gen/status`、`POST /api/gen/interrupt` | 任务状态 / **取消**（转发 ComfyUI `/interrupt`；取消后剩余张数不再提交，正在跑的那张以 `gen_failed{已取消}` 结束） |
 
 ### 两个"踩过才知道"的坑，已经写进代码
 

@@ -182,3 +182,23 @@ POST /api/gen/hires        # 潜空间放大 + 低 denoise 重采样：会长新
 > 而且超出训练分辨率后容易出现重复肢体/多手多脚。**先出 1024 再放大**才是稳的路子。
 
 进度事件与出图一致，`kind` 分别是 `img2img` / `upscale` / `hires`。
+
+### 5.4 取消 / 状态（2026-10-08 傍晚补）
+
+```
+GET  /api/gen/status      → { ok, running, fetching }        # 轮询用；页面上"停止"按钮的可用性看它
+POST /api/gen/interrupt   → { ok, interrupted, hint }        # 取消当前生成/重绘/参考图/姿势/融合/放大
+```
+
+- 取消是**真停**：转发给 ComfyUI 的 `/interrupt`，正在跑的那张以
+  `gen_failed { error: "已取消", kind }` 结束；`count>1` 时**还没提交的那几张不会再提交**。
+- 实测：1024×1024 / 80 步 / count=3，6 秒后调 interrupt → 4 秒内线程停、状态回到 `running:false`、
+  事件序列 `gen_started → gen_interrupted → gen_failed{已取消}`。
+- **CORS 预检已支持**：服务端现在响应 `OPTIONS`（204 + `Access-Control-Allow-Methods/Headers`），
+  WebView 里用 `fetch` 发 JSON 不用再靠 `allowUniversalAccessFromFileURLs` 兜底。
+
+### 5.5 进度语义（回答"count>1 怎么报进度"）
+
+`count>1` 是**一张一张串行提交**的：每张出图时都会有
+`gen_progress { index, total, elapsed }`，最后一次性 `gen_done { files:[…], file_ids:[…] }`。
+中断后不会再往下提交，`gen_failed` 里只带已经出好的那几张（如果没有就是空数组）。
