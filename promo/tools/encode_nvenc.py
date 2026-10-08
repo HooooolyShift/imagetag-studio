@@ -15,17 +15,26 @@ WORK = Path(r"E:\文档\ChatGPT\图片标签分类\promo\premiere")
 AUDIO = Path(r"E:\文档\ChatGPT\图片标签分类\promo\audio\mix.wav")
 
 
+def pick_audio(explicit: str | None = None) -> Path:
+    """优先用命令行指定的混音；否则 v15 的 mix_v15.wav；再退回旧版 mix.wav。"""
+    if explicit:
+        return Path(explicit)
+    v15 = AUDIO.with_name("mix_v15.wav")
+    return v15 if v15.exists() else AUDIO
+
+
 def main() -> int:
     src = Path(sys.argv[1]) if len(sys.argv) > 1 else WORK / "promo_master_prores.mov"
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else WORK / "图片标签工坊1.2_宣传片_1080p60.mp4"
     mbps = float(sys.argv[3]) if len(sys.argv) > 3 else 6.0
+    audio = pick_audio(sys.argv[4] if len(sys.argv) > 4 else None)
     if not src.exists():
         print("找不到中间文件:", src)
         return 1
     exe = imageio_ffmpeg.get_ffmpeg_exe()
     cmd = [exe, "-y", "-i", str(src)]
-    if AUDIO.exists():
-        cmd += ["-i", str(AUDIO), "-map", "0:v:0", "-map", "1:a:0",
+    if audio.exists():
+        cmd += ["-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
                 "-c:a", "aac", "-b:a", "192k"]
     else:
         cmd += ["-map", "0:v:0", "-an"]
