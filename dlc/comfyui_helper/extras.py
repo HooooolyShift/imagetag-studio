@@ -22,6 +22,34 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
 from .comfy import ComfyClient, ComfyError
 
 
+LIVE_WORKERS: set = set()
+
+
+def keep_worker(w):
+    """持有运行中的 QThread 引用。
+
+    后台线程如果没人引用、被 GC 掉，而线程还在跑，Qt 会直接
+    `QThread: Destroyed while thread is still running` → 进程 abort（退出码 0xC0000409）。
+    2026-10-08 把探测挪到后台时踩到了这个，所以统一走这里登记，跑完自动移除。
+    """
+    LIVE_WORKERS.add(w)
+    try:
+        w.finished.connect(lambda: LIVE_WORKERS.discard(w))
+    except Exception:                            # noqa: BLE001
+        pass
+    return w
+
+
+def wait_workers(workers, ms: int = 4000) -> None:
+    """关窗/退出前等一下后台线程（它们都是有界的：探测 ≤2s、词表加载 ~3s）。"""
+    for w in list(workers or []):
+        try:
+            if w is not None and w.isRunning():
+                w.wait(ms)
+        except Exception:                        # noqa: BLE001
+            pass
+
+
 class _Worker(QThread):
     """把耗时动作（出图、下载、上传）扔到后台线程。"""
 
@@ -534,11 +562,37 @@ class MorePanel(QGroupBox):
 
     # ---------- 能力探测 ----------
     def refresh_caps(self) -> None:
-        try:
-            rep = self.win.client.capability_report()
-        except Exception as exc:                             # noqa: BLE001
-            self.cap_label.setText(f"检测失败（ComfyUI 没连上？）：{exc}")
+        """检测可用功能（**后台跑**）。
+
+        `capability_report()` 要打十几个 `/object_info`，每个都可能等到超时（`has_node` 15 秒、
+        `_enum` 30 秒）——ComfyUI 正在启动或正忙着出图时，同步跑就是几十秒到几分钟的白屏。
+        2026-10-08 用户报"生图界面卡住"，这是其中一处。
+        """
+        w = getattr(self, "_caps_worker", None)
+        if w is not None and w.isRunning():
             return
+        self.cap_label.setText("检测中…（后台探测节点与模型文件）")
+
+        def probe() -> dict:
+            rep = self.win.client.capability_report()
+            try:
+                cnets = list(self.win.client._enum("ControlNetLoader", "control_net_name"))
+            except Exception:                                # noqa: BLE001
+                cnets = []
+            return {"rep": rep, "control_nets": cnets}
+
+        w = _Worker(probe)
+        w.done.connect(self._on_caps)
+        w.fail.connect(self._on_caps_failed)
+        self._caps_worker = w
+        keep_worker(w)
+        w.start()
+
+    def _on_caps_failed(self, msg: str) -> None:
+        self.cap_label.setText(f"检测失败（ComfyUI 没连上？）：{msg}")
+
+    def _on_caps(self, data: dict) -> None:
+        rep = (data or {}).get("rep") or {}
         self._caps = rep
         parts = []
         for name, info in rep.items():
@@ -546,15 +600,12 @@ class MorePanel(QGroupBox):
         self.cap_label.setText("　".join(parts))
         # 有 ControlNet 模型时就填进下拉
         self.pose_cn.clear()
-        try:
-            for name in self.win.client._enum("ControlNetLoader", "control_net_name"):
-                self.pose_cn.addItem(name)
-            for i in range(self.pose_cn.count()):
-                if "union" in self.pose_cn.itemText(i).lower() or "sdxl" in self.pose_cn.itemText(i).lower():
-                    self.pose_cn.setCurrentIndex(i)
-                    break
-        except Exception:
-            pass
+        for name in (data or {}).get("control_nets") or []:
+            self.pose_cn.addItem(name)
+        for i in range(self.pose_cn.count()):
+            if "union" in self.pose_cn.itemText(i).lower() or "sdxl" in self.pose_cn.itemText(i).lower():
+                self.pose_cn.setCurrentIndex(i)
+                break
         self._pick_paired()
         # 超分模型
         try:
@@ -599,15 +650,25 @@ class MorePanel(QGroupBox):
             return
         from . import autoconnect
         port = self.win._api_port()
-        self.cap_label.setText("正在以完整模式重启 ComfyUI…")
-        QApplication_process = None
-        try:
-            from PySide6.QtWidgets import QApplication
-            QApplication.processEvents()
-        except Exception:
-            pass
-        ok, text = autoconnect.restart_comfy_full(path, port=port)
-        QMessageBox.information(self, "ComfyUI", text)
+        # 后台重启：restart_comfy_full 会停进程 + 重新拉起 + 等端口（最长两分钟），
+        # 同步跑同样会把界面冻住。
+        w = getattr(self, "_restart_worker", None)
+        if w is not None and w.isRunning():
+            return
+        self.cap_label.setText("正在以完整模式重启 ComfyUI…（后台进行，界面可以继续用）")
+        w = _Worker(autoconnect.restart_comfy_full, path, port=port)
+        w.done.connect(self._on_restarted)
+        w.fail.connect(lambda m: QMessageBox.warning(self, "ComfyUI", f"重启失败：{m}"))
+        self._restart_worker = w
+        keep_worker(w)
+        w.start()
+
+    def _on_restarted(self, result) -> None:
+        ok, text = result if isinstance(result, (tuple, list)) and len(result) == 2 else (True, str(result))
+        self.cap_label.setText(str(text))
+        QMessageBox.information(self, "ComfyUI", str(text))
+        if ok:
+            self.refresh_caps()
         self.refresh_caps()
         self.win.refresh_status()
 

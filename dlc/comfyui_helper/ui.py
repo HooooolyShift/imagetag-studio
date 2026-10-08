@@ -21,7 +21,118 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout
 import re
 
 from .comfy import ComfyClient, ComfyError
-from .extras import MorePanel
+from .extras import MorePanel, keep_worker, wait_workers
+
+
+class _StatusProbeWorker(QThread):
+    """后台探测 ComfyUI / Ollama（打开窗口时**不能同步做**）。
+
+    2026-10-08 用户报"启动生图界面可能会卡住"：原来 `GenWindow.__init__` 末尾直接
+    `refresh_status()` → `ComfyClient.ping()`（5 秒超时）+ `ollama.is_up()`（3 秒），
+    两个都在**界面线程**上。服务没起、正在启动、或者正忙着出图时，点开菜单就要冻 2~8 秒。
+    现在探测放到这个线程里，窗口先画出来、状态先显示"检测中…"，结果回来再填。
+    """
+
+    done = Signal(bool, str)
+
+    def __init__(self, comfy_url: str, ollama_url: str = ""):
+        super().__init__()
+        self.comfy_url = comfy_url
+        self.ollama_url = ollama_url
+
+    def run(self) -> None:                       # noqa: D102
+        try:
+            ok, info = ComfyClient(self.comfy_url, timeout=3).ping(timeout=2.0)
+        except Exception as exc:                 # noqa: BLE001
+            ok, info = False, f"连不上 ComfyUI：{exc}"
+        text = ("✅ " if ok else "❌ ") + info
+        try:
+            from .prompt_helper import ollama as _ollama
+        except ImportError:
+            try:
+                from prompt_helper import ollama as _ollama
+            except ImportError:
+                _ollama = None
+        if _ollama is not None:
+            host = self.ollama_url or _ollama.DEFAULT_HOST
+            try:
+                if _ollama.is_up(host, timeout=1.5):
+                    names = _ollama.list_models(host, timeout=3.0)
+                    text += f"｜提示词模型：{_ollama.pick_best_model(names, host)}"
+                else:
+                    text += "｜提示词模型：未启动 Ollama"
+            except Exception:                    # noqa: BLE001
+                pass
+        self.done.emit(ok, text)
+
+
+class _PreloadWorker(QThread):
+    """后台把"迟早要用"的东西先读进来，别等用户点按钮才读。
+
+    · `kind="hot"`：通用热词兜底（要读 DLC 的 wordlists，8MB gzip，首次约 2~3 秒）；
+    · `kind="dict"`：DLC 词表本体（中文→标签、词表校验 都靠它）。
+    两者以前都在界面线程上按需同步读，小屏/老机器上就是"点开生图界面卡住"。
+    """
+
+    done = Signal(str, list)
+
+    def __init__(self, win, kind: str, n: int = 0):
+        super().__init__()
+        self.win = win
+        self.kind = kind
+        self.n = n
+
+    def run(self) -> None:                       # noqa: D102
+        try:
+            if self.kind == "hot":
+                self.done.emit(self.kind, list(self.win._generic_hot_tags(self.n)))
+            else:
+                self.win._dict()                 # 读进来即可，结果走 win._dict_cache
+                self.done.emit(self.kind, [])
+        except Exception:                        # noqa: BLE001
+            self.done.emit(self.kind, [])
+
+
+class _DetectWorker(QThread):
+    """后台跑 autoconnect.detect()（内部会起 PowerShell 查进程，最坏 20 秒）。"""
+
+    done = Signal(dict)
+
+    def run(self) -> None:                       # noqa: D102
+        try:
+            try:
+                from . import autoconnect
+            except ImportError:
+                import autoconnect
+            self.done.emit(dict(autoconnect.detect() or {}))
+        except Exception:                        # noqa: BLE001
+            self.done.emit({})
+
+
+class _StartComfyWorker(QThread):
+    """后台启动 ComfyUI。
+
+    `autoconnect.start_comfy()` 会**最多等 2 分钟**（每 3 秒探一次端口），同步调用就是
+    点一下按钮界面冻两分钟 —— 这是用户报的"卡住"里最狠的一处。
+    """
+
+    done = Signal(bool, str)
+
+    def __init__(self, path: str, port: int):
+        super().__init__()
+        self.path = path
+        self.port = port
+
+    def run(self) -> None:                       # noqa: D102
+        try:
+            try:
+                from . import autoconnect
+            except ImportError:
+                import autoconnect
+            ok, msg = autoconnect.start_comfy(self.path, port=self.port)
+        except Exception as exc:                 # noqa: BLE001
+            ok, msg = False, f"启动失败：{exc}"
+        self.done.emit(bool(ok), str(msg))
 
 
 class _PromptHelperWorker(QThread):
@@ -121,7 +232,11 @@ class GenWindow(QWidget):
         super().__init__()
         self.host = host
         self.cfg = host.config
-        self.client = ComfyClient(self.cfg.get("comfy_url") or "http://127.0.0.1:8188")
+        # 配置键有历史包袱：清单（dlc.json）与宿主接口读的是 `comfyui_url`，
+        # 但这个窗口早期写的是 `comfy_url`（2026-10-08 在 D 副本上实测踩到：
+        # 宿主写进去的 comfyui_url 窗口读不到，只认默认值）。两个都认，写的时候两个都写。
+        self._CFG_URL_KEYS = ("comfyui_url", "comfy_url")
+        self.client = ComfyClient(self._cfg_url())
         self.setWindowTitle("AI 生图（ComfyUI 助手）")
         # 别照 1080×720 硬开：下面「参数」+「更多」加起来最低要 1200+ 像素，
         # 窗口会被自己的 minimumSizeHint 顶高，小屏上直接露到屏幕外（实测 1280×800 会切掉
@@ -368,8 +483,90 @@ class GenWindow(QWidget):
         self._helper_worker = None
         self._cancel_requested = False
         self._current_pid = ""          # 当前提交给 ComfyUI 的 prompt_id（定向取消用）
+        # ↓ 打开窗口这一路径上**只做便宜的活**：热词只查一条 SQL，网络探测与词表读取全部丢后台。
+        #   以前这里是 reload_hot_words() + refresh_status() 同步跑完才返回，
+        #   服务不可达/正忙时要冻 2~8 秒（用户 2026-10-08 报的"启动生图界面可能会卡住"）。
+        self._status_worker = None
+        self._preload_worker = None
+        self._want_status_popup = False
         self.reload_hot_words()
-        self.refresh_status()
+        self.status.setText("检测中…（后台探测 ComfyUI / Ollama）")
+        QTimer.singleShot(0, self._post_open)
+
+    def _cfg_url(self) -> str:
+        """当前 ComfyUI API 地址（`comfyui_url` / `comfy_url` 两个键都认）。"""
+        for k in getattr(self, "_CFG_URL_KEYS", ("comfyui_url", "comfy_url")):
+            v = str(self.cfg.get(k) or "").strip()
+            if v:
+                return v
+        return "http://127.0.0.1:8188"
+
+    def closeEvent(self, ev) -> None:            # noqa: N802
+        """关窗时等一下后台探测线程（有界，最多几秒）。
+
+        不等的话，窗口先析构、线程还在跑 → Qt 直接 abort（0xC0000409）。
+        生成任务（MorePanel 里的出图线程）**不等**——那是用户主动取消/继续的事，
+        它有 `_cancel` 与自己的收尾逻辑。
+        """
+        ws = [getattr(self, k, None) for k in ("_status_worker", "_preload_worker",
+                                               "_detect_worker", "_start_worker")]
+        more = getattr(self, "more", None)
+        if more is not None:
+            ws += [getattr(more, "_caps_worker", None), getattr(more, "_restart_worker", None)]
+        wait_workers(ws, 4000)
+        super().closeEvent(ev)
+
+    def _set_cfg_url(self, url: str) -> None:
+        """写地址时**两个键一起写**，免得"窗口里改了、宿主接口读不到"（或反过来）。"""
+        url = str(url or "").strip()
+        if not url:
+            return
+        for k in getattr(self, "_CFG_URL_KEYS", ("comfyui_url", "comfy_url")):
+            self.cfg[k] = url
+
+    def _post_open(self) -> None:
+        """窗口已经画出来了，再做这些不阻塞界面的后台准备。"""
+        self.refresh_status()            # 内部走 _StatusProbeWorker
+        self._preload("dict")            # 先把词表读热，免得点"中文→标签"时卡一下
+
+    def _preload(self, kind: str, n: int = 0) -> None:
+        w = _PreloadWorker(self, kind, n)
+        if kind == "hot":
+            w.done.connect(self._on_generic_hot)
+        if getattr(self, "_preload_worker", None) is not None and self._preload_worker.isRunning():
+            return                       # 已经有一个在跑就别叠（省内存）
+        self._preload_worker = w
+        keep_worker(w)
+        w.start()
+
+    def _on_generic_hot(self, kind: str, items: list) -> None:
+        """通用热词兜底回来了：把"加载中…"那行换掉，补进去。"""
+        if kind != "hot":
+            return
+        if not items:
+            self._drop_loading_placeholder()
+        else:
+            have = {str(self.hot.itemData(i) or "") for i in range(self.hot.count())}
+            self._drop_loading_placeholder()
+            added = 0
+            for t in items:
+                if t and t not in have:
+                    self.hot.addItem(t, t)
+                    added += 1
+            if added:
+                self.hot.setToolTip(self.hot.toolTip() +
+                                    f"\n（另外补了 {added} 个词表高频通用标签：不是你的库数据，纯通用）")
+        # 热词这条路会顺手把 DLC 词表读热；万一没有（库里热词够多），这里补一次，
+        # 免得用户第一次点「中文→标签」才现读（2~3 秒）。
+        if getattr(self, "_dict_cache", None) is None:
+            self._preload("dict")
+
+    def _drop_loading_placeholder(self) -> None:
+        """去掉"正在补通用热词…"这类占位行（没有 itemData 的才是占位）。"""
+        for i in range(self.hot.count() - 1, -1, -1):
+            txt = self.hot.itemText(i)
+            if self.hot.itemData(i) in (None, "") and ("加载中" in txt or "正在补" in txt):
+                self.hot.removeItem(i)
 
     # ---------- ComfyUI 接入 ----------
     def _wait_image(self, pid: str, out: Path, base: str, on_tick=None):
@@ -424,21 +621,32 @@ class GenWindow(QWidget):
     def apply_api_url(self) -> None:
         url = self.api_row.text().strip() or "http://127.0.0.1:8188"
         self.client = ComfyClient(url)
-        self.cfg["comfy_url"] = url
+        self._set_cfg_url(url)
         self.host.save_config()
         self.refresh_status()
 
     def auto_detect(self) -> None:
-        """在本机找 ComfyUI：已运行的 API + 安装目录。"""
-        try:
-            from . import autoconnect
-        except ImportError:
-            import autoconnect
-        rep = autoconnect.detect()
+        """在本机找 ComfyUI：已运行的 API + 安装目录。
+
+        ⚠ 走后台：`autoconnect.detect()` 会起 PowerShell 查进程命令行（最坏 20 秒超时），
+        同步跑就是把界面冻 20 秒 —— 和"打开生图窗口卡住"是同一类问题。
+        """
+        w = getattr(self, "_detect_worker", None)
+        if w is not None and w.isRunning():
+            return
+        self.status.setText("自动检测中…（后台查进程与常见安装目录）")
+        w = _DetectWorker()
+        w.done.connect(self._on_detected)
+        self._detect_worker = w
+        keep_worker(w)
+        w.start()
+
+    def _on_detected(self, rep: dict) -> None:
+        """自动检测回来了：填控件、存配置、必要时问要不要启动。"""
         if rep.get("api"):
             self.api_row.setText(rep["api"])
             self.client = ComfyClient(rep["api"])
-            self.cfg["comfy_url"] = rep["api"]
+            self._set_cfg_url(rep["api"])
         if rep.get("comfy_dir"):
             self.comfy_path.setText(rep["comfy_dir"])
             self.cfg["comfyui_path"] = rep["comfy_dir"]
@@ -461,21 +669,26 @@ class GenWindow(QWidget):
         if not path:
             QMessageBox.information(self, "ComfyUI", "先点「自动检测」或手动填 ComfyUI 安装目录。")
             return
-        try:
-            from . import autoconnect
-        except ImportError:
-            import autoconnect
         port = 8188
         try:
             port = int(self.api_row.text().rsplit(":", 1)[-1].strip("/ "))
         except Exception:
             pass
-        self.status.setText(f"正在后台启动 ComfyUI（{path}）…")
-        QApplication.processEvents()
-        ok, msg = autoconnect.start_comfy(path, port=port)
+        # 后台启动：start_comfy() 最长等 2 分钟，同步跑会把界面冻住（见 _StartComfyWorker）
+        w = getattr(self, "_start_worker", None)
+        if w is not None and w.isRunning():
+            return
+        self.status.setText(f"正在后台启动 ComfyUI（{path}）…最长等 2 分钟，界面可以继续用")
+        w = _StartComfyWorker(path, port)
+        w.done.connect(self._on_comfy_started)
+        self._start_worker = w
+        keep_worker(w)
+        w.start()
+
+    def _on_comfy_started(self, ok: bool, msg: str) -> None:
         self.status.setText(msg)
         if ok:
-            self.cfg["comfyui_path"] = path
+            self.cfg["comfyui_path"] = self.comfy_path.text().strip() or str(self.cfg.get("comfyui_path") or "")
             self.host.save_config()
         self.refresh_status()
 
@@ -627,18 +840,18 @@ class GenWindow(QWidget):
         # 让下拉不至于是空的；这些是"词表补充"而不是你库里的数据，插进去最多是通用好看，不会带偏。
         # 说明：只用词表统计（不碰 pending），所以不会把没审核的错标签喂进提示词。
         if len(tags) < 8:
-            extra = self._generic_hot_tags(12 - len(tags))
-            for t in extra:
-                self.hot.addItem(t, t)
-            if extra:
-                self.hot.setToolTip(
-                    f"你库里「已确认」的标签只有 {len(tags)} 个，下面额外补了 {len(extra)} 个"
-                    "**词表高频通用标签**（不是你的库数据，纯通用）" + where)
+            # 注意：这里**不能**同步算（要读 8MB 词表，首次 2~3 秒）——放后台，回来再补。
+            self.hot.setToolTip(
+                f"你库里「已确认」的标签只有 {len(tags)} 个，正在补词表高频通用标签…" + where)
+            self.hot.addItem("（正在补通用热词…）", "")
+            QTimer.singleShot(0, lambda: self._preload("hot", 12 - len(tags)))
         if self.hot.count() == 0:
             self.hot.addItem("（库里还没有已确认的标签，词表也没读到）", "")
             self.hot.setToolTip("热词只统计图库里「已确认」的标签（待审的不算）。"
                                 "先去审核台通过一些标签就会出现；"
                                 "另外测试版和正式版各用各的图库，标签不互通。" + where)
+        if getattr(self, "b_hot", None) is not None:
+            self.b_hot.setEnabled(self.hot.count() > 0)
 
     def _generic_hot_tags(self, n: int = 12) -> list[str]:
         """兜底用的"通用好看"标签：**人工白名单 + 按热度排序**。
@@ -774,32 +987,36 @@ class GenWindow(QWidget):
 
     # ---------- 小工具 ----------
     def refresh_status(self) -> None:
-        ok, info = self.client.ping()
-        text = ("✅ " if ok else "❌ ") + info
-        # 顺带报一下"中文→标签"用的本机模型（优先用本机已有的，不会自己下新的）
-        try:
-            from .prompt_helper import ollama as _ollama
-        except ImportError:
-            try:
-                from prompt_helper import ollama as _ollama
-            except ImportError:
-                _ollama = None
-        if _ollama is not None:
-            try:
-                if _ollama.is_up():
-                    names = _ollama.list_models()
-                    text += f"｜提示词模型：{_ollama.pick_best_model(names)}"
-                else:
-                    text += "｜提示词模型：未启动 Ollama"
-            except Exception:
-                pass
+        """**异步**探 ComfyUI / Ollama：界面线程一秒都不等（见 _StatusProbeWorker 的说明）。
+
+        同一时刻只允许一个探测在跑；已经在跑就忽略这次（用户连点"检查 ComfyUI"也不会叠线程）。
+        """
+        w = getattr(self, "_status_worker", None)
+        if w is not None and w.isRunning():
+            return
+        self.status.setText("检测中…（后台探测 ComfyUI / Ollama）")
+        ollama_url = str(self.cfg.get("ollama_url") or "")
+        w = _StatusProbeWorker(self.client.url, ollama_url)
+        w.done.connect(self._on_status)
+        self._status_worker = w
+        keep_worker(w)
+        w.start()
+
+    def _on_status(self, ok: bool, text: str) -> None:
         self.status.setText(text)
+        if getattr(self, "_want_status_popup", False):
+            self._want_status_popup = False
+            if ok:
+                QMessageBox.information(self, "ComfyUI", "连接正常。\n\n" + text)
+            else:
+                QMessageBox.warning(self, "ComfyUI", text +
+                                    "\n\n先启动 ComfyUI（例如运行 tools\\start_comfyui.cmd），"
+                                    "或在上面「安装目录」旁点「启动 ComfyUI」。")
 
     def check_comfy(self) -> None:
+        """按钮：探一次，结果回来再弹窗（原来是同步探完立刻读 text()，会冻界面）。"""
+        self._want_status_popup = True
         self.refresh_status()
-        if self.status.text().startswith("❌"):
-            QMessageBox.warning(self, "ComfyUI", self.status.text() +
-                                "\n\n先启动 ComfyUI（例如运行 tools\\start_comfyui.cmd）。")
 
     def reload_models(self) -> None:
         is_anima = self.model_kind.currentIndex() == 1

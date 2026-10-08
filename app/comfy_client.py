@@ -46,9 +46,11 @@ class ComfyClient:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             r.read()
 
-    def ping(self) -> tuple[bool, str]:
+    def ping(self, timeout: float = 5.0) -> tuple[bool, str]:
+        """探一下 ComfyUI 在不在。`timeout` 可调小——界面打开时的探测只给 2 秒，
+        免得服务正忙（在装模型/出图）时把界面冻住。"""
         try:
-            st = self._get("/system_stats", timeout=5)
+            st = self._get("/system_stats", timeout=timeout)
             ver = ""
             for dev in st.get("devices", []) or []:
                 ver = dev.get("name", "") or ver
