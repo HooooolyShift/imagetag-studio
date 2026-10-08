@@ -496,6 +496,15 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 实测（PC 侧）：`/api/gen/info` 底模 16 个、预设 3 个；`/api/gen/run` 512×512/8 步 **15 秒**出图；
 `import:true` 后该图 `file_id=113`；`/api/gen/file` 下载 429 KB；越界文件名被拒 400。
 
+> **2026-10-08 补：参考图 / 姿势控制 / 局部重绘 / 模型管理 的接口也齐了**，平板可以直接接：
+> `GET /api/gen/caps`（能力探测 + 下拉候选 + 按架构的默认值，60 秒缓存）、
+> `POST /api/gen/ipadapter`（`ref_file_id|ref_name|ref_base64`）、
+> `POST /api/gen/controlnet`（`pose_file_id|pose_name|pose_base64` + `strength`）、
+> `POST /api/gen/inpaint`（遮罩白=重绘）、`GET /api/gen/models` + `POST /api/gen/models/fetch`（一键补模型，
+> 进度 SSE `gen_dl_*`）。
+> **可直接落地的参考实现（含 JS 片段）在 `docs/handover/tablet_gen_page/README.md`**，含交互细节与三个坑
+> （IP-Adapter/ControlNet 必须跟底模架构配套，IP-Adapter 配错**不报错只出噪声图**）。
+
 > **排期**：这是下一步的首要任务（明天开工第一件）。本端现状：只有一个"共现力导向图"，
 > 动效 / 两种视图 / 折叠 / 层级 / 弹簧拖拽都没有 —— 与本节要求差距明显，按下面重做。
 > 数据用 `/api/graph`（4311 节点 / 4826 边 / 302 个标签有图片数；分类节点有 x/y，标签节点 x/y 为 null，
@@ -551,6 +560,40 @@ PC 端图谱在 `app/ui/taxonomy.py`。移动端**节点数可以少**（只画�
 - 2026-10-07：文档建立，写入用户完整需求（局域网互联 / 两档模式 / 索引与缓存 / WebUI + motion-web / 模拟器协作注意）。
 
 ## 八、阶段小结与下一步（2026-10-08 · 推送前记录）
+
+### 2026-10-08 白天：批次九界面全部接完 + 生图页 + 局部重绘（均已实测）
+
+**新增/完成的界面**
+
+| 页面/能力 | 接口 | 实测证据 |
+|---|---|---|
+| 工具页 · 人物 | `/api/persons`、`tag/run kind:face` | beta 库无人脸数据 → 空状态说明 ✓；按钮已接 |
+| 工具页 · 导出 | `pack/export`、`/api/exports`、下载、YOLO、SD 字幕 | 点「导出学习包」真产出 `learn_pack_*.json`（17 KB）并列出、可下载 ✓ |
+| 工具页 · 危险操作（默认收起） | `tags/bulk_delete`、`feedback/clear`、`cleanup`（都带 confirm:true + 二次确认） | 界面就位；破坏性路径留到 beta 库专项验 |
+| 生图页 | `gen/info`、`gen/run`、`gen/results`、`gen/file`、`lex/zh`、`lex/prompt_fix` | ComfyUI 在线时读到 16 底模 / 3 预设；**真出一张 512×512/8 步**、`file_ids=[116]` 已入库 ✓；中文→标签整句转换 0 未命中 ✓ |
+| 局部重绘 | `gen/inpaint`（白=重绘） | PC 移交件 `gen-inpaint.js` 直接落地；**UI 提交 13.4 KB 遮罩 → PC 6 秒出图 → 入库** ✓（API 侧另测 `file_ids=[117]`） |
+| 大图页 · 找相似/框选/区域精修 | `similar`、`regions`、`regions/replace|delete`、`region/refine` | 拖框→填标签→**真写进 PC**（框在界面上显示）✓；0 命中时提示"需要先跑 CLIP 打标"（beta 库仅 1 张有特征，属预期）|
+| 系列内页 · 前移/后移 | `series/reorder` | 提交后顺序变化 + **PC 把内页重命名成 001/002…** ✓ |
+| 查重三按钮 | `dupes/resolve|not_dup|as_series` | **全通**：14→13（误判反馈）→12（保留这张，其余进隔离区）→11（判为系列，建出「连载 01」3 页）✓；测试后已还原隔离文件、拆掉测试系列 |
+
+**平板 AVD 实机验收**（Pixel Tablet 2560×1600@320，横屏）：浏览 / 图谱 / 审核 / 查重 / 工具 / 生图 / 设置 七个入口齐备，
+生图页（含 16 底模下拉、结果卡）、工具页（导出列表真读到产物）、查重页、审核页、大图页（找相似·框选区域·区域精修）全部正常渲染；
+控制台除 `file://` 下 SW 注册的预期告警外无错误。
+
+**这一天踩到并修掉的三个问题**
+
+1. **接口命名不匹配**：PC 移交的 `gen-inpaint.js` 调 `client.genInpaint(body)` 传 `mask_base64`，
+   而本端客户端按 camelCase 解构 → 遮罩被静默丢弃、服务端 400 `bad_mask`。
+   已改成**两种命名都认**（`mask_base64`/`maskBase64`、`import`/`importToLibrary` …）。
+2. **HTML 非法嵌套**：结果卡原来是 `<button>`，我又在里面放「局部重绘」按钮 → 点不到；
+   卡片改为 `div[role=button]` + `tabIndex`（键盘 Enter/Space 也能开）。
+3. **我自己造成的回归**（值得记）：为隐私把词典改成"从 beta 库抽子集"（只剩 45 条）→ 中文名退化、
+   `rules-parity` 直接报错。**词典是程序自带资源（`app/tag_zh_dict.json`），不是用户库数据** ——
+   已改回默认导出整份（12.8 万条、5 MB），并把 `data/zh-tables.js` 纳入 SW 预缓存；
+   `build-apk.py` 现在会先跑一次 `make-pwa.py`（避免 `sw.js` 清单过期导致离线缺新模块——这也踩过一次）。
+   另外结果列表过滤掉 `_mask_*.png`（PC 侧顺手存的遮罩，不该当成品显示）。
+
+**仍未验**：真 arm64 平板（AVD 是 x86_64，但包内无原生库）；人物页真实数据；写回文件名（会改真文件名，留专项）。
 
 ### ⚠ 测试数据纪律（2026-10-08 用户指出，已整改）
 
