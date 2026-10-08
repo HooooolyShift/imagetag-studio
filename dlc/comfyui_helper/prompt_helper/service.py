@@ -14,7 +14,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .generator import generate, load_dictionary
+from .generator import generate, generate_both, load_dictionary
 from .ollama import DEFAULT_MODEL, OllamaError, is_up
 
 _dict = None
@@ -72,9 +72,18 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 self._send(400, {"error": "缺少 text"})
                 return
+            if data.get("mode") == "both":
+                try:
+                    self._send(200, generate_both(text, dictionary=_get_dict(),
+                                                  model=data.get("model") or ""))
+                except OllamaError as exc:
+                    self._send(503, {"error": str(exc)})
+                except Exception as exc:                    # noqa: BLE001
+                    self._send(500, {"error": str(exc)})
+                return
             try:
                 r = generate(text, data.get("mode", "prompt"), dictionary=_get_dict(),
-                             model=data.get("model") or DEFAULT_MODEL)
+                             model=data.get("model") or "")
             except OllamaError as exc:
                 self._send(503, {"error": str(exc)})
                 return

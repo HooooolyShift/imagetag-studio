@@ -51,6 +51,27 @@ class ComfyClient:
         except Exception as exc:
             raise ComfyError(f"取模型列表失败：{exc}") from exc
 
+    def _enum(self, node: str, field: str) -> list[str]:
+        """取某个节点某个下拉里的可选值（模型列表都用这个拿）。"""
+        try:
+            info = self._get(f"/object_info/{node}", timeout=30)
+            return list(info[node]["input"]["required"][field][0])
+        except Exception as exc:
+            raise ComfyError(f"取 {node}.{field} 列表失败：{exc}") from exc
+
+    def unets(self) -> list[str]:
+        """diffusion_models 文件夹里的模型（Anima / Flux / Qwen-Image 这类）。"""
+        return self._enum("UNETLoader", "unet_name")
+
+    def clips(self) -> list[str]:
+        return self._enum("CLIPLoader", "clip_name")
+
+    def vaes(self) -> list[str]:
+        return self._enum("VAELoader", "vae_name")
+
+    def samplers(self) -> list[str]:
+        return self._enum("KSampler", "sampler_name")
+
     # ---------- 出图 ----------
     @staticmethod
     def workflow(ckpt: str, positive: str, negative: str, width: int, height: int,
@@ -75,6 +96,30 @@ class ComfyClient:
             return str(self._post("/prompt", {"prompt": wf})["prompt_id"])
         except Exception as exc:
             raise ComfyError(f"提交任务失败：{exc}") from exc
+
+    # ---------- Anima（UNETLoader + ModelSamplingAuraFlow + CLIPLoader + VAELoader） ----------
+    @staticmethod
+    def anima_workflow(unet: str, clip: str, vae: str, positive: str, negative: str,
+                       width: int, height: int, steps: int, cfg: float, seed: int,
+                       sampler: str = "euler", scheduler: str = "simple",
+                       shift: float = 3.0, prefix: str = "anima") -> dict:
+        """Anima 是 2B 的二次元专用模型，加载方式与 SDXL checkpoint 不同。
+        注意 CLIPLoader 的 type 必须是 stable_diffusion（官方 anima_comparison.json 里就是这么写的）。"""
+        return {
+            "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
+            "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"shift": float(shift), "model": ["1", 0]}},
+            "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": "stable_diffusion", "device": "default"}},
+            "4": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": positive, "clip": ["3", 0]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["3", 0]}},
+            "7": {"class_type": "EmptyLatentImage", "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
+            "8": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": int(steps), "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": 1.0,
+                "model": ["2", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["7", 0]}},
+            "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 0]}},
+            "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": prefix, "images": ["9", 0]}},
+        }
 
     def wait(self, prompt_id: str, out_dir: Path, base_name: str,
              timeout: float = 900.0, on_tick=None) -> list[Path]:

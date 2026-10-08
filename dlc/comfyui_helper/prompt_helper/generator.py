@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .dictionary import BooruDict
-from .ollama import DEFAULT_HOST, DEFAULT_MODEL, chat
+from .ollama import DEFAULT_HOST, DEFAULT_MODEL, chat, pick_best_model
 
 SYSTEMS = {
     "prompt": (
@@ -37,6 +37,20 @@ SYSTEMS = {
         "最后鞋子/袜子/配饰；不要加人物与背景 tag。"
     ),
 }
+
+# 一次同时给正负两组（用户要求：不要再手动切模式）
+BOTH_SYSTEM = (
+    "你是 Stable Diffusion / 动漫绘图提示词工程师。用户会给一句中文描述，"
+    "你要**一次性输出正向与负向两组 danbooru 风格英文 tag**，严格输出 JSON，形如："
+    '{"positive": "1girl, hatsune miku, smile, upper body, ...", "negative": "lowres, worst quality, ..."}。'
+    "要求：1) positive：按重要性排序（主体数量→角色→发型发色→服装→动作姿势→视线表情→镜头构图→背景→光线氛围→画质词），"
+    "最多 40 个 tag，用英文逗号+空格分隔，只写真实存在的常见 danbooru tag，宁可换更常见的说法也不要拼短语；"
+    "知名角色直接用角色 tag（hatsune miku / kasane teto）；可补画质词 masterpiece, best quality, very aesthetic, absurdres；"
+    "2) negative：固定包含 lowres, worst quality, low quality, bad anatomy, bad hands, extra digits, fewer digits, "
+    "extra limbs, deformed, watermark, signature, username, artist name, text, logo, jpeg artifacts, cropped, out of frame；"
+    "若画面是双人/多人，再加 3girls, 4girls, multiple girls, extra girls, extra person, clone, duplicated；"
+    "3) 不要输出 bad tag / none / N/A 这类占位词；4) 只输出 JSON，不要解释、不要代码块标记。"
+)
 
 
 @dataclass
@@ -75,9 +89,12 @@ REPAIR_SYSTEM = (
 
 
 def generate(text: str, mode: str = "prompt", *, dictionary: BooruDict | None = None,
-             host: str = DEFAULT_HOST, model: str = DEFAULT_MODEL,
+             host: str = DEFAULT_HOST, model: str = "",
              timeout: float = 300.0) -> Result:
-    """中文描述 → 提示词。dictionary 为 None 时跳过词表校验。"""
+    """中文描述 → 提示词。model 留空 = **自动用本机已有的最合适模型**（不会去下载新的）。
+    dictionary 为 None 时跳过词表校验。"""
+    if not model:
+        model = pick_best_model(host=host)
     system = SYSTEMS.get(mode, SYSTEMS["prompt"])
     hint = ""
     if dictionary is not None:
@@ -111,6 +128,70 @@ def generate(text: str, mode: str = "prompt", *, dictionary: BooruDict | None = 
             if clean2 and len(invented2) < len(invented):
                 clean, invented, reply = clean2, invented2, fixed
     return Result(tags=clean, invented=invented, raw=reply, model=model, mode=mode)
+
+
+def _extract_json(reply: str) -> dict | None:
+    """从模型回复里抠出 JSON（容忍代码块/前后废话）。"""
+    import json
+    text = (reply or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except Exception:                                        # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = {}
+    for k in ("positive", "negative"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    return out or None
+
+
+def generate_both(text: str, *, dictionary: BooruDict | None = None,
+                  host: str = DEFAULT_HOST, model: str = "",
+                  timeout: float = 300.0) -> dict:
+    """一次调用同时给出正向 + 负向（用户要求：不要手动切模式）。
+    返回 {"positive": str, "negative": str, "positive_invented": [...], "negative_invented": [...], "raw": str}"""
+    if not model:
+        model = pick_best_model(host=host)
+    hint = ""
+    if dictionary is not None:
+        hint_tags = dictionary.hints(text)
+        if hint_tags:
+            hint = "\n\n【参考标签（词表里真实存在，优先使用）】" + ", ".join(hint_tags)
+    raw = _clean_reply(chat(BOTH_SYSTEM, text + hint, host=host, model=model,
+                            temperature=0.2, num_predict=420, timeout=timeout))
+    data = _extract_json(raw)
+    if data is None:
+        # 兜底一：让它只输出 JSON
+        fixed = _clean_reply(chat(BOTH_SYSTEM + "\n\n上次输出不是合法 JSON，请严格只输出 JSON。",
+                                  text + hint, host=host, model=model,
+                                  temperature=0.0, num_predict=420, timeout=timeout))
+        data = _extract_json(fixed) or {}
+        raw = fixed or raw
+    if not data:
+        # 兜底二：拆成两次单模调用（慢一点但稳）
+        pos = generate(text, "prompt", dictionary=dictionary, host=host, model=model, timeout=timeout)
+        neg = generate(text, "negative", dictionary=dictionary, host=host, model=model, timeout=timeout)
+        return {"positive": pos.tags, "negative": neg.tags,
+                "positive_invented": pos.invented, "negative_invented": neg.invented,
+                "raw": raw, "model": model}
+    pos_raw = _clean_reply(data.get("positive", ""))
+    neg_raw = _clean_reply(data.get("negative", ""))
+    if dictionary is None:
+        return {"positive": pos_raw, "negative": neg_raw,
+                "positive_invented": [], "negative_invented": [], "raw": raw, "model": model}
+    pos, pos_inv = dictionary.validate(pos_raw)
+    neg, neg_inv = dictionary.validate(neg_raw)
+    return {"positive": pos, "negative": neg,
+            "positive_invented": pos_inv, "negative_invented": neg_inv, "raw": raw, "model": model}
 
 
 def default_wordlist_dir() -> Path:

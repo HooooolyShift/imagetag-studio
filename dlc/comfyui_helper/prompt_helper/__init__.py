@@ -11,7 +11,7 @@
          返回 {"result": "...", "invented": "...", "raw": "...", "model": "...", "mode": "..."}
 """
 from .dictionary import BooruDict, get as get_dictionary
-from .generator import Result, generate, load_dictionary
+from .generator import Result, generate, generate_both, load_dictionary
 
-__all__ = ["BooruDict", "get_dictionary", "Result", "generate", "load_dictionary"]
+__all__ = ["BooruDict", "get_dictionary", "Result", "generate", "generate_both", "load_dictionary"]
 __version__ = "0.1.0"

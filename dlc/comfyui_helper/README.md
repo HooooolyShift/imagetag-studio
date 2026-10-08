@@ -7,7 +7,12 @@
 
 | 能力 | 位置 | 说明 |
 |---|---|---|
+| **面向用户的接入文档** | `docs/用户手册_接入ComfyUI.md` | 教最终用户怎么把 ComfyUI 接上、模型放哪、怎么切模型、常见问题 |
+| **自动接入** | `autoconnect.py` + 界面「ComfyUI 接入」栏 | 自动找安装目录（常见盘符/整合包/用户目录）+ 探测 8188/8189/8000 上是否已在跑；一键后台启动 |
+| **模型切换** | 界面「模型类型」+「底模」下拉 | SDXL（checkpoints）/ Anima（diffusion_models + Qwen 编码器 + Qwen VAE）随时切换，参数自动套预设 |
 | **中文 → danbooru 提示词** | `prompt_helper/` | 本机 Ollama（离线）+ **23.3 万条 danbooru 词表校验**：能匹配就必须用词表里的规范写法，匹配不到才保留原词并单独回报 |
+| **一次给出正向 + 负向** | `generate_both()` | 用户在原生窗口点一下「中文→正+负标签」就同时填好两个框，不用切模式 |
+| **悬浮英文 tag 显示中文** | `ui.py` 的 `TagHoverTextEdit` | 鼠标停在正向/负向框里的英文 tag 上，气泡显示中文（**只显示词表命中的**）；中文来源=项目词典 + 主程序 `app/tag_zh_dict.json`（合计 12.6 万条） |
 | 提示词 HTTP 服务 | `python -m prompt_helper.service` | 默认 `127.0.0.1:8199`，`GET /health`、`POST /prompt`、`POST /validate`，任何前端都能调 |
 | Anima 工作流模板 | `workflows/anima_aesthetic.api.json` | UNETLoader + ModelSamplingAuraFlow + CLIPLoader(type=stable_diffusion) + VAELoader |
 | 固化参数预设 | `workflows/presets.json` | 开屏 1536×648 / 双人防克隆 / Anima 默认，含实测结论与负向词 |
@@ -16,10 +21,17 @@
 | 词表 | `wordlists/` | gzip 压缩后 **8.07 MB**（原始 19.21 MB），含项目词典（中文/别名）与 NoobAI/Illustrious/Anima 各自的 tag 表 |
 | （可选组件）SwarmUI 中文化 | `swarmui_component/` | 中文化补丁 + PromptHelper 扩展源码 + 翻译脚本；**主界面不用它**，只作备选 |
 
+> **与主程序的词库分工（2026-10-08 与 PC 端会话约定）**：
+> 中文 ↔ 英文映射、分类、从属、热度**一律以主程序的 `host.lexicon()`（`app/taglex.py`）为准**，
+> `prompt_helper/dictionary.py` 通过 `attach_lexicon(lex)` 委托它；
+> 本 DLC 的 `wordlists/`（NoobAI/Illustrious/Anima 各自训练用的 tag 表）只负责回答
+> "**这个 tag 在目标模型里认不认**"，两件事不重叠。
+
 ## 依赖
 
 - **ComfyUI**（本机已有；DLC 只走 HTTP API `127.0.0.1:8188`，不打包、不修改它）
-- **Ollama**（`D:\LocalAI`，离线）+ `qwen3-8b` —— 只有"中文→提示词"需要；没有它其余功能照常
+- **Ollama**（`D:\LocalAI`，离线）+ 一个本地模型 —— 只有"中文→提示词"需要；**优先用本机已有模型**
+  （自动在已装模型里挑最合适的，本机一个都没有时才提示下载），没有它其余功能照常
 - Python 3.10+，**只用标准库**（无需 pip 安装任何东西）
 
 ## 快速用法

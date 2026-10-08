@@ -10,7 +10,7 @@ import argparse
 import json
 import sys
 
-from .generator import generate, load_dictionary
+from .generator import generate, generate_both, load_dictionary
 from .ollama import DEFAULT_MODEL, is_up
 
 
@@ -18,14 +18,27 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("text")
     ap.add_argument("--mode", default="prompt", choices=["prompt", "negative", "outfit"])
-    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--model", default="", help="留空=自动用本机已有的最合适模型")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-dict", action="store_true", help="跳过词表校验")
+    ap.add_argument("--both", action="store_true", help="一次输出正向+负向（推荐）")
     args = ap.parse_args()
     if not is_up():
         print("本机 Ollama 没在运行：先跑 D:\\LocalAI\\start-ollama.cmd", file=sys.stderr)
         return 3
     d = None if args.no_dict else load_dictionary()
+    if args.both:
+        data = generate_both(args.text, dictionary=d, model=args.model)
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False, indent=1))
+        else:
+            print("正向: " + data["positive"])
+            print("\n负向: " + data["negative"])
+            if data["positive_invented"]:
+                print("\n【正向词表外】" + ", ".join(data["positive_invented"]))
+            if data["negative_invented"]:
+                print("【负向词表外】" + ", ".join(data["negative_invented"]))
+        return 0
     r = generate(args.text, args.mode, dictionary=d, model=args.model)
     if args.json:
         print(json.dumps(r.to_dict(), ensure_ascii=False, indent=1))

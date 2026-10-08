@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3-8b:latest"
+
+# 本机有多个模型时，按这个优先级挑（翻译/改写这类任务 8B 够用；有更大的就优先更大的）
+PREFERRED_HINTS = ("qwen3-8b", "qwen2.5-7b", "qwen3-14b", "qwen2.5-14b", "qwen2.5-3b", "qwen3-4b", "gemma", "llama")
 
 
 class OllamaError(RuntimeError):
@@ -25,6 +29,28 @@ def list_models(host: str = DEFAULT_HOST, timeout: float = 5.0) -> list[str]:
     with urllib.request.urlopen(f"{host}/api/tags", timeout=timeout) as resp:
         data = json.load(resp)
     return [m.get("name", "") for m in data.get("models", [])]
+
+
+def pick_best_model(models: list[str] | None = None, host: str = DEFAULT_HOST) -> str:
+    """**优先用本机已有的模型**：在已安装的模型里挑最合适的一个；一个都没有才返回默认名（让用户去下）。
+    规则：先看 PREFERRED_HINTS 里的名字，再按参数量（7b/8b/14b…）取大的。"""
+    try:
+        names = models if models is not None else list_models(host)
+    except Exception:                                        # noqa: BLE001
+        names = []
+    names = [n for n in names if n]
+    if not names:
+        return DEFAULT_MODEL
+
+    def score(name: str) -> float:
+        low = name.lower()
+        for idx, hint in enumerate(PREFERRED_HINTS):
+            if hint in low:
+                return 1000 - idx
+        m = re.search(r"(\d+(?:\.\d+)?)b", low)
+        return float(m.group(1)) if m else 1.0
+
+    return max(names, key=score)
 
 
 def chat(system: str, user: str, host: str = DEFAULT_HOST, model: str = DEFAULT_MODEL,

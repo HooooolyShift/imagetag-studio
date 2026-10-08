@@ -8,6 +8,16 @@
   "license": "本仓库同许可",
   "size_bytes": 8800000,
   "entry_module": "prompt_helper",
+  "docs": {
+    "user_guide": "docs/用户手册_接入ComfyUI.md",
+    "readme": "README.md"
+  },
+  "auto_connect": {
+    "module": "autoconnect",
+    "can_detect": true,
+    "can_start": true,
+    "hint": "界面上「ComfyUI 接入」栏可自动检测安装目录/运行中的服务，并一键后台启动"
+  },
   "entry_cli": "python -m prompt_helper",
   "entry_service": {
     "command": "python -m prompt_helper.service --port 8199",
@@ -36,7 +46,8 @@
     { "key": "output_dir", "type": "path", "required": true, "label": "生图输出路径",
       "hint": "用户可指定；默认建议 <用户图片目录>\\ImageTagStudio_AI" },
     { "key": "ollama_url", "type": "string", "required": false, "default": "http://127.0.0.1:11434", "label": "Ollama 地址" },
-    { "key": "ollama_model", "type": "string", "required": false, "default": "qwen3-8b:latest", "label": "提示词模型" },
+    { "key": "ollama_model", "type": "string", "required": false, "default": "", "label": "提示词模型",
+      "hint": "留空 = 自动用本机已有的最合适模型（优先 qwen3-8b；不会自动下载新模型）" },
     { "key": "default_model", "type": "string", "required": false, "default": "WAI-illustrious-SDXL-v17.safetensors", "label": "默认生图底模" },
     { "key": "auto_start_prompt_service", "type": "bool", "required": false, "default": true, "label": "打开生图界面时自动启动提示词服务" }
   ],

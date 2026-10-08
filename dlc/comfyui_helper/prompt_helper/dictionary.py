@@ -37,6 +37,23 @@ BLOCKED_TAGS = {
     "bad_metadata", "bad_source", "bad_commentary",
 }
 
+# 人工小对照表：构图/表情/光线这类高频中文词，两个词库都可能缺或错配
+# （实测主程序词库里"半身"被映射成 newhalf）。命中就优先用它，比任何自动映射都稳。
+ZH_OVERRIDES = {
+    "半身": "upper_body", "上半身": "upper_body", "全身": "full_body", "特写": "close-up",
+    "大头照": "portrait", "侧面": "from_side", "背面": "from_behind", "正面": "facing_viewer",
+    "看镜头": "looking_at_viewer", "看向别处": "looking_away", "闭眼": "closed_eyes",
+    "微笑": "smiling", "大笑": "grin", "张嘴": "open_mouth", "生气": "angry", "害羞": "blush",
+    "坐": "sitting", "站": "standing", "躺": "lying", "趴": "on_stomach", "蹲": "squatting",
+    "手牵手": "holding_hands", "牵手": "holding_hands", "举手": "arm_up",
+    "单人": "solo", "冷色调": "cool_colors", "暖色调": "warm_colors",
+    "逆光": "backlighting", "柔光": "soft_lighting", "强光": "strong_light", "阴影": "shadow",
+    "白天": "day", "夜景": "night", "黄昏": "sunset", "清晨": "morning", "海边": "beach",
+    "室内": "indoors", "室外": "outdoors", "森林": "forest", "城市": "city",
+    "雪": "snow", "雨": "rain", "樱花": "cherry_blossoms", "天空": "sky", "蓝天": "blue_sky",
+    "纯色背景": "simple_background", "白背景": "white_background", "简单背景": "simple_background",
+}
+
 
 def normalize(raw: str) -> str:
     """统一成查表键：去权重括号、去转义、下划线/空格统一、小写、压空格。"""
@@ -69,6 +86,14 @@ class BooruDict:
         self.sources: list[str] = []
         # 按词表来源分组的 tag 集合，供"按模型过滤"用
         self.groups: dict[str, set[str]] = {}
+        # tag(下划线形式) -> 中文名，用于界面悬浮气泡
+        self.zh_by_tag: dict[str, str] = {}
+        # 宿主共享词库（app/taglex.TagLex）。中文 ↔ 英文映射以它为准，本文件只负责"模型认不认这个 tag"。
+        self.lexicon = None
+
+    def attach_lexicon(self, lexicon) -> None:
+        """挂上宿主的共享词库（host.lexicon()）。挂了之后中文一律先问它。"""
+        self.lexicon = lexicon
 
     # ---------- 加载 ----------
     @classmethod
@@ -107,6 +132,8 @@ class BooruDict:
                     alias_items = re.split(r"[|,]", aliases_raw)
                     if zh_raw.strip():
                         alias_items.append(zh_raw)
+                        if key not in self.zh_by_tag:
+                            self.zh_by_tag[key] = zh_raw.strip()
                 else:
                     count_raw = row[2] if len(row) > 2 else "0"
                     count = int(count_raw) if count_raw.strip().lstrip("-").isdigit() else 0
@@ -126,10 +153,52 @@ class BooruDict:
         self.sources.append(f"{path.name}({len(names)})")
 
     # ---------- 查询 ----------
+    def zh_for(self, tag: str) -> str | None:
+        """英文 tag → 中文名（没有就返回 None）。悬浮气泡用这个。"""
+        key = normalize(tag).replace(" ", "_")
+        if not key:
+            return None
+        if key in self.zh_by_tag:
+            return self.zh_by_tag[key]
+        # 也允许传中文反查（返回规范 tag 的中文名，用于确认）
+        hit = self.resolve(tag)
+        if hit and hit in self.zh_by_tag:
+            return self.zh_by_tag[hit]
+        return None
+
+    def load_zh_map(self, path: str | Path) -> int:
+        """合并一份额外的 tag→中文 表（JSON，形如 {"1girl": "一个女孩", ...}）。
+        主程序的 app/tag_zh_dict.json 就是这个格式（12.8 万条）。返回新增条数。"""
+        import json
+        p = Path(path)
+        if not p.exists():
+            return 0
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:                                    # noqa: BLE001
+            return 0
+        added = 0
+        for name, zh in data.items():
+            if not isinstance(zh, str) or not zh.strip():
+                continue
+            key = normalize(str(name)).replace(" ", "_")
+            if key and key not in self.zh_by_tag:
+                self.zh_by_tag[key] = zh.strip()
+                added += 1
+        return added
+
     def resolve(self, raw: str) -> str | None:
         key = normalize(raw).replace(" ", "_")
         if not key or key.replace("_", " ") in JUNK or key in JUNK:
             return None
+        # 中文（或含中文）先问宿主词库：它按 danbooru 投稿数取规范英文名
+        if self.lexicon is not None and any("\u4e00" <= ch <= "\u9fff" for ch in raw):
+            try:
+                hit_zh = self.lexicon.zh_to_tag(raw.strip())
+            except Exception:                                # noqa: BLE001
+                hit_zh = None
+            if hit_zh:
+                return str(hit_zh).strip().lower().replace(" ", "_")
         if key in self.by_name:
             return self.by_name[key]
         if key in self.by_alias:
@@ -180,17 +249,58 @@ class BooruDict:
         做法：扫描所有别名/中文名，看是否出现在输入里；优先长词、按热度排序。"""
         if not chinese_text:
             return []
+        out: list[str] = []
+        # 1) 宿主共享词库优先：**按中文片段逐段查**（zh_to_tag 更准）
+        #    注意：不要用 lex.prompt_fix() 当提示源——它会做整体替换，可能把"半身/泳装"这类
+        #    段落错配成 newhalf 之类的怪 tag（2026-10-08 实测），逐段 zh_to_tag 稳得多。
+        if self.lexicon is not None:
+            for seg in re.split(r"[，,。、；;：:\s]+", chinese_text):
+                seg = seg.strip()
+                if not seg or not re.search(r"[\u4e00-\u9fff]", seg):
+                    continue
+                # 0) 人工小对照表最优先（构图/表情/光线这类高频词，两个词库都可能错）
+                hit_override = [tag for zh_key, tag in ZH_OVERRIDES.items() if zh_key in seg]
+                if hit_override:
+                    for tag in hit_override[:2]:
+                        out.append(tag.replace("_", " "))
+                    continue
+                # 先查我们项目词典里的人工中文别名（准）：例如 半身→upper_body、初音未来→hatsune_miku
+                own = self.by_alias.get(normalize(seg).replace(" ", "_"))
+                if own:
+                    out.append(own.replace("_", " "))
+                    continue
+                try:
+                    hit = self.lexicon.zh_to_tag(seg)
+                except Exception:                            # noqa: BLE001
+                    hit = None
+                if not hit:
+                    continue
+                hit = str(hit).strip()
+                # 一致性校验：共享词库对**长短语**会错配（实测"微笑看镜头"→newhalf、"半身"→asahina mirai），
+                # 所以只接受"英文 tag + 它自己的中文名跟这一段对得上"的结果。
+                if re.search(r"[\u4e00-\u9fff]", hit):
+                    continue
+                zh = self.zh_by_tag.get(hit.lower().replace(" ", "_"), "")
+                if zh:
+                    if zh not in seg and seg not in zh:
+                        continue
+                elif len(seg) > 4 or hit.lower().replace(" ", "_") not in self.by_name:
+                    continue
+                out.append(hit)
+        # 2) 没有宿主词库时，才用自带的别名扫描兜底
+        #    （扫描是"子串命中"，容易把"未来"这种词误配到 asahina mirai，所以挂了词库就不用它）
         text = chinese_text.lower()
         found: list[tuple[int, int, str]] = []
-        for alias, target in self.by_alias.items():
-            if len(alias) < 2:
-                continue
-            if not any("\u4e00" <= ch <= "\u9fff" for ch in alias):
-                continue
-            if alias in text:
-                found.append((len(alias), self.counts.get(target, 0), target))
+        if self.lexicon is None:
+            for alias, target in self.by_alias.items():
+                if len(alias) < 2:
+                    continue
+                if not any("\u4e00" <= ch <= "\u9fff" for ch in alias):
+                    continue
+                if alias in text:
+                    found.append((len(alias), self.counts.get(target, 0), target))
         found.sort(key=lambda x: (-x[0], -x[1]))
-        seen, out = set(), []
+        seen = {t.lower().replace(" ", "_") for t in out}
         for _, _, tag in found:
             if tag in seen:
                 continue
@@ -198,7 +308,7 @@ class BooruDict:
             out.append(tag.replace("_", " "))
             if len(out) >= limit:
                 break
-        return out
+        return out[:limit]
 
 
 _cache: dict[str, BooruDict] = {}
