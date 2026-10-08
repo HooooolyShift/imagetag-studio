@@ -376,3 +376,19 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   的通用标签。**不要用"词表 count 最高的 N 个"**：实测会混进 `commentary request`（meta）、
   `mammal`/`anthro`（e621 遗留）、`breasts`（露骨），塞进提示词只会添乱；也**绝不统计 pending**。
 
+### 8.10 自定义工作流 + 参考图/姿势精细控制（2026-10-08）
+
+- **工作流下拉**：界面新增「工作流」= 内置（按模型类型自动）/ `workflows/*.api.json` 里的每个模板 /
+  「选择工作流文件…」。判定"是不是工作流模板" = JSON 顶层有 `class_type`（所以 `presets.json` 不会被当成模板）；
+  显示名取 `_name`，`_` 开头的键不提交给 ComfyUI。
+  占位符 `{{...}}` 按界面当前参数替换（positive/negative/width/height/steps/cfg/seed/sampler/scheduler/prefix/ckpt/
+  unet/clip/vae/denoise/scale/grow_mask/weight/strength/start/end/weight_type/ipadapter_file/clip_vision/
+  control_net/preprocessor/upscale_model），`{{image}} {{ref}} {{pose}} {{upscale}}` 会自动把界面选的图上传给 ComfyUI；
+  占位符写错或缺图 → 弹窗说明并**自动切回内置**，不会把坏图提交上去。
+  示例模板 `workflows/sdxl_text2img.api.json`；实测用它出图 1024×1024 / 8 步 **22.8 秒**成功。
+- **参考图精细控制**：权重 + **起效/结束**（`start_at`/`end_at`）+ 权重类型（linear / ease in / ease out /
+  ease in-out / style transfer）；**姿势**：强度 + **起效/结束**（`start_percent`/`end_percent`）。
+  起效 ≥ 结束时直接报错拦住。已验证这些值确实进了工作流（`IPAdapterAdvanced.weight_type/start_at/end_at`、
+  `ControlNetApplyAdvanced.strength/start_percent/end_percent`）。
+- 新增两行后 MorePanel 最小宽度仍 578px、窗口最小宽度仍 664px，未破坏"单行 ≤500px"的约束。
+
