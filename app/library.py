@@ -226,6 +226,54 @@ class Library:
             progress("扫描完成", 1.0)
         return {"images": len(files), "added": added, "seen": updated, "missing": gone}
 
+    def scan_paths_into_library(self, paths: Sequence[str | Path]) -> list[int]:
+        """把一批**已经在磁盘上的文件**扫进库（例如 AI 生图刚产出的图），返回 file id 列表。
+
+        规则与 scan_root 的单文件部分一致：路径必须落在已登记的库/来源根里；已在库里的直接返回 id；
+        文件名里的标签照旧解析回读。这样生成结果能立刻进主程序的打标/审核/检索链路。
+        """
+        roots = [(int(r["id"]), Path(str(r["path"]))) for r in self.store.list_roots()]
+        out: list[int] = []
+        for raw in paths:
+            try:
+                p = Path(raw).resolve()
+                if not p.exists():
+                    continue
+                owner = None
+                for rid, rp in roots:                     # 取最深的那个根
+                    try:
+                        p.relative_to(rp)
+                        if owner is None or len(str(rp)) > len(str(owner[1])):
+                            owner = (rid, rp)
+                    except ValueError:
+                        continue
+                if owner is None:
+                    continue
+                rid, rp = owner
+                st = p.stat()
+                abs_p = str(p)
+                row = self.store.file_by_path(abs_p)
+                rel = str(p.relative_to(rp)).replace("\\", "/")
+                if row is None:
+                    fid = int(self.store.upsert_file(root_id=rid, path=abs_p, rel=rel, name=p.name,
+                                                     ext=p.suffix.lower(), size=st.st_size,
+                                                     mtime=st.st_mtime))
+                else:
+                    fid = int(row["id"])
+                    self.store.upsert_file(path=abs_p, size=st.st_size, mtime=st.st_mtime,
+                                           name=p.name, rel=rel)
+                base, name_tags = naming.split_name(p.stem)
+                if name_tags:
+                    resolved = self.resolve_tag_names(name_tags)
+                    self.store.add_file_tags(
+                        fid, [(t, "filename", 1.0) for t in resolved] +
+                             [(t, "filename_parent", 1.0) for t in self.infer_parent_tags(resolved)])
+                out.append(fid)
+            except Exception:
+                continue
+        self.store.refresh_counts()
+        return out
+
     def _link_series_from_dirs(self, root_id: int, root: Path) -> None:
         """文件夹名带 [标签] 的目录视为系列，内部图片按文件名当页码。"""
         rows = self.store.query("SELECT id,path,rel FROM files WHERE root_id=? AND missing=0", (root_id,))

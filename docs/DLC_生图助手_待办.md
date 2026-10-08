@@ -11,6 +11,12 @@
   `lexicon()`（共享词库）、`scan_into_library()`（生成结果入库）、`tag_files()`（自动打标）、`store/library/hub`
 - ✅ DLC 当"包"加载（支持 `from .ui import …` 相对导入）
 - ✅ 原生生图窗口骨架：模型/参数/输出路径/批量/结果/一键入库 + 词库按钮（中文→标签 / 词表校验 / 插入热词）
+- ✅ **生图遥控接口（供平板/手机用，算力在 PC）**：`GET /api/gen/info`、
+  `POST /api/gen/run`（进度走 SSE `gen_*`，`import:true` 自动入库）、`GET /api/gen/results`、
+  `GET /api/gen/file`；共用词库 `GET /api/lex/zh`、`POST /api/lex/prompt_fix`。
+  实测：底模 16 个 / 预设 3 个；512×512 8 步 **15 秒**出图并 `file_id=113` 入库；越界文件名 400。
+- ✅ `Library.scan_paths_into_library(paths)`：把生成结果扫进库（DLC 的"一键入库"与
+  `/api/gen/run import:true` 共用）
 
 ## 已完成（内容侧，AI 生图会话）
 

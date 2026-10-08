@@ -38,6 +38,12 @@
   GET  /api/exports | /api/exports/download → 列出/下载导出产物
   POST /api/export/regions_yolo | /api/export/captions → 导出 YOLO 数据集 / SD 字幕
   POST /api/cleanup                     → 清理失效目录与文件 {confirm:true}
+  GET  /api/gen/info                    → 生图 DLC 状态（ComfyUI 是否在线/模型/预设/输出目录）
+  POST /api/gen/run                     → **在 PC 上生图**（平板遥控）{prompt, model?, preset?, count?, import?}
+  GET  /api/gen/results?limit=          → 最近生成的文件（输出目录扫描）
+  GET  /api/gen/file?name=              → 下载/预览生成结果
+  GET  /api/lex/zh?text=                → 中文→规范英文标签（共享词库，平板提示词用）
+  POST /api/lex/prompt_fix              → 提示词规范化 {text} → {fixed, unknown}
   GET  /api/dupes                       → 最近一次查重结果（重复图分组）
   POST /api/dupes/scan                  → 开始查重（后台跑，进度走 SSE）
   POST /api/dupes/resolve               → 保留一张、其余隔离/删除
@@ -296,6 +302,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._exports_list()
         elif path == "/api/exports/download":
             self._export_download(q)
+        elif path == "/api/gen/info":
+            self._gen_info()
+        elif path == "/api/gen/results":
+            self._gen_results(q)
+        elif path == "/api/gen/file":
+            self._gen_file(q)
+        elif path == "/api/lex/zh":
+            self._lex_zh(q)
         elif path == "/api/events":
             self._events()
         else:
@@ -380,6 +394,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._export_captions(body)
         elif path == "/api/cleanup":
             self._cleanup(body)
+        elif path == "/api/gen/run":
+            self._gen_run(body)
+        elif path == "/api/lex/prompt_fix":
+            self._lex_prompt_fix(body)
         else:
             self._json({"ok": False, "error": "not_found"}, 404)
 
@@ -1128,6 +1146,214 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self._json({"ok": bool(res.get("ok", True)), "result": res})
 
     # ---------- 相似图 / 框选区域 / 人物 ----------
+
+    # ---------- 生图 DLC（平板遥控 PC 出图：算力在 PC，这里只调度） ----------
+
+    # ---------- 共享词库（平板/生图端都用主程序这一份） ----------
+    def _lex_zh(self, q: dict) -> None:
+        from .taglex import get_lexicon
+        lex = get_lexicon(self.api.store, self.api.library)
+        text = str(q.get("text") or "").strip()
+        if not text:
+            self._json({"ok": False, "error": "no_text",
+                        "hint": "GET /api/lex/zh?text=初音未来"}, 400)
+            return
+        self._json({"ok": True, "text": text, "tag": lex.zh_to_tag(text),
+                    "segment": lex.segment_zh(text)})
+
+    def _lex_prompt_fix(self, body: dict) -> None:
+        from .taglex import get_lexicon
+        lex = get_lexicon(self.api.store, self.api.library)
+        text = str(body.get("text") or "").strip()
+        if not text:
+            self._json({"ok": False, "error": "no_text"}, 400)
+            return
+        fixed, unknown = lex.prompt_fix(text, keep_unknown=bool(body.get("keep_unknown", False)),
+                                        keep_ascii=bool(body.get("keep_ascii", True)))
+        self._json({"ok": True, "fixed": fixed, "unknown": unknown})
+    def _gen_cfg(self) -> dict:
+        """生图 DLC 的配置（用户在「扩展包（DLC）…」里改的就是这份）。"""
+        conf = getattr(self.api.settings, "dlc_config", None) or {}
+        return dict(conf.get("comfyui_helper") or {})
+
+    def _gen_presets(self) -> dict:
+        """DLC 里的 workflows/presets.json（固化的参数预设，含实测结论）。"""
+        try:
+            from .config import project_root
+            for p in (project_root() / "dlc" / "comfyui_helper" / "workflows" / "presets.json",
+                      Path(self.api.settings.path()).parent / "dlc" / "comfyui_helper" /
+                      "workflows" / "presets.json"):
+                if p.exists():
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+        except Exception:
+            pass
+        return {}
+
+    def _gen_out_dir(self) -> Path:
+        cfg = self._gen_cfg()
+        out = str(cfg.get("output_dir") or "").strip()
+        if out:
+            p = Path(out)
+        else:
+            p = Path(self.api.settings.path()).parent / "generated"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _gen_info(self) -> None:
+        from .comfy_client import ComfyClient
+        cfg = self._gen_cfg()
+        url = str(cfg.get("comfy_url") or "http://127.0.0.1:8188")
+        client = ComfyClient(url)
+        ok, detail = client.ping()
+        models: list = []
+        if ok:
+            try:
+                models = client.checkpoints()
+            except Exception:
+                models = []
+        presets = self._gen_presets()
+        files = self._gen_scan(limit=1)
+        self._json({"ok": True, "comfy_url": url, "online": bool(ok), "detail": detail,
+                    "models": models,
+                    "presets": {k: {"width": v.get("width"), "height": v.get("height"),
+                                    "steps": v.get("steps"), "cfg": v.get("cfg"),
+                                    "notes": v.get("notes", "")}
+                                for k, v in presets.items()},
+                    "output_dir": str(self._gen_out_dir()),
+                    "default_model": cfg.get("default_model", ""),
+                    "neg_prompt": cfg.get("neg_prompt", ""),
+                    "recent": len(files)})
+
+    def _gen_scan(self, limit: int = 30) -> list[dict]:
+        out = self._gen_out_dir()
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
+        items = []
+        try:
+            for p in out.iterdir():
+                if p.is_file() and p.suffix.lower() in exts:
+                    st = p.stat()
+                    items.append({"name": p.name, "bytes": st.st_size, "mtime": st.st_mtime})
+        except Exception:
+            pass
+        items.sort(key=lambda x: -x["mtime"])
+        return items[:max(1, int(limit))]
+
+    def _gen_results(self, q: dict) -> None:
+        limit = min(200, max(1, int(q.get("limit") or 30)))
+        files = self._gen_scan(limit)
+        # 已入库的补上 file id（平板可以据此进主程序链路看图/打标）
+        for f in files:
+            try:
+                row = self.api.store.one("SELECT id FROM files WHERE path=?",
+                                         (str(self._gen_out_dir() / f["name"]),))
+                f["file_id"] = int(row["id"]) if row is not None else None
+                if row is not None:
+                    f["thumb_sizes"] = self._present_thumbs(int(row["id"]), f["mtime"])
+            except Exception:
+                f["file_id"] = None
+        self._json({"ok": True, "output_dir": str(self._gen_out_dir()),
+                    "count": len(files), "files": files})
+
+    def _gen_file(self, q: dict) -> None:
+        name = str(q.get("name") or "")
+        if not name or "/" in name or "\\" in name or ".." in name:
+            self._json({"ok": False, "error": "bad_name"}, 400)
+            return
+        p = self._gen_out_dir() / name
+        if not p.exists() or not p.is_file():
+            self._json({"ok": False, "error": "not_found"}, 404)
+            return
+        data = p.read_bytes()
+        ctype = {".png": "image/png", ".webp": "image/webp"}.get(p.suffix.lower(), "image/jpeg")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _gen_run(self, body: dict) -> None:
+        """平板遥控生图：PC 上跑 ComfyUI，产出落到 DLC 配置的 output_dir（可以顺便入库）。"""
+        api = self.api
+        if getattr(api, "_gen_running", False):
+            self._json({"ok": True, "started": False, "reason": "already_running"})
+            return
+        from .comfy_client import ComfyClient, ComfyError
+        cfg = self._gen_cfg()
+        presets = self._gen_presets()
+        preset_name = str(body.get("preset") or "")
+        preset = dict(presets.get(preset_name) or {})
+        if preset.get("base"):                       # 预设可以继承
+            preset = {**presets.get(str(preset["base"]), {}), **preset}
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            self._json({"ok": False, "error": "no_prompt"}, 400)
+            return
+        if preset.get("quality_prefix"):
+            prompt = str(preset["quality_prefix"]) + prompt
+        if preset.get("positive_add"):
+            prompt += ", " + str(preset["positive_add"])
+        negative = str(body.get("negative") or cfg.get("neg_prompt") or preset.get("negative") or "")
+        if preset.get("negative_add"):
+            negative += ", " + str(preset["negative_add"])
+        model = str(body.get("model") or cfg.get("default_model") or "").strip()
+        url = str(cfg.get("comfy_url") or "http://127.0.0.1:8188")
+        client = ComfyClient(url)
+        if not model:
+            try:
+                names = client.checkpoints()
+                model = names[0] if names else ""
+            except ComfyError as exc:
+                self._json({"ok": False, "error": "comfy_unavailable", "detail": str(exc)}, 503)
+                return
+        if not model:
+            self._json({"ok": False, "error": "no_model"}, 400)
+            return
+        try:
+            count = max(1, min(20, int(body.get("count") or 1)))
+        except Exception:
+            count = 1
+        width = int(body.get("width") or preset.get("width") or 1024)
+        height = int(body.get("height") or preset.get("height") or 1024)
+        steps = int(body.get("steps") or preset.get("steps") or 30)
+        cfg_s = float(body.get("cfg") or preset.get("cfg") or 5.5)
+        sampler = str(body.get("sampler") or preset.get("sampler") or "dpmpp_2m")
+        scheduler = str(body.get("scheduler") or preset.get("scheduler") or "karras")
+        do_import = bool(body.get("import", False))
+        out_dir = self._gen_out_dir()
+        api._gen_running = True
+        api.bump("gen_started", count=count, model=model, preset=preset_name)
+
+        def job() -> None:
+            import datetime
+            import random as _rnd
+            made: list[str] = []
+            ids: list[int] = []
+            try:
+                for i in range(count):
+                    seed = int(body.get("seed") or 0) or _rnd.randint(1, 2 ** 31 - 1)
+                    wf = ComfyClient.workflow(model, prompt, negative, width, height,
+                                              steps, cfg_s, seed, sampler, scheduler)
+                    pid = client.submit(wf)
+                    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    files = client.wait(pid, out_dir, f"gen_{stamp}_{seed}",
+                                        on_tick=lambda s, i=i: api.bump(
+                                            "gen_progress", index=i + 1, total=count, elapsed=round(s)))
+                    made += [str(f) for f in files]
+                    api.bump("gen_progress", index=i + 1, total=count, file=made[-1] if made else "")
+                if do_import:
+                    ids = self.api.library.scan_paths_into_library(made)
+                api.bump("gen_done", files=made, file_ids=ids, imported=bool(ids))
+            except Exception as exc:
+                api.bump("gen_failed", error=str(exc), files=made)
+            finally:
+                api._gen_running = False
+
+        threading.Thread(target=job, daemon=True, name="imtag-gen").start()
+        self._json({"ok": True, "started": True, "count": count, "model": model,
+                    "output_dir": str(out_dir), "preset": preset_name})
     def _similar(self, q: dict) -> None:
         try:
             fid = int(q.get("id") or 0)

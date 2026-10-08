@@ -474,6 +474,28 @@ python tools\dev-server.py --scan-root "E:\ImageTagsBeta"
 - 2026-10-07（晚·3.1）：用户反馈"移动端图谱视觉效果很糟糕" → 规格见第七节，作为下一步首要任务。
 ## 七、图谱规格（必须追平 PC 端；用户 2026-10-07 反馈"移动端图谱视觉效果很糟糕"）
 
+## 八、生图 DLC 也要上平板（用户 2026-10-08 要求）
+
+主程序有可选安装的「AI 生图助手」DLC（ComfyUI），**平板端连上 PC 后也要能遥控生图**：
+算力在 PC（平板只发指令、看结果），接口已在 PC 侧实现并实测：
+
+| 接口 | 作用 |
+|---|---|
+| `GET /api/gen/info` | ComfyUI 是否在线、可用底模列表、DLC 预设（`sdxl_splash_1536x648` / `sdxl_duo_antibloom` / `anima_default`）、**生图输出路径**、默认负向词 |
+| `POST /api/gen/run` | **在 PC 上出图**：`{prompt, model?, preset?, negative?, width?, height?, steps?, cfg?, count?, seed?, import?}`；进度走 SSE `gen_started / gen_progress / gen_done / gen_failed`；`import:true` 时产物自动进库并回 `file_ids` |
+| `GET /api/gen/results?limit=` | 最近生成的文件（输出目录扫描；已入库的带 `file_id` 与 `thumb_sizes`） |
+| `GET /api/gen/file?name=` | 直接看/下载生成结果（只允许输出目录内的文件名，越界 400） |
+| `GET /api/lex/zh?text=` | 共享词库：中文→规范英文标签（`初音未来→hatsune_miku`、`看镜头→looking_at_viewer`） |
+| `POST /api/lex/prompt_fix` | 提示词规范化：`{text}` → `{fixed, unknown}`，平板上的提示词框直接用（和 PC/生图端同一份词表） |
+
+建议平板界面：连上 PC 后，在「全功能模式」里加一个**生图页**——底模下拉 + 预设下拉（来自
+`/api/gen/info`）+ 提示词框（带"中文→标签"按钮，调 `/api/lex/prompt_fix`）+ 尺寸/步数/CFG/张数 +
+「开始生成」（`/api/gen/run`）+ 进度（SSE）+ 结果列表（`/api/gen/results`，可点开看大图、
+可一键入库）。生图结果入库后照样进审核队列，用户在主程序或平板上审。
+
+实测（PC 侧）：`/api/gen/info` 底模 16 个、预设 3 个；`/api/gen/run` 512×512/8 步 **15 秒**出图；
+`import:true` 后该图 `file_id=113`；`/api/gen/file` 下载 429 KB；越界文件名被拒 400。
+
 > **排期**：这是下一步的首要任务（明天开工第一件）。本端现状：只有一个"共现力导向图"，
 > 动效 / 两种视图 / 折叠 / 层级 / 弹簧拖拽都没有 —— 与本节要求差距明显，按下面重做。
 > 数据用 `/api/graph`（4311 节点 / 4826 边 / 302 个标签有图片数；分类节点有 x/y，标签节点 x/y 为 null，
