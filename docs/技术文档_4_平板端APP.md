@@ -530,6 +530,31 @@ PC 端图谱在 `app/ui/taxonomy.py`。移动端**节点数可以少**（只画�
 
 ## 八、阶段小结与下一步（2026-10-08 · 推送前记录）
 
+### ⚠ 测试数据纪律（2026-10-08 用户指出，已整改）
+
+用户问"你怎么连的我自己的目录"——**确实是我的错**：自检服务器默认复制的是**真库**
+（`%LOCALAPPDATA%\ImageTagStudio\library.db`，roots = `K:\ImageTags` + `K:\pictures`），
+模拟器里那几张截图就是你真实图库的内容。已整改并加护栏：
+
+- `tools/lan-test-server.py`：默认库改成 **beta 库**（`E:\文档\ChatGPT\图片标签分类\data\library.db`，
+  roots = `E:\ImageTagsBeta`，112 张）；启动时**检查 roots，只要不是 `E:\ImageTagsBeta` 就拒绝启动**，
+  必须显式 `--allow-real` 才放行（实测：指向真库时被打回并列出 `K:\ImageTags`、`K:\pictures`）。
+- `tools/make-dev-index.py`、`tools/dev-server.py`：默认库/默认缩略图目录同样改成 **beta**，
+  不再默认读真库、也不默认挂真库缩略图。
+- 已把**含真库内容的截图目录**（`shots\real`、`shots\pc`、`shots\graph-pc`、`shots\apk`）
+  整体**送进回收站**（可还原），并用 beta 库重新生成开发索引与词典表
+  （`webui/mock/dev-index*.json`、`webui/data/db-zh*.json`，已确认不含 `K:\ImageTags` 路径）。
+- 规矩写死：**任何自检、联调、截图一律用 beta 库**；真库只允许"只读看一眼"且不要留产物。
+
+### 产品名与形态（用户 2026-10-08 明确）
+
+- 名字叫 **图片标签工坊 HD**（Android `app_name`、页面标题、PWA manifest、顶栏都改了）。
+- **不要竖屏**：`android:screenOrientation="sensorLandscape"`，PWA manifest 也设 `orientation: landscape`。
+  实测：向模拟器发竖屏指令后截图仍是 2560×1600 横屏 ✓。
+- 断点按 **CSS 宽度**判定，不按物理分辨率：手机（1080×2340 @2.75 = 393 CSS px）走手机布局、
+  平板（2560×1600 @2 = 1280 CSS px；竖屏 800）走平板布局。原断点 900 太高（8 寸平板竖屏会被误判成手机），
+  已改成 **600**（对齐 Android"最短边 ≥600dp 算平板"）。
+
 ### 已交付（本地全部自检通过；用户已授权推送）
 
 | 能力 | 状态 | 证据 |
@@ -558,6 +583,29 @@ PC 端图谱在 `app/ui/taxonomy.py`。移动端**节点数可以少**（只画�
 4. 系列内页**拖动排序**回传 `reorder`。
 
 ### 推送前必做（已做）
+
+### APK 交付（2026-10-08，用户要的"把 APK 做出来"）
+
+- 产物：`E:\文档\ChatGPT\图片标签工坊_移动端\dist\imtag-tablet-v0.1-arm64.apk`（约 352 KB）。
+- 形态：**纯 Java + WebView 的极薄外壳**（不依赖 AndroidX / Kotlin，依赖面最小）：
+  `assets/webui/` 内嵌整套界面（构建时从 `webui/` 拷贝，保证与仓库一致）、
+  `imtagNative` 桥（`listRoots` / `listDir` / `discover`(UDP 47823) / `udpRequest`(配对) / `pickDirectory`(SAF)）、
+  `usesCleartextTraffic=true`（局域网 http）、返回键交给页面。
+- **64 位**：`minSdk 26 / targetSdk 34`；`abiFilters 'arm64-v8a'`。包内**没有 .so**（纯 Java/WebView），
+  因此天然 ABI 无关、在 arm64 设备上原生运行；`aapt dump badging` 的 `native-code:` 为空即此含义。
+  以后一旦引入原生库，只会打进 arm64-v8a。
+- **怎么装**：把 APK 拷到平板（或 `adb install -r imtag-tablet-v0.1-arm64.apk`），
+  首次安装需允许"安装未知来源"。**怎么升级**：装新版本同样 `adb install -r`（或覆盖安装），
+  数据（IndexedDB 索引/设置）保留；换机/换 PC 时按设备号自动分库，不会串。
+- 怎么连 PC：① 平板与 PC 同一局域网；② PC 端跑「图片标签工坊」→ 打开「已连接设备…」看 4 位配对码；
+  ③ 平板上点「连接」→ 选中发现的设备（名字带"（正式版）/（测试版 Beta）"后缀）→ 输入配对码 →
+  PC 弹框点同意。UDP 广播被路由器挡住时，用「手动连接」填 `PC的IP:端口`（端口见 `/api/ping` 的 `api_port`）。
+- 实机验证（Pixel Tablet AVD，2560×1600@320，横屏）：**能装 ✓ 能开 ✓ 能连 PC ✓ 能浏览 ✓**
+  （PC 库 112 张 + 目录条 + 全部工具栏按钮 + 底部/侧边导航），控制台除 file:// 下 SW 注册的预期告警外无错误。
+  ⚠ 该 AVD 是 x86_64；因为包内没有原生库，所以跑它等同于验证"无 ABI 限制"，**不等于**跑过 arm64 指令
+  （真 arm64 平板/S24 Ultra 上装同一份 APK 即可）。
+- 构建脚本：`python tools\\build-apk.py [--online]`（会先同步 webui→assets、缺词典表时自动生成；
+  因 AGP 拒绝非 ASCII 工程路径，实际构建在 `C:\\imtag-build` 里做，产物拷回 `dist/`）。
 
 - 四条自检全过：`pc-check.py`（含图谱重叠=0）/ `shot.py` / `rules-parity.py` / `pwa-check.py`。
 - `.gitignore` 覆盖 `shots/`、`tmp/`、`dist/`、`webui/mock/*.json`、`webui/data/*.json`（构建产物不入库）。
