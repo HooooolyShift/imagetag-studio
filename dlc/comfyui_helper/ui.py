@@ -431,6 +431,8 @@ class GenWindow(QWidget):
             try:
                 zh_file = Path(self.host.project_root()) / "app" / "tag_zh_dict.json"
                 self._zh_map_added = d.load_zh_map(zh_file)
+                alias_file = Path(self.host.project_root()) / "app" / "tag_zh_aliases.json"
+                self._zh_alias_added = d.load_zh_aliases(alias_file)
             except Exception as exc:                      # noqa: BLE001
                 self._zh_map_added = 0
                 self._zh_map_error = f"{type(exc).__name__}: {exc}"

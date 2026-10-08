@@ -88,6 +88,8 @@ class BooruDict:
         self.groups: dict[str, set[str]] = {}
         # tag(下划线形式) -> 中文名，用于界面悬浮气泡
         self.zh_by_tag: dict[str, str] = {}
+        # 共享的人工别名表（主程序 app/tag_zh_aliases.json）：中文口头说法 → 规范 tag，优先级最高
+        self.zh_aliases: dict[str, str] = {}
         # 宿主共享词库（app/taglex.TagLex）。中文 ↔ 英文映射以它为准，本文件只负责"模型认不认这个 tag"。
         self.lexicon = None
 
@@ -187,6 +189,28 @@ class BooruDict:
                 added += 1
         return added
 
+    def load_zh_aliases(self, path: str | Path) -> int:
+        """合并主程序的人工别名表：{"看镜头": "looking_at_viewer", ...}（优先级高于一切自动映射）。"""
+        import json
+        p = Path(path)
+        if not p.exists():
+            return 0
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:                                    # noqa: BLE001
+            return 0
+        added = 0
+        for zh, tag in data.items():
+            if str(zh).startswith("_"):
+                continue
+            if not isinstance(tag, str) or not tag.strip():
+                continue
+            key = normalize(str(zh))
+            if key and key not in self.zh_aliases:
+                self.zh_aliases[key] = tag.strip()
+                added += 1
+        return added
+
     def resolve(self, raw: str) -> str | None:
         key = normalize(raw).replace(" ", "_")
         if not key or key.replace("_", " ") in JUNK or key in JUNK:
@@ -257,6 +281,11 @@ class BooruDict:
             for seg in re.split(r"[，,。、；;：:\s]+", chinese_text):
                 seg = seg.strip()
                 if not seg or not re.search(r"[\u4e00-\u9fff]", seg):
+                    continue
+                # -1) 主程序共享的人工别名表（最优先，长词优先）
+                shared = [t for zh, t in self.zh_aliases.items() if zh and zh in seg]
+                if shared:
+                    out.extend(t.replace("_", " ") for t in shared[:2])
                     continue
                 # 0) 人工小对照表最优先（构图/表情/光线这类高频词，两个词库都可能错）
                 hit_override = [tag for zh_key, tag in ZH_OVERRIDES.items() if zh_key in seg]

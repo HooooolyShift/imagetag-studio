@@ -190,6 +190,23 @@ def generate_both(text: str, *, dictionary: BooruDict | None = None,
                 "positive_invented": [], "negative_invented": [], "raw": raw, "model": model}
     pos, pos_inv = dictionary.validate(pos_raw)
     neg, neg_inv = dictionary.validate(neg_raw)
+    # 自我修复：正向里出现词表外的词，就让模型按"参考标签 + 词表常见写法"再写一遍（只修一次）
+    n_pos = len([t for t in pos.split(",") if t.strip()])
+    ratio = len(pos_inv) / max(1, n_pos + len(pos_inv))
+    if pos_inv and (len(pos_inv) >= 3 or (len(pos_inv) >= 2 and ratio > 0.25)):
+        fix_user = (
+            f"原始中文描述：{text}{hint}\n"
+            f"上一版正向标签：{pos_raw}\n"
+            f"下面这些不在 danbooru 词表里，请换成词表里真实存在的常见写法（能对上参考标签就用参考标签，"
+            f"实在没有就删掉）：" + ", ".join(pos_inv) + "\n"
+            "只输出修正后的正向标签串（英文逗号+空格分隔），不要解释。"
+        )
+        fixed = _clean_reply(chat(SYSTEMS["prompt"], fix_user, host=host, model=model,
+                                  temperature=0.0, num_predict=260, timeout=timeout))
+        if fixed and "," in fixed:
+            pos2, inv2 = dictionary.validate(fixed)
+            if pos2 and len(inv2) < len(pos_inv):
+                pos, pos_inv, pos_raw = pos2, inv2, fixed
     return {"positive": pos, "negative": neg,
             "positive_invented": pos_inv, "negative_invented": neg_inv, "raw": raw, "model": model}
 
