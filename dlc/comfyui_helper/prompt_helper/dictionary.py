@@ -90,12 +90,37 @@ class BooruDict:
         self.zh_by_tag: dict[str, str] = {}
         # 共享的人工别名表（主程序 app/tag_zh_aliases.json）：中文口头说法 → 规范 tag，优先级最高
         self.zh_aliases: dict[str, str] = {}
+        # 目标模型词表过滤（None = 不限制）：回答"这个 tag 在目标模型里认不认"
+        self.model_tags: set[str] | None = None
+        self.model_name: str = ""
         # 宿主共享词库（app/taglex.TagLex）。中文 ↔ 英文映射以它为准，本文件只负责"模型认不认这个 tag"。
         self.lexicon = None
 
     def attach_lexicon(self, lexicon) -> None:
         """挂上宿主的共享词库（host.lexicon()）。挂了之后中文一律先问它。"""
         self.lexicon = lexicon
+
+    def models(self) -> list[str]:
+        """可选的"模型词表"名字（给界面下拉用）。"""
+        return sorted(self.groups.keys())
+
+    def set_model(self, keyword: str | None) -> str:
+        """只认某个模型训练过的 tag（keyword 如 noobai / illustrious / anima；空=全部）。
+        返回生效的词表名（空串=没限制）。"""
+        self.model_tags = None
+        self.model_name = ""
+        kw = (keyword or "").strip().lower()
+        if kw in ("", "全部", "all", "none"):
+            return ""
+        for name, tags in self.groups.items():
+            if kw in name.lower():
+                self.model_tags = tags
+                self.model_name = name
+                return name
+        return ""
+
+    def _in_model(self, tag: str) -> bool:
+        return self.model_tags is None or tag in self.model_tags
 
     # ---------- 加载 ----------
     @classmethod
@@ -215,6 +240,10 @@ class BooruDict:
         key = normalize(raw).replace(" ", "_")
         if not key or key.replace("_", " ") in JUNK or key in JUNK:
             return None
+        # 画图要用的质量/技术词：不受"目标模型词表"限制（它们本来就不在 danbooru 里）
+        plain0 = key.replace("_", " ")
+        if plain0 in ALLOWED_NON_BOORU:
+            return key
         # 中文（或含中文）先问宿主词库：它按 danbooru 投稿数取规范英文名
         if self.lexicon is not None and any("\u4e00" <= ch <= "\u9fff" for ch in raw):
             try:
@@ -224,17 +253,19 @@ class BooruDict:
             if hit_zh:
                 return str(hit_zh).strip().lower().replace(" ", "_")
         if key in self.by_name:
-            return self.by_name[key]
+            return self.by_name[key] if self._in_model(key) else None
         if key in self.by_alias:
-            return self.by_alias[key]
+            hit = self.by_alias[key]
+            return hit if self._in_model(hit) else None
         plain = key.replace("_", " ")
         if plain in ALLOWED_NON_BOORU:
             return plain.replace(" ", "_")
         alt = key[:-1] if key.endswith("s") else key + "s"
         if alt in self.by_name:
-            return self.by_name[alt]
+            return self.by_name[alt] if self._in_model(alt) else None
         if alt in self.by_alias:
-            return self.by_alias[alt]
+            hit2 = self.by_alias[alt]
+            return hit2 if self._in_model(hit2) else None
         return None
 
     def validate(self, tag_string: str) -> tuple[str, list[str]]:

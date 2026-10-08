@@ -96,6 +96,18 @@ class MorePanel(QGroupBox):
             ah.addWidget(box)
         form.addRow("自动处理", auto_row)
 
+        # ---------- 词表范围（问"目标模型认不认这个词"） ----------
+        scope_row = QWidget()
+        sh = QHBoxLayout(scope_row)
+        sh.setContentsMargins(0, 0, 0, 0)
+        self.words_scope = QComboBox()
+        self.words_scope.addItem("全部词表（不限定模型）", "")
+        for name in ("NoobAIXL1.1_underscore", "illustriousV1.0_underscore", "anima-1.0", "booru_zh"):
+            self.words_scope.addItem(name, name)
+        self.words_scope.setToolTip("选一个模型就只认它训练时见过的 tag——例如选 NoobAI 时，Anima 独有的 tag 会被判为“词表外”")
+        sh.addWidget(QLabel("提示词词表范围")); sh.addWidget(self.words_scope, 1)
+        form.addRow("", scope_row)
+
         # ---------- 队列 ----------
         q_row = QWidget()
         qh = QHBoxLayout(q_row)

@@ -31,13 +31,15 @@ class _PromptHelperWorker(QThread):
     ok = Signal(dict)
     err = Signal(str)
 
-    def __init__(self, text: str, mode: str, model: str, both: bool = True, lexicon=None):
+    def __init__(self, text: str, mode: str, model: str, both: bool = True, lexicon=None,
+                 model_filter: str = ""):
         super().__init__()
         self.text = text
         self.mode = mode
         self.model = model
         self.both = both
         self.lexicon = lexicon
+        self.model_filter = model_filter
 
     def run(self) -> None:                       # noqa: D102
         try:
@@ -52,6 +54,8 @@ class _PromptHelperWorker(QThread):
             if self.lexicon is not None:
                 # 中文 ↔ 英文映射交给主程序共享词库（host.lexicon()），本模块只管"模型认不认这个 tag"
                 d.attach_lexicon(self.lexicon)
+            if self.model_filter:
+                d.set_model(self.model_filter)
             if self.both:
                 data = generate_both(self.text, dictionary=d, model=self.model)
                 data["both"] = True
@@ -508,7 +512,8 @@ class GenWindow(QWidget):
         model = str(self.cfg.get("ollama_model") or "")
         self.status.setText("提示词助手：正在生成正向+负向（本机 Ollama）…" if both
                             else "提示词助手：正在生成…")
-        worker = _PromptHelperWorker(text, mode, model, both=both, lexicon=self._lex())
+        worker = _PromptHelperWorker(text, mode, model, both=both, lexicon=self._lex(),
+                                     model_filter=(self.more.words_scope.currentData() or ""))
         self._helper_worker = worker
         worker.ok.connect(self._on_helper_ok)
         worker.err.connect(self._on_helper_err)
