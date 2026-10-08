@@ -9,7 +9,7 @@ from pathlib import Path
 
 APP_NAME = "图片标签工坊"
 APP_ID = "ImageTagStudio"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 # 支持的图片后缀
 IMAGE_EXTS = {

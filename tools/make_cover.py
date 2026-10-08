@@ -97,30 +97,42 @@ def main() -> int:
     d.text((224, 96), "ImageTagStudio", font=font(FONT_BOLD, 30), fill=TEXT_MID)
     d.text((224, 136), "本地离线图片打标与检索", font=font(FONT_REG, 24), fill=TEXT_DIM)
 
+    # ---- v1.5 封面文案（v1.4 及之前的封面走下面 is_v15=False 的旧文案） ----
+    is_v15 = "v1.5" in Path(out).name
+
     # 主标题
     d.text((96, 252), "图片标签工坊", font=font(FONT_BOLD, 88), fill=WHITE)
-    d.text((98, 368), "v1.3 更新公告", font=font(FONT_BOLD, 54), fill=CORAL)
+    d.text((98, 368), "v1.5 更新公告" if is_v15 else "v1.3 更新公告",
+           font=font(FONT_BOLD, 54), fill=CORAL)
     d.rounded_rectangle([100, 446, 152, 453], 4, fill=(59, 108, 166))
 
-    lines = [
+    lines = ([
+        "新增：平板 / 手机 局域网遥控全流程",
+        "新增：AI 生图扩展包（换装 / 融合 / 放大）",
+        "图谱重做 · 审核可撤销 · 启动开屏",
+    ] if is_v15 else [
         "自动打标 WD14 + CLIP + 人脸聚类",
         "人工审核后才正式生效",
         "标签写进文件名，手机也能搜",
-    ]
+    ])
     y = 496
     for text in lines:
         d.ellipse([103, y + 8, 112, y + 17], fill=CORAL)
         d.text((130, y), text, font=font(FONT_REG, 28), fill=TEXT_MID)
         y += 48
 
-    d.text((96, 880), "100% 本地运行  ·  不上传图片  ·  支持 RTX 显卡加速",
+    d.text((96, 880),
+           "100% 本地运行  ·  不上传图片  ·  算力全在你自己的机器上" if is_v15
+           else "100% 本地运行  ·  不上传图片  ·  支持 RTX 显卡加速",
            font=font(FONT_REG, 26), fill=TEXT_DIM)
     d.text((96, 922), "github.com/HooooolyShift/imagetag-studio",
            font=font(FONT_REG, 24), fill=(110, 128, 152))
 
     paste_screenshot(canvas, HERE / "manual_shots" / "01_主界面.png", (672, 196, 1536, 796),
                      brighten=1.12)
-    d.text((672, 812), "主界面：左侧标签筛选 / 中间缩略图 / 右侧标签编辑",
+    d.text((672, 812),
+           "主界面：标签筛选 / 缩略图 / 标签编辑（另有平板端与 AI 生图扩展包）" if is_v15
+           else "主界面：左侧标签筛选 / 中间缩略图 / 右侧标签编辑",
            font=font(FONT_REG, 22), fill=(122, 140, 166))
 
     canvas.convert("RGB").save(out, quality=95)

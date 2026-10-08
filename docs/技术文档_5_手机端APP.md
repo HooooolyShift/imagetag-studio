@@ -52,6 +52,8 @@
 | `POST /api/gen/controlnet` | 姿势 / 线稿 | 建议不做（留给平板端） |
 | `POST /api/gen/inpaint` | 局部重绘（换装），`mask_base64` PNG **白=要重绘** | 建议不做（手机上画蒙版手感差，见下） |
 | `GET /api/gen/results?limit=` | 最近生成的结果 | 要 |
+| `GET /api/gen/status` | `{ok, running, fetching}` —— 轮询用，决定「停止」按钮能不能点 | 要（取消用） |
+| `POST /api/gen/interrupt` | 取消当前出图（转发 ComfyUI `/interrupt`） | 要（取消用） |
 | `GET /api/gen/file?name=&size=340` | 看/下载结果图 —— **列表必须带 `size`**，否则每张都拉整张 PNG（缓存爆、滚动卡） | 要 |
 | `GET /api/lex/zh?text=` / `POST /api/lex/prompt_fix` | 共享词库：中文→规范标签 / 提示词规范化（回 `{fixed, unknown}`） | 要 |
 
@@ -95,29 +97,29 @@
 | 提示词 | 输入框 + 「整理」按钮走 `POST /api/lex/prompt_fix` → `{fixed, unknown}`；`unknown` 用醒目提示列出来，别静默丢掉 |
 | 中→标签 | 词库 `GET /api/lex/zh?text=`（和 PC / 生图端同一份词表，不要自己维护） |
 | 提交 | `POST /api/gen/run`，带 `import:true` 让产物自动进库并回 `file_ids` |
-| 进度 | SSE（按 `kind` 区分，见上表）；**进度存在应用状态里，不在页面里** —— 切到浏览/图谱页不该中断，切回来要接着显示 |
+| 进度 | SSE（按 `kind` 区分，见上表）；**进度存在应用状态里，不在页面里** —— 切到浏览/图谱页不该中断，切回来要接着显示。`count>1` 是**逐张串行**提交，每张发 `gen_progress {index, total, elapsed}` → **按张数画 N 个占位格子逐张填充**，比一根进度条直观 |
+| 取消 | 「停止」按钮的可点状态看 `GET /api/gen/status`（`running` 为真才可点），点击走 `POST /api/gen/interrupt`；事件序列 `gen_started → gen_interrupted → gen_failed{error:"已取消"}`，**界面上要显示"已取消"而不是当错误弹**，已出好的那几张要留在结果里（`gen_failed` 只带已出好的） |
 | 结果 | `GET /api/gen/results?limit=` 列表（单列瀑布流）；看图**必须用 `GET /api/gen/file?name=&size=340`**（不带 `size` 会拉整张 PNG），**不要自己拼输出路径** |
 | 入库联动 | `gen_done` 带回 `file_ids` → 给一个「去图库看」的入口，跳到浏览页并按该图定位 |
 | 分级安全 | 生成结果沿用四档分级的同一套遮挡规则（R18 / R18G 默认模糊，与浏览页一致）；生成成人参数时给提示 |
 | 失败处理 | `gen_failed` 的原因要**留在界面上**（可复制），不要一闪而过 |
 | 参数记忆 | 底模 / 预设 / 尺寸 / 步数 / CFG 记住上次选择（本机 localStorage 即可） |
 
-**待确认（2026-10-08 下午按 PC 侧接口现状修订）**：
+**已确认（2026-10-08 下午，PC 端主程序会话逐条答复 —— 四项全部关闭，写代码时照这个来）**：
 
-> 已解决：**端口**——`pc-client-additions.js` 里 `genThumbUrl` 用 `${this.base}` 拼，
-> 说明 `/api/gen/*` 与图库 API **同一个 base**，不用再猜独立端口。
+| 原问题 | 结论 |
+|---|---|
+| 端口 | `/api/gen/*` 与图库 API **同一个 base**（`genThumbUrl` 用 `${this.base}` 拼），不用猜独立端口 |
+| SSE 的 CORS | **已解决**：`/api/events` 一直带 `Access-Control-Allow-Origin: *`，PC 侧现在还会正确响应 `OPTIONS` 预检（204 + `Allow-Methods: GET, POST, OPTIONS` + `Allow-Headers: Content-Type, X-Imtag-Code, X-Imtag-Device`）。根因是 `BaseHTTPRequestHandler` 原来对 `OPTIONS` 回 501。→ **按普通 `fetch` + `EventSource` 写，不要加轮询兜底**。（Android WebView 若把页面开在 `file://` 上，可能靠 `allowUniversalAccessFromFileURLs` 绕过，但**别指望它**；本端壳用的是虚拟 https 源，走正常 CORS 即可。） |
+| 取消 | **有了**：`GET /api/gen/status`（`{ok, running, fetching}`，决定「停止」按钮可点）+ `POST /api/gen/interrupt`。实测 1024²/80 步/count=3 时 6 秒取消 → 4 秒内线程停、`running:false`，事件 `gen_started → gen_interrupted → gen_failed{error:"已取消"}`，**未提交的剩下那张不会再提交** |
+| `count>1` 语义 | **逐张串行提交**：每张出图时 `gen_progress {index, total, elapsed}`，全部结束才一次性 `gen_done {files:[…], file_ids:[…]}`；取消时 `gen_failed` 只带已出好的那几张 |
+| 手机端做不做局部重绘 | **不做**（PC 端会话同意本会话建议）—— 见上文《明确不做》，手机端只做文本出图 + 放大 + 结果看/入库 |
 
-1. **CORS / SSE**（仍未确认）：手机 WebUI 是"另一个源"，`EventSource` 连 PC 的 SSE 需要 PC 端回
-   `Access-Control-Allow-Origin` + `text/event-stream` 且关缓冲。平板端也要连同一套，**这条建议两端一起确认**，
-   不落实的话进度只能轮询兜底。
-2. **取消**：接口清单里仍然没有 cancel —— 是不支持取消，还是后面补？
-3. **`count>1` 的语义**：PC 是逐张出、逐张推 `gen_progress`，还是一次性给结果？
-   （决定手机端画一个进度条还是 N 个占位格子。）
-4. **手机端要不要做"局部重绘"**：它要画蒙版（PC `MaskCanvas` 的交互），竖屏上手指挡视线、放大细画很别扭。
-   本会话的建议是**手机端不做，留给平板端/PC**，手机只做「文本出图 + 放大 + 结果看/入库」；
-   参考图 / 姿势控制同理。请用户或 PC 端会话定一下边界。
+**明确不做**（手机端，2026-10-08 PC 端会话已同意，别再提上来）：
 
-**明确不做**（手机端）：ComfyUI / DLC 的安装与模型下载、工作流编辑、批量任务队列管理、生成历史在手机端落盘。
+- **局部重绘（换装）/ 参考图（IP-Adapter）/ 姿势线稿（ControlNet）** 这三样 —— 要画蒙版或挑参考图，
+  竖屏手指挡视线，**留给平板端与 PC**。手机端生图只做：**文本出图 + 放大 + 结果看/入库**。
+- ComfyUI / DLC 的安装与模型下载、工作流编辑、批量任务队列管理、生成历史在手机端落盘。
 
 与平板端（见《技术文档 4》）**共用同一套数据层与局域网协议**，只是 UI 适配竖屏；
 平板端的"未连接 = 只有图片浏览 + 图谱"其实就是手机端的完整功能集，两边不要各写一套。
@@ -373,6 +375,16 @@ PC 端的连接 API（图库树 / 缩略图 / 原图 Range / 事件流）落地�
 
 ## 十、变更记录
 
+- 2026-10-08（晚）：**413 纪律（各会话通用，已写进《技术文档 1》；平板端会话刚被顶爆过一次）**。
+  - **截图不要贴进对话**——先落盘，再用**文件路径**引用；一屏一张的验收 PNG 最致命（单张 1~3 MiB）；
+    自己盯 **20 MiB** 这条线；撞上 413 立刻报 **PC 端主程序会话**（巡查与裁剪只归它）。
+  - **本端的落实方式（重要，手机端做界面验收时会大量出图）**：
+    ① 自检以 **`tools\shot.py` 的断言**为准（控制台 0 报错 / 无横向溢出 / 缩略图解码 / 大图页能开 /
+    图谱有内容 / 设置页有统计），截图只作为产物**落在 `shots\`**；
+    ② 给用户看结果时**只给路径**（必要时做一张 `shots\index.html` 汇总页让人自己打开），
+    **不再把 PNG 贴进对话** —— 本会话此前贴过 11 张大图行，正是这条纪律要治的毛病；
+    ③ 会话体量逼近 20 MiB 就先停下来报 PC 端会话，不自己裁剪。
+- 2026-10-08（傍晚）：**生图计划定稿（PC 端会话逐条答复，四项待确认全部关闭；仍不写代码）**。
 - 2026-10-07：文档建立（尚未开工）。
 - 2026-10-07：技术准备完成，冻结「Kotlin + Compose + Gradle」草案（**已被下一条推翻**）。
 - 2026-10-07：流程变更（用户要求，见《技术文档 1》第五节与 `AGENTS.md`）——
@@ -451,6 +463,20 @@ PC 端的连接 API（图库树 / 缩略图 / 原图 Range / 事件流）落地�
   - **待确认项修订**：端口问题已解决（`/api/gen/*` 与图库 API 同 base）；仍开着的是 SSE 的 CORS、
     取消接口、`count>1` 的进度语义；**新增**一条给用户/PC 端定边界：手机端要不要做"局部重绘"
     （要画蒙版，竖屏手感差，本会话建议留给平板端，手机只做文本出图 + 放大 + 结果看/入库）。
+- 2026-10-08（傍晚）：**生图计划定稿（PC 端会话逐条答复，四项待确认全部关闭；仍不写代码）**。
+  - **手机端明确不做**（PC 端已同意，写死免得再被提）：局部重绘（换装）、参考图（IP-Adapter）、
+    姿势线稿（ControlNet）—— 要画蒙版/挑参考图，竖屏手感差，留给平板与 PC。
+    手机端生图 = **文本出图 + 放大 + 结果看/入库**。
+  - 接口表补两条：`GET /api/gen/status`（`{ok,running,fetching}`，决定「停止」可点）+
+    `POST /api/gen/interrupt`（取消，转发 ComfyUI `/interrupt`）。
+  - **SSE 的 CORS 已解决**（PC 侧 `/api/events` 带 `Access-Control-Allow-Origin: *`，并已正确响应
+    `OPTIONS` 预检 204 —— 根因是原来 `BaseHTTPRequestHandler` 对 OPTIONS 回 501）
+    → **按普通 `fetch` + `EventSource` 写，不加轮询兜底**。本端壳是虚拟 https 源，不吃
+    `allowUniversalAccessFromFileURLs` 那种绕过手段。
+  - **`count>1` 是逐张串行**：每张 `gen_progress {index,total,elapsed}`，全部完成才一次性
+    `gen_done {files,file_ids}`；取消走 `gen_started → gen_interrupted → gen_failed{error:"已取消"}`，
+    未提交的剩余张不再提交，`gen_failed` 只带已出好的 → 手机端按张数画 **N 个占位格子逐张填充**，
+    取消后界面显示"已取消"（不是错误弹窗）并保留已出好的图。
   - **下一步（从这里继续）**：① 真机（S24 Ultra / OTG）装 APK，验证「扫描 → 浏览 → 图谱」与
     大图；② 真机跑通后把壳回赠平板端（同一份 `nativeSource` 契约）；③ M2 连 PC —— 等 PC 端
     连接 API 落地后照搬平板端调用层。
