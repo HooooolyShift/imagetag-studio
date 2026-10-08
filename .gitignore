@@ -8,6 +8,7 @@ testdata_work/
 .selftest_home/
 .facetest_home/
 .manual_home/
+.cache_dl/
 .manual_demo_src/
 __pycache__/
 *.pyc
