@@ -367,10 +367,21 @@ class GenWindow(QWidget):
         self._saved: list[Path] = []
         self._helper_worker = None
         self._cancel_requested = False
+        self._current_pid = ""          # 当前提交给 ComfyUI 的 prompt_id（定向取消用）
         self.reload_hot_words()
         self.refresh_status()
 
     # ---------- ComfyUI 接入 ----------
+    def _wait_image(self, pid: str, out: Path, base: str, on_tick=None):
+        """等图：带取消钩子（排队项被删掉后 /history 不会出现，没钩子会白等到超时）。取消返回 None。"""
+        try:
+            return self.client.wait(pid, out, base, on_tick=on_tick,
+                                    should_stop=lambda: self._cancel_requested)
+        except ComfyError as exc:
+            if self._cancel_requested:
+                return None
+            raise
+
     def _fit_to_screen(self) -> None:
         """按屏幕可用区域定窗口尺寸（小屏也能整个放进屏幕里）。
 
@@ -854,9 +865,10 @@ class GenWindow(QWidget):
             seed = int(seed_txt) if seed_txt not in ("", "-1") else random.randint(1, 2 ** 31 - 1)
             wf = self._build_workflow(seed)
             pid = self.client.submit(wf)
+            self._current_pid = pid
             stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             base = f"gen_{stamp}_{seed}"
-            files = self.client.wait(pid, out, base,
+            files = self._wait_image(pid, out, base,
                                      on_tick=lambda s: self.status.setText(
                                          f"第 {i+1}/{self.count.value()} 张生成中… {s:.0f}s"))
             if self._cancel_requested:
@@ -864,7 +876,7 @@ class GenWindow(QWidget):
                 self.more.b_cancel.setEnabled(False)
                 self.status.setText("已取消（未出图）")
                 return
-            for fp in files:
+            for fp in (files or []):
                 self._add_thumb(fp)
                 self._saved.append(fp)
                 self.more._after_image(fp)
@@ -896,8 +908,9 @@ class GenWindow(QWidget):
         seed = int(seed_txt) if seed_txt not in ("", "-1") else random.randint(1, 2 ** 31 - 1)
         wf = self._build_workflow(seed)
         pid = self.client.submit(wf)
+        self._current_pid = pid
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        files = self.client.wait(pid, Path(self.out_dir.text()), f"gen_{stamp}_{seed}",
+        files = self._wait_image(pid, Path(self.out_dir.text()), f"gen_{stamp}_{seed}",
                                  on_tick=lambda s: self.status.setText(
                                      f"第 {i+1}/{self._tot} 张生成中… {s:.0f}s"))
         if self._cancel_requested:
@@ -905,7 +918,7 @@ class GenWindow(QWidget):
             self.more.b_cancel.setEnabled(False)
             self.status.setText("已取消（未出图）")
             return
-        for fp in files:
+        for fp in (files or []):
             self._add_thumb(fp)
             self._saved.append(fp)
             self.more._after_image(fp)

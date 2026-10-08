@@ -51,6 +51,7 @@ class MorePanel(QGroupBox):
         self._cancel = False
         self._worker = None
         self._current_is_queue = False
+        self._current_pid = ""          # 当前提交给 ComfyUI 的 prompt_id（定向取消用）
         lay = QVBoxLayout(self)
 
         # ---------- 能力状态 ----------
@@ -676,19 +677,40 @@ class MorePanel(QGroupBox):
         self.queue_list.clear()
 
     def cancel_queue(self) -> None:
-        """取消当前任务（队列里的或单张/放大/图生图/重绘都算）——
-        语义与宿主 /api/gen/interrupt 对齐：立刻转发 ComfyUI /interrupt；
-        **还没提交的队列任务不再提交**；不把"用户主动取消"当成失败弹框。"""
+        """取消**我们自己**这一单（定向，2026-10-08 起按宿主新语义）：
+        `ComfyClient.cancel(pid)` 会 `POST /queue {"delete":[pid]}` 删掉排队项 + `POST /interrupt {"prompt_id":pid}` 定向打断，
+        **不再用无参数 `/interrupt`**——那会全局打断，可能把移动端/别的窗口正在跑的任务也砍了。
+        另外：还没提交的队列任务不再提交；不把"用户主动取消"当成失败弹框。"""
         self._cancel = True
         try:
             self.win._cancel_requested = True
         except Exception:
             pass
+        pid = self._current_pid or getattr(self.win, "_current_pid", "") or ""
+        detail = ""
+        if pid:
+            try:
+                res = self.win.client.cancel(pid) or {}
+                parts = []
+                if res.get("interrupted"):
+                    parts.append("已打断正在跑的")
+                if res.get("deleted"):
+                    parts.append("已从队列删除")
+                detail = "（" + "，".join(parts) + "）" if parts else "（ComfyUI 说这条已经不在跑了）"
+            except Exception as exc:                         # noqa: BLE001
+                detail = f"（定向取消失败：{exc}）"
+        self.win.status.setText("已取消" + detail + "；未提交的队列任务不再提交")
+
+    def _wait(self, client, pid: str, out_dir, base: str, timeout: float = 1800.0):
+        """统一等图：带 should_stop 钩子（排队项被删掉后 /history 永远不会出现，没有钩子会白等到超时）。"""
+        def stop() -> bool:
+            return bool(self._cancel or getattr(self.win, "_cancel_requested", False))
         try:
-            self.win.client.interrupt()
-        except Exception:
-            pass
-        self.win.status.setText("已取消（当前任务停下，未提交的队列任务不再提交）")
+            return client.wait(pid, out_dir, base, timeout=timeout, should_stop=stop)
+        except Exception:                                    # noqa: BLE001
+            if stop():
+                return []                                    # 取消：按"没出图"处理，别抛给上层当失败
+            raise
 
     def run_queue(self) -> None:
         if self._queue_running:
@@ -734,7 +756,8 @@ class MorePanel(QGroupBox):
         out = Path(self.win.out_dir.text().strip() or (self.win.host.project_root() / "outputs"))
         client = self.win.client
         pid = client.submit(wf)
-        files = client.wait(pid, out, f"gen_s{seed}", timeout=1800)
+        self._current_pid = pid
+        files = self._wait(client, pid, out, f"gen_s{seed}")
         if self._cancel or getattr(self.win, "_cancel_requested", False):
             return None                      # 用户取消：没出图是正常的，别当失败
         return files[0] if files else out / f"gen_s{seed}.png"
@@ -744,8 +767,8 @@ class MorePanel(QGroupBox):
         if cancelled and not path:
             self.win.status.setText("已取消（未出图）")
             if bool(getattr(worker, "is_queue", False)):
+                self._finish_queue()          # 内部按 _cancel 给"已取消…剩余 N"文案
                 self._cancel = False
-                self._finish_queue()
             return
         if path:
             self.win._saved.append(Path(path))
@@ -770,8 +793,8 @@ class MorePanel(QGroupBox):
             # 用户主动取消：ComfyUI 会抛中断异常，按"已取消"处理，不弹失败框
             self.win.status.setText("已取消")
             if bool(getattr(worker, "is_queue", False)):
-                self._cancel = False
                 self._finish_queue()
+                self._cancel = False
             return
         if bool(getattr(worker, "is_queue", False)):
             self._finish_queue()
@@ -852,7 +875,8 @@ class MorePanel(QGroupBox):
                 seed, denoise=self.inpaint_denoise.value(),
                 sampler=self.win.sampler_box.currentText(), scheduler=self.win.sched_box.currentText())
             pid = c.submit(wf)
-            files = c.wait(pid, out_dir, f"inpaint_s{seed}", timeout=1800)
+            self._current_pid = pid
+            files = self._wait(c, pid, out_dir, f"inpaint_s{seed}")
             if self._cancel or getattr(self.win, "_cancel_requested", False):
                 return None
             return files[0] if files else None
@@ -896,7 +920,8 @@ class MorePanel(QGroupBox):
                                                 steps=max(12, steps // 3), cfg=cfg)
                 prefix = f"hires_{int(time.time())}"
             pid = c.submit(wf)
-            files = c.wait(pid, out_dir, prefix, timeout=1800)
+            self._current_pid = pid
+            files = self._wait(c, pid, out_dir, prefix)
             if self._cancel or getattr(self.win, "_cancel_requested", False):
                 return None
             return files[0] if files else None
@@ -933,7 +958,8 @@ class MorePanel(QGroupBox):
                                               denoise=denoise, blend_name=blend_name,
                                               blend_factor=factor)
             pid = c.submit(wf)
-            files = c.wait(pid, out_dir, f"i2i_s{seed}", timeout=1800)
+            self._current_pid = pid
+            files = self._wait(c, pid, out_dir, f"i2i_s{seed}")
             if self._cancel or getattr(self.win, "_cancel_requested", False):
                 return None
             return files[0] if files else None
@@ -1001,7 +1027,8 @@ class MorePanel(QGroupBox):
                              start_percent=self.pose_start.value(), end_percent=self.pose_end.value(),
                              sampler=sampler, scheduler=sched, prefix=prefix)
             pid = c.submit(wf)
-            files = c.wait(pid, out_dir, f"{prefix}_s{seed}", timeout=1800)
+            self._current_pid = pid
+            files = self._wait(c, pid, out_dir, f"{prefix}_s{seed}")
             if self._cancel or getattr(self.win, "_cancel_requested", False):
                 return None
             return files[0] if files else None

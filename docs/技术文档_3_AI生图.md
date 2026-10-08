@@ -392,3 +392,20 @@ Start-ScheduledTask -TaskName "ImageTagSplashBatch"     # 用完可 Unregister-S
   `ControlNetApplyAdvanced.strength/start_percent/end_percent`）。
 - 新增两行后 MorePanel 最小宽度仍 578px、窗口最小宽度仍 664px，未破坏"单行 ≤500px"的约束。
 
+### 8.11 取消改成"定向取消"（2026-10-08，跟随 PC 端新语义）
+
+用户报"偶发点了停止它还在跑"，根因在宿主：旧版只发**无参数** `POST /interrupt`——
+只能打断**正在执行**的那张；我们这条若还在 ComfyUI 队列里排队，稍后照样会跑起来；
+而且无参数 interrupt 是**全局**的，会把别的客户端（移动端）的任务也打断。
+
+宿主新接口：`ComfyClient.cancel(prompt_id)` = `POST /queue {"delete":[pid]}`（删排队项）+
+`POST /interrupt {"prompt_id":pid}`（定向打断，不是这条时服务端只记日志），
+返回 `{deleted, interrupted}`；`ComfyClient.wait(..., should_stop=…)` 在排队项被删掉后
+（`/history` 永远不会出现）能立刻收尾，不再白等到超时。
+
+**DLC 侧改法**：`extras.py` 记录当前 `prompt_id`（队列任务与放大/图生图/重绘/参考图/姿势都记），
+取消时调 `client.cancel(pid)`（**不再用无参数 `interrupt()`**），并把
+`should_stop=lambda: 取消标记` 传给所有 `wait()`；`ui.py` 的单张/批量生成走同一个 `_wait_image()`。
+实测：80 步任务在 6.0 秒点取消 → **6.3 秒**收干净，ComfyUI `/queue` 的 running/pending 都归 0，
+未提交的队列项一张都没发，状态栏显示"已取消：已出 0 张，队列剩余 3 个（可再点开始继续）"，且不弹失败框。
+
