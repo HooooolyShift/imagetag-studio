@@ -149,15 +149,32 @@ def build_installer_exe() -> None:
     shutil.copy2(HERE / "installer" / "installer_gui.py", gen)
     dist = HERE / "build" / "installer_dist"
     icon = HERE / "assets" / "icon.ico"
-    cmd = [str(PY), "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--noconsole",
+    cmd = [str(PY), "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
            "--name", "图片标签工坊_安装程序", "--distpath", str(dist),
            "--workpath", str(HERE / "build" / "installer_work"),
            "--specpath", str(HERE / "build"),
-           "--paths", str(HERE), "--hidden-import", "app.hardware", "--hidden-import", "app.perf"]
-    # 安装器自身只需要 PySide6 的核心组件；把推理/科学计算栈和重型 Qt 模块排除掉，
-    # 否则会被 PyInstaller 打进去，安装器会膨胀到 2.5 GB。
+           "--paths", str(HERE), "--hidden-import", "tkinter",
+           "--hidden-import", "app.hardware", "--hidden-import", "app.perf"]
+    # Conda 的 Tcl/Tk DLL 位于 Library/bin，PyInstaller 的通用依赖扫描有时只
+    # 找到数据文件而找不到这两个动态库，最终会再次出现“脚本未处理异常”。显式
+    # 放进单文件根目录，保证目标机不依赖开发机 conda 环境。
+    for dll_name in ("tcl86t.dll", "tk86t.dll", "zlib.dll", "ffi.dll"):
+        candidates = (
+            Path(sys.prefix) / "Library" / "bin" / dll_name,
+            Path(sys.prefix) / "DLLs" / dll_name,
+            Path(sys.prefix) / dll_name,
+            Path(sys.base_prefix) / "Library" / "bin" / dll_name,
+        )
+        dll = next((p for p in candidates if p.is_file()), None)
+        if dll is None:
+            raise FileNotFoundError(f"打包安装器缺少 Tcl/Tk 文件：{dll_name}")
+        cmd += ["--add-binary", f"{dll};."]
+    # 引导安装器使用 Tk，不加载任何 Qt：少数机器的系统 DLL/杀软会让 PyInstaller
+    # 内的 QtCore 在安装开始前就加载失败，而安装器本不该依赖待安装应用的 GUI 栈。
+    # 推理/科学计算栈同样排除，安装器保持为几 MB 级的小程序。
     for mod in ("torch", "torchvision", "onnxruntime", "cv2", "sklearn", "scipy", "open_clip",
                 "timm", "huggingface_hub", "transformers", "matplotlib", "pandas", "numpy",
+                "PySide6", "shiboken6",
                 "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
                 "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQuick3D",
                 "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtMultimedia",

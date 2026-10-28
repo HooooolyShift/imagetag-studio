@@ -17,6 +17,43 @@ from pathlib import Path
 PART_MB = 1900          # 每卷上限（GitHub 单文件 2GB 上限，留余量）
 
 
+def merge_bat_text(part_names: list[str]) -> str:
+    """生成与实际分卷数量一致的一键合并脚本。"""
+    if not part_names:
+        raise ValueError("至少需要一个分卷")
+    copy_list = "+".join(part_names)
+    return (
+        "@echo off\r\nchcp 65001 >nul\r\ncd /d \"%~dp0\"\r\n"
+        "echo ============================================\r\n"
+        "echo   图片标签工坊：合并分卷并启动安装\r\n"
+        "echo ============================================\r\n"
+        "if not exist \"merged\" mkdir merged\r\n"
+        "echo 正在合并分卷（约需几分钟）...\r\n"
+        "rem 用 copy /b 把分卷拼回一个 zip（二进制切割必须这样拼）\r\n"
+        f"copy /b {copy_list} payload_full.zip >nul\r\n"
+        "if errorlevel 1 (\r\n"
+        "  echo [错误] 分卷合并失败，请重新下载 SHA256.txt 中列出的全部分卷。\r\n"
+        "  pause & exit /b 1\r\n"
+        ")\r\n"
+        "echo 正在解压...\r\n"
+        "powershell -NoProfile -Command \"Expand-Archive -Path 'payload_full.zip' "
+        "-DestinationPath 'merged' -Force\"\r\n"
+        "if errorlevel 1 (\r\n"
+        "  echo [错误] 解压失败。请确认磁盘空间充足，并检查安全软件是否拦截。\r\n"
+        "  pause & exit /b 1\r\n"
+        ")\r\n"
+        "rem 热修复包可把新版安装器放在分卷旁边，优先使用它覆盖旧安装器。\r\n"
+        "if exist \"图片标签工坊_安装程序.exe\" (\r\n"
+        "  copy /y \"图片标签工坊_安装程序.exe\" \"merged\\图片标签工坊_安装程序.exe\" >nul\r\n"
+        ")\r\n"
+        "if not exist \"merged\\图片标签工坊_安装程序.exe\" (\r\n"
+        "  echo [错误] 合并失败或缺少分卷，请确认所有 payload.zip.001/.002/... 都在同一个文件夹。\r\n"
+        "  pause & exit /b 1\r\n)\r\n"
+        "echo 合并完成，正在启动安装程序...\r\n"
+        "start \"\" \"merged\\图片标签工坊_安装程序.exe\"\r\n"
+    )
+
+
 def main() -> int:
     src = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("K:\\ImageTagStudio_安装包")
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("K:\\release_parts")
@@ -61,25 +98,10 @@ def main() -> int:
         print(f"  {p.name}  {p.stat().st_size / 1024 ** 3:.2f} GB")
     (out / "SHA256.txt").write_text("\n".join(lines), encoding="utf-8")
 
-    bat = out / "合并并安装.bat"
-    bat.write_text(
-        "@echo off\r\nchcp 65001 >nul\r\ncd /d \"%~dp0\"\r\n"
-        "echo ============================================\r\n"
-        "echo   图片标签工坊：合并分卷并启动安装\r\n"
-        "echo ============================================\r\n"
-        "if not exist \"merged\" mkdir merged\r\n"
-        "echo 正在合并分卷（约需几分钟）...\r\n"
-        "rem 用 copy /b 把分卷拼回一个 zip（二进制切割必须这样拼）\r\n"
-        "copy /b payload.zip.001+payload.zip.002+payload.zip.003+payload.zip.004+"
-        "payload.zip.005+payload.zip.006+payload.zip.007+payload.zip.008 payload_full.zip >nul\r\n"
-        "echo 正在解压...\r\n"
-        "powershell -NoProfile -Command \"Expand-Archive -Path 'payload_full.zip' "
-        "-DestinationPath 'merged' -Force\"\r\n"
-        "if not exist \"merged\\图片标签工坊_安装程序.exe\" (\r\n"
-        "  echo [错误] 合并失败或缺少分卷，请确认所有 payload_partXX.zip 都在同一个文件夹。\r\n"
-        "  pause & exit /b 1\r\n)\r\n"
-        "echo 合并完成，正在启动安装程序...\r\n"
-        "start \"\" \"merged\\图片标签工坊_安装程序.exe\"\r\n", encoding="utf-8")
+    bat_text = merge_bat_text([p.name for p in written])
+    bat = out / "merge_and_install.bat"
+    bat.write_text(bat_text, encoding="utf-8")
+    (out / "合并并安装.bat").write_text(bat_text, encoding="utf-8")
     print("已生成:", bat)
     return 0
 
